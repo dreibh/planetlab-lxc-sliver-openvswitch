@@ -302,6 +302,13 @@ dpif_netdev_get_stats(const struct dpif *dpif, struct dpif_dp_stats *stats)
     return 0;
 }
 
+static const char* internal_port_type(const struct dp_netdev* dp)
+{
+	if (dp->class == &dpif_netdev_class)
+		return "tap";
+	return "dummy";
+}
+
 static int
 do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
             uint16_t port_no)
@@ -315,9 +322,7 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
     /* XXX reject devices already in some dp_netdev. */
 
     /* Open and validate network device. */
-    open_type = (strcmp(type, "internal") ? type
-                 : dp->class != &dpif_netdev_class ? "dummy"
-                 : "tap");
+    open_type = (strcmp(type, "internal") ? type : internal_port_type(dp));
     error = netdev_open(devname, open_type, &netdev);
     if (error) {
         return error;
@@ -1239,40 +1244,43 @@ dp_netdev_execute_actions(struct dp_netdev *dp,
     }
 }
 
+#define DPIF_NETDEV_CLASS_FUNCTIONS 			\
+    NULL,                       /* enumerate */		\
+    dpif_netdev_open,					\
+    dpif_netdev_close,					\
+    dpif_netdev_destroy,				\
+    dpif_netdev_run,					\
+    dpif_netdev_wait,					\
+    dpif_netdev_get_stats,				\
+    dpif_netdev_port_add,				\
+    dpif_netdev_port_del,				\
+    dpif_netdev_port_query_by_number,			\
+    dpif_netdev_port_query_by_name,			\
+    dpif_netdev_get_max_ports,				\
+    NULL,                       /* port_get_pid */	\
+    dpif_netdev_port_dump_start,			\
+    dpif_netdev_port_dump_next,				\
+    dpif_netdev_port_dump_done,				\
+    dpif_netdev_port_poll,				\
+    dpif_netdev_port_poll_wait,				\
+    dpif_netdev_flow_get,				\
+    dpif_netdev_flow_put,				\
+    dpif_netdev_flow_del,				\
+    dpif_netdev_flow_flush,				\
+    dpif_netdev_flow_dump_start,			\
+    dpif_netdev_flow_dump_next,				\
+    dpif_netdev_flow_dump_done,				\
+    dpif_netdev_execute,				\
+    NULL,                       /* operate */		\
+    dpif_netdev_recv_set,				\
+    dpif_netdev_queue_to_priority,			\
+    dpif_netdev_recv,					\
+    dpif_netdev_recv_wait,				\
+    dpif_netdev_recv_purge,				\
+
 const struct dpif_class dpif_netdev_class = {
     "netdev",
-    NULL,                       /* enumerate */
-    dpif_netdev_open,
-    dpif_netdev_close,
-    dpif_netdev_destroy,
-    dpif_netdev_run,
-    dpif_netdev_wait,
-    dpif_netdev_get_stats,
-    dpif_netdev_port_add,
-    dpif_netdev_port_del,
-    dpif_netdev_port_query_by_number,
-    dpif_netdev_port_query_by_name,
-    dpif_netdev_get_max_ports,
-    NULL,                       /* port_get_pid */
-    dpif_netdev_port_dump_start,
-    dpif_netdev_port_dump_next,
-    dpif_netdev_port_dump_done,
-    dpif_netdev_port_poll,
-    dpif_netdev_port_poll_wait,
-    dpif_netdev_flow_get,
-    dpif_netdev_flow_put,
-    dpif_netdev_flow_del,
-    dpif_netdev_flow_flush,
-    dpif_netdev_flow_dump_start,
-    dpif_netdev_flow_dump_next,
-    dpif_netdev_flow_dump_done,
-    dpif_netdev_execute,
-    NULL,                       /* operate */
-    dpif_netdev_recv_set,
-    dpif_netdev_queue_to_priority,
-    dpif_netdev_recv,
-    dpif_netdev_recv_wait,
-    dpif_netdev_recv_purge,
+    DPIF_NETDEV_CLASS_FUNCTIONS
 };
 
 static void
@@ -1305,3 +1313,4 @@ dpif_dummy_register(bool override)
 
     dpif_dummy_register__("dummy");
 }
+
