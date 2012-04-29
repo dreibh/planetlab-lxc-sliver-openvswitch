@@ -594,6 +594,8 @@ extern const struct netdev_class netdev_linux_class;
 extern const struct netdev_class netdev_internal_class;
 extern const struct netdev_class netdev_tap_class;
 
+extern const struct netdev_class netdev_tunnel_class;
+
 #ifdef  __cplusplus
 }
 #endif

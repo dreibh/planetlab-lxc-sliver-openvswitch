@@ -80,6 +80,7 @@ netdev_initialize(void)
         netdev_register_provider(&netdev_tap_class);
         netdev_vport_register();
 #endif
+	netdev_register_provider(&netdev_tunnel_class);
     }
 }
 
