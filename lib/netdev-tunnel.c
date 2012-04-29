@@ -454,7 +454,7 @@ netdev_tunnel_set_rport(struct unixctl_conn *conn,
     if (error) {
         unixctl_command_reply_error(conn, strerror(errno));
     } else {
-        unixctl_command_reply(conn, "ok");
+        unixctl_command_reply(conn, NULL);
     }
 }
 
