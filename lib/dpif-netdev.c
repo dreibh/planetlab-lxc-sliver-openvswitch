@@ -306,6 +306,8 @@ static const char* internal_port_type(const struct dp_netdev* dp)
 {
 	if (dp->class == &dpif_netdev_class)
 		return "tap";
+	if (dp->class == &dpif_planetlab_class)
+		return "tap_pl";
 	return "dummy";
 }
 
@@ -367,7 +369,9 @@ choose_port(struct dpif *dpif, struct netdev *netdev)
     struct dp_netdev *dp = get_dp_netdev(dpif);
     int port_no;
 
-    if (dpif->dpif_class != &dpif_netdev_class) {
+    if (dpif->dpif_class != &dpif_netdev_class &&
+        dpif->dpif_class != &dpif_planetlab_class)
+    {
         /* If the port name contains a number, try to assign that port number.
          * This can make writing unit tests easier because port numbers are
          * predictable. */
@@ -1280,6 +1284,11 @@ dp_netdev_execute_actions(struct dp_netdev *dp,
 
 const struct dpif_class dpif_netdev_class = {
     "netdev",
+    DPIF_NETDEV_CLASS_FUNCTIONS
+};
+
+const struct dpif_class dpif_planetlab_class = {
+    "planetlab",
     DPIF_NETDEV_CLASS_FUNCTIONS
 };
 

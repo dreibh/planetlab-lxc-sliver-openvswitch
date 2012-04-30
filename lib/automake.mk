@@ -168,6 +168,8 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/timer.h \
 	lib/timeval.c \
 	lib/timeval.h \
+	lib/tunalloc.c \
+	lib/tunalloc.h \
 	lib/type-props.h \
 	lib/unaligned.h \
 	lib/unicode.c \

@@ -593,6 +593,7 @@ const struct netdev_class *netdev_lookup_provider(const char *type);
 extern const struct netdev_class netdev_linux_class;
 extern const struct netdev_class netdev_internal_class;
 extern const struct netdev_class netdev_tap_class;
+extern const struct netdev_class netdev_tap_pl_class;
 
 extern const struct netdev_class netdev_tunnel_class;
 
