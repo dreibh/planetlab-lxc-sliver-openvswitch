@@ -47,7 +47,8 @@ struct netdev_dev_tunnel {
     int sockfd;
     struct sockaddr_in local_addr;
     struct sockaddr_in remote_addr;
-    bool got_remote_ip;
+    bool valid_remote_ip;
+    bool valid_remote_port;
     bool connected;
     unsigned int change_seq;
 };
@@ -104,7 +105,8 @@ netdev_tunnel_create(const struct netdev_class *class, const char *name,
     netdev_dev->flags = 0;
     netdev_dev->change_seq = 1;
     memset(&netdev_dev->remote_addr, 0, sizeof(netdev_dev->remote_addr));
-    netdev_dev->got_remote_ip = false;
+    netdev_dev->valid_remote_ip = false;
+    netdev_dev->valid_remote_port = false;
     netdev_dev->connected = false;
 
 
@@ -175,7 +177,7 @@ netdev_tunnel_connect(struct netdev_dev_tunnel *dev)
 {
     if (dev->sockfd < 0)
         return EBADF;
-    if (!dev->got_remote_ip || !dev->remote_addr.sin_port)
+    if (!dev->valid_remote_ip || !dev->valid_remote_port)
         return 0;
     dev->remote_addr.sin_family = AF_INET;
     if (connect(dev->sockfd, (struct sockaddr*) &dev->remote_addr, sizeof(dev->remote_addr)) < 0) {
@@ -205,10 +207,14 @@ netdev_tunnel_set_config(struct netdev_dev *dev_, const struct shash *args)
         if (error)
             return error;
         netdev_dev->remote_addr.sin_addr = addr;
-        netdev_dev->got_remote_ip = true;
-        return netdev_tunnel_connect(netdev_dev);        
+        netdev_dev->valid_remote_ip = true;
     }
-    return 0;
+    data = shash_find_data(args, "remote_port");
+    if (data) {
+	netdev_dev->remote_addr.sin_port = htons(atoi(data));
+	netdev_dev->valid_remote_port = true;
+    }
+    return netdev_tunnel_connect(netdev_dev);        
 }
 
 static int
@@ -411,9 +417,6 @@ netdev_tunnel_poll_notify(const struct netdev *netdev)
     }
 }
 
-#define LPORT ((void*)1)
-#define RPORT ((void*)2)
-
 static void
 netdev_tunnel_get_port(struct unixctl_conn *conn,
                      int argc, const char *argv[], void *aux OVS_UNUSED)
@@ -428,45 +431,16 @@ netdev_tunnel_get_port(struct unixctl_conn *conn,
         return;
     }
 
-    port = (aux == LPORT ? tunnel_dev->local_addr.sin_port
-    			 : tunnel_dev->remote_addr.sin_port);
-    
-    sprintf(buf, "%d", ntohs(port));
+    sprintf(buf, "%d", ntohs(tunnel_dev->local_addr.sin_port));
     unixctl_command_reply(conn, buf);
 }
 
-static void
-netdev_tunnel_set_rport(struct unixctl_conn *conn,
-                     int argc, const char *argv[], void *aux OVS_UNUSED)
-{
-    struct netdev_dev_tunnel *tunnel_dev;
-    int error;
-
-    tunnel_dev = shash_find_data(&tunnel_netdev_devs, argv[1]);
-    if (!tunnel_dev) {
-        unixctl_command_reply_error(conn, "no such tunnel netdev");
-        return;
-    }
-
-    tunnel_dev->remote_addr.sin_port = htons(atoi(argv[2]));
-
-    error = netdev_tunnel_connect(tunnel_dev);
-    if (error) {
-        unixctl_command_reply_error(conn, strerror(errno));
-    } else {
-        unixctl_command_reply(conn, NULL);
-    }
-}
 
 static int
 netdev_tunnel_init(void)
 {
-    unixctl_command_register("netdev-tunnel/get-lport", "NAME",
-                             1, 1, netdev_tunnel_get_port, LPORT);
-    unixctl_command_register("netdev-tunnel/get-rport", "NAME",
-                             1, 1, netdev_tunnel_get_port, RPORT);
-    unixctl_command_register("netdev-tunnel/set-rport", "NAME PORT",
-                             2, 2, netdev_tunnel_set_rport, 0);
+    unixctl_command_register("netdev-tunnel/get-port", "NAME",
+                             1, 1, netdev_tunnel_get_port, NULL);
     return 0;
 }
 
