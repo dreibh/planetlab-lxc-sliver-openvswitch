@@ -866,7 +866,8 @@ netdev_linux_recv(struct netdev *netdev_, void *data, size_t size)
     for (;;) {
         ssize_t retval;
 
-        retval = (netdev_->netdev_dev->netdev_class == &netdev_tap_class
+        retval = ((netdev_->netdev_dev->netdev_class == &netdev_tap_class ||
+                   netdev_->netdev_dev->netdev_class == &netdev_tap_pl_class)
                   ? read(netdev->fd, data, size)
                   : recv(netdev->fd, data, size, MSG_TRUNC));
         if (retval >= 0) {
