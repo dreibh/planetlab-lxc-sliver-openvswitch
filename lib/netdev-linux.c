@@ -1815,7 +1815,7 @@ netdev_linux_create_tap_pl(const struct netdev_class *class OVS_UNUSED,
         goto error_unref_notifier;
     }
 
-    netdev_dev_init(&netdev_dev->netdev_dev, name, &netdev_tap_class);
+    netdev_dev_init(&netdev_dev->netdev_dev, name, &netdev_tap_pl_class);
     *netdev_devp = &netdev_dev->netdev_dev;
     return 0;
 
