@@ -2416,6 +2416,13 @@ netdev_linux_update_flags(struct netdev *netdev, enum netdev_flags off,
     return error;
 }
 
+static int
+netdev_tap_pl_update_flags(struct netdev *netdev, enum netdev_flags off,
+                          enum netdev_flags on, enum netdev_flags *old_flagsp)
+{
+    return 0;
+}
+
 static unsigned int
 netdev_linux_change_seq(const struct netdev *netdev)
 {
@@ -2423,7 +2430,8 @@ netdev_linux_change_seq(const struct netdev *netdev)
 }
 
 #define NETDEV_LINUX_CLASS(NAME, CREATE, GET_STATS, SET_STATS,  \
-                           GET_FEATURES, GET_STATUS)            \
+                           GET_FEATURES, GET_STATUS,            \
+                           UPDATE_FLAGS)                        \
 {                                                               \
     NAME,                                                       \
                                                                 \
@@ -2481,7 +2489,7 @@ netdev_linux_change_seq(const struct netdev *netdev)
     GET_STATUS,                                                 \
     netdev_linux_arp_lookup,                                    \
                                                                 \
-    netdev_linux_update_flags,                                  \
+    UPDATE_FLAGS,                                               \
                                                                 \
     netdev_linux_change_seq                                     \
 }
@@ -2493,7 +2501,8 @@ const struct netdev_class netdev_linux_class =
         netdev_linux_get_stats,
         NULL,                    /* set_stats */
         netdev_linux_get_features,
-        netdev_linux_get_drv_info);
+        netdev_linux_get_drv_info,
+        netdev_linux_update_flags);
 
 const struct netdev_class netdev_tap_class =
     NETDEV_LINUX_CLASS(
@@ -2502,7 +2511,8 @@ const struct netdev_class netdev_tap_class =
         netdev_tap_get_stats,
         NULL,                   /* set_stats */
         netdev_linux_get_features,
-        netdev_linux_get_drv_info);
+        netdev_linux_get_drv_info,
+        netdev_linux_update_flags);
 
 const struct netdev_class netdev_internal_class =
     NETDEV_LINUX_CLASS(
@@ -2511,7 +2521,8 @@ const struct netdev_class netdev_internal_class =
         netdev_internal_get_stats,
         netdev_vport_set_stats,
         NULL,                  /* get_features */
-        netdev_internal_get_drv_info);
+        netdev_internal_get_drv_info,
+        netdev_linux_update_flags);
 
 const struct netdev_class netdev_tap_pl_class =
     NETDEV_LINUX_CLASS(
@@ -2520,7 +2531,8 @@ const struct netdev_class netdev_tap_pl_class =
         netdev_tap_get_stats,
         NULL,                   /* set_stats */
         netdev_linux_get_features,
-        netdev_linux_get_drv_info);
+        netdev_linux_get_drv_info,
+	netdev_tap_pl_update_flags);	
 
 /* HTB traffic control class. */
 
