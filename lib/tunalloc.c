@@ -82,11 +82,6 @@ int tun_alloc(int iftype, char *if_name)
         return -1;
     }
 
-    /* passing type param */
-    if (send(control_fd, &iftype, sizeof(iftype), 0) != sizeof(iftype)) {
-        return -1;
-    }
-
     remotefd = receive_vif_fd(control_fd, if_name);
 
     close(control_fd);
