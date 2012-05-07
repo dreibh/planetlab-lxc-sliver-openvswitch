@@ -731,7 +731,7 @@ netdev_linux_destroy(struct netdev_dev *netdev_dev_)
         netdev_dev->tc->ops->tc_destroy(netdev_dev->tc);
     }
 
-    if (class == &netdev_tap_class) {
+    if (class == &netdev_tap_class || class == &netdev_tap_pl_class) {
         destroy_tap(netdev_dev);
     }
     free(netdev_dev);
