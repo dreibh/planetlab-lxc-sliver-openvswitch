@@ -13,7 +13,7 @@
 
 #include "tunalloc.h"
 
-#define OVS_SOCK "/var/tun/pl-ovs.control"
+#define OVS_SOCK "/var/run/pl-ovs.control"
 
 char *appname;
 
@@ -66,7 +66,6 @@ void send_fd(int p, int fd, char* vif_name)
         int accept_fd;
         struct sockaddr_un addr, accept_addr;
         socklen_t addr_len = sizeof(accept_addr);
-        int i;
 
         control_fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (control_fd == -1 && errno != ENOENT) {
