@@ -1,0 +1,24 @@
+#!/bin/bash
+
+function error 
+{
+	echo $1 >&2
+	exit 1
+}
+
+function is_switch_running
+{
+	ovs-appctl version >/dev/null 2>&1
+}
+
+if [ -z "$1" ]; then
+	error "Usage: ${0##*/} <bridge name>" 
+fi
+
+# ensure ovs-vswitchd is running
+if ! is_switch_running; then
+	exit 0;
+fi
+
+ovs-vsctl del-br $1 || true
+ovs-appctl exit 

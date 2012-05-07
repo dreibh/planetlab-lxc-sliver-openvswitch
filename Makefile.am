@@ -204,3 +204,4 @@ include rhel/automake.mk
 include xenserver/automake.mk
 include python/automake.mk
 include python/compat/automake.mk
+include planetlab/automake.mk

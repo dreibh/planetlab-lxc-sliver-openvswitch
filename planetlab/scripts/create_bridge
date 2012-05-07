@@ -1,0 +1,58 @@
+#!/bin/bash
+
+function error 
+{
+	echo $1 >&2
+	killall pltap-ovs 2>/dev/null || true
+	exit 1
+}
+
+function is_switch_running
+{
+	ovs-appctl version >/dev/null 2>&1
+}
+
+if [ -z "$1" ]; then
+	error "Usage: ${0##*/} <IP/PREFIX>"
+fi
+
+# TODO: check paramether validity
+
+IP=${1%/*}
+PREFIX=${1#*/}
+
+set -e
+
+# ensure ovs-vswitchd is running
+if ! is_switch_running; then
+	ovs-vswitchd --pidfile --detach --log-file >/dev/null 2>&1
+fi
+while ! is_switch_running; do 
+	sleep 1
+done
+	
+
+# check whether the address is already assigned
+set -e
+TAPNAME=$(ip addr show to "$IP/32" | perl -ne '/^\s*\d+:\s*([\w-]+):/ && print $1')
+if [ ! -z "$TAPNAME" ]; then
+    if ovs-vsctl br-exists "$TAPNAME"; then
+		echo $TAPNAME
+		exit 0
+    fi
+    error "$IP already assigned to $TAPNAME"
+fi
+
+TAPNAME=$(pltap-ovs)
+cat < /vsys/vif_up.out&
+cat >/vsys/vif_up.in << EOF
+	$TAPNAME
+	$IP
+	$PREFIX
+EOF
+while ! ip link show up | egrep -q "^[0-9]+: +$TAPNAME:"; do
+	echo "Waiting for $TAPNAME to come UP..." >&2
+	sleep 1
+done
+ovs-vsctl add-br $TAPNAME -- set bridge $TAPNAME datapath_type=planetlab
+echo $TAPNAME

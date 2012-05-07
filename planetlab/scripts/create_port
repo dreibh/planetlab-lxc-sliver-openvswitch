@@ -1,0 +1,16 @@
+#!/bin/bash
+
+function error 
+{
+	echo $1 >&2
+	exit 1
+}
+
+if [ -z "$2" ]; then
+	error "Usage ${0##*/} <bridge> <port>"
+fi
+
+if ovs-vsctl list-ports "$1" | grep -q "^$2$"; then
+	exit 0
+fi
+ovs-vsctl add-port "$1" "$2" -- set interface "$2" type=tunnel
