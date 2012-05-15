@@ -1,0 +1,12 @@
+#!/bin/bash
+
+PIDF=/usr/local/var/run/openvswitch/ovs-vswitchd.pid
+
+if [ ! -f "$PIDF" ]; then
+	sudo ovs-vswitchd --pidfile --detach --log-file >/dev/null
+fi
+while [ ! -f "$PIDF" ]; do
+	echo "Waiting for ovs-vswitchd to start..." >&2
+	sleep 1;
+done
+cat "$PIDF"

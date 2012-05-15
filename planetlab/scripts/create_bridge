@@ -25,11 +25,9 @@ set -e
 
 # ensure ovs-vswitchd is running
 if ! is_switch_running; then
-	ovs-vswitchd --pidfile --detach --log-file >/dev/null 2>&1
+	echo "ovs-vswitchd not running" >&2
+	exit 1
 fi
-while ! is_switch_running; do 
-	sleep 1
-done
 	
 
 # check whether the address is already assigned
@@ -44,8 +42,7 @@ if [ ! -z "$TAPNAME" ]; then
 fi
 
 TAPNAME=$(pltap-ovs)
-cat < /vsys/vif_up.out&
-cat >/vsys/vif_up.in << EOF
+vsysc vif_up << EOF
 	$TAPNAME
 	$IP
 	$PREFIX

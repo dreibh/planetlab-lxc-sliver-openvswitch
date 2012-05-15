@@ -1,0 +1,16 @@
+#!/bin/bash
+
+function error 
+{
+	echo $1 >&2
+	exit 1
+}
+
+if [ -z "$1" ]; then
+	error "Usage ${0##*/} <port>"
+fi
+
+set -e
+if ovs-vsctl port-to-br "$2" >/dev/null 2>&1; then
+	ovs-vsctl del-port "$2"
+fi

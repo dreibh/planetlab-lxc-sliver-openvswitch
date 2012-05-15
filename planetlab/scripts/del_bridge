@@ -17,8 +17,10 @@ fi
 
 # ensure ovs-vswitchd is running
 if ! is_switch_running; then
-	exit 0;
+	echo "ovs-vswitchd not runnig" >&2
+	exit 1
 fi
 
-ovs-vsctl del-br $1 || true
-ovs-appctl exit 
+if ovs-vsctl bridge-exists "$1"; then
+	ovs-vsctl del-br $1
+fi
