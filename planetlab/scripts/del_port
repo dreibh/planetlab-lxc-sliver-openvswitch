@@ -11,6 +11,6 @@ if [ -z "$1" ]; then
 fi
 
 set -e
-if ovs-vsctl port-to-br "$2" >/dev/null 2>&1; then
-	ovs-vsctl del-port "$2"
+if ovs-vsctl port-to-br "$1" >/dev/null 2>&1; then
+	ovs-vsctl del-port "$1"
 fi
