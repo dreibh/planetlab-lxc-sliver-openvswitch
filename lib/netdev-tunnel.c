@@ -41,7 +41,6 @@ VLOG_DEFINE_THIS_MODULE(netdev_tunnel);
 struct netdev_dev_tunnel {
     struct netdev_dev netdev_dev;
     uint8_t hwaddr[ETH_ADDR_LEN];
-    int mtu;
     struct netdev_stats stats;
     enum netdev_flags flags;
     int sockfd;
@@ -102,7 +101,6 @@ netdev_tunnel_create(const struct netdev_class *class, const char *name,
     netdev_dev->hwaddr[3] = n >> 16;
     netdev_dev->hwaddr[4] = n >> 8;
     netdev_dev->hwaddr[5] = n;
-    netdev_dev->mtu = 1500;
     netdev_dev->flags = 0;
     netdev_dev->change_seq = 1;
     memset(&netdev_dev->remote_addr, 0, sizeof(netdev_dev->remote_addr));
@@ -350,35 +348,6 @@ netdev_tunnel_get_etheraddr(const struct netdev *netdev,
     return 0;
 }
 
-static int
-netdev_tunnel_get_mtu(const struct netdev *netdev, int *mtup)
-{
-    const struct netdev_dev_tunnel *dev =
-        netdev_dev_tunnel_cast(netdev_get_dev(netdev));
-
-    *mtup = dev->mtu;
-    return 0;
-}
-
-static int
-netdev_tunnel_set_mtu(const struct netdev *netdev, int mtu)
-{
-    struct netdev_dev_tunnel *dev =
-        netdev_dev_tunnel_cast(netdev_get_dev(netdev));
-
-    dev->mtu = mtu;
-    return 0;
-}
-
-static int
-netdev_tunnel_get_carrier(const struct netdev *netdev, bool *carrier)
-{
-    struct netdev_dev_tunnel *dev =
-        netdev_dev_tunnel_cast(netdev_get_dev(netdev));
-    VLOG_DBG("tunnel_get_carrier(%s)", netdev_get_name(netdev));
-    *carrier = dev->connected;
-    return 0;
-}
 
 static int
 netdev_tunnel_get_stats(const struct netdev *netdev, struct netdev_stats *stats)
@@ -492,10 +461,10 @@ const struct netdev_class netdev_tunnel_class = {
 
     netdev_tunnel_set_etheraddr,
     netdev_tunnel_get_etheraddr,
-    netdev_tunnel_get_mtu,
-    netdev_tunnel_set_mtu,
+    NULL,			/* get_mtu */
+    NULL,			/* set_mtu */
     NULL,                       /* get_ifindex */
-    netdev_tunnel_get_carrier,  /* get_carrier */
+    NULL,			/* get_carrier */
     NULL,                       /* get_carrier_resets */
     NULL,                       /* get_miimon */
     netdev_tunnel_get_stats,
