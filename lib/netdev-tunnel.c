@@ -147,7 +147,6 @@ netdev_tunnel_destroy(struct netdev_dev *netdev_dev_)
 static int
 netdev_tunnel_open(struct netdev_dev *netdev_dev_, struct netdev **netdevp)
 {
-    struct netdev_dev_tunnel *netdev_dev = netdev_dev_tunnel_cast(netdev_dev_);
     struct netdev_tunnel *netdev;
 
     netdev = xmalloc(sizeof *netdev);
@@ -225,7 +224,7 @@ netdev_tunnel_set_config(struct netdev_dev *dev_, const struct shash *args)
 }
 
 static int
-netdev_tunnel_listen(struct netdev *netdev_)
+netdev_tunnel_listen(struct netdev *netdev_ OVS_UNUSED)
 {
     return 0;
 }
@@ -240,8 +239,8 @@ netdev_tunnel_recv(struct netdev *netdev_, void *buffer, size_t size)
     for (;;) {
         ssize_t retval;
         retval = recv(dev->sockfd, buffer, size, MSG_TRUNC);
-	VLOG_DBG("%s: recv(%x, %d, MSG_TRUNC) = %d",
-			netdev_get_name(netdev_), buffer, size, retval);
+	VLOG_DBG("%s: recv(%"PRIxPTR", %"PRIu64", MSG_TRUNC) = %"PRId64,
+		 netdev_get_name(netdev_), (uintptr_t)buffer, size, retval);
         if (retval >= 0) {
 	    dev->stats.rx_packets++;
 	    dev->stats.rx_bytes += retval;
@@ -283,13 +282,14 @@ netdev_tunnel_send(struct netdev *netdev_, const void *buffer, size_t size)
     for (;;) {
         ssize_t retval;
         retval = send(dev->sockfd, buffer, size, 0);
-    	VLOG_DBG("%s: send(%x, %d) = %d", netdev_get_name(netdev_), buffer, size, retval);
+    	VLOG_DBG("%s: send(%"PRIxPTR", %"PRIu64") = %"PRId64,
+	         netdev_get_name(netdev_), (uintptr_t)buffer, size, retval);
         if (retval >= 0) {
 	    dev->stats.tx_packets++;
 	    dev->stats.tx_bytes++;
 	    if (retval != size) {
-	        VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%zd bytes of "
-		             "%zu) on %s", retval, size, netdev_get_name(netdev_));
+	        VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%"PRId64" bytes of "
+		             "%"PRIu64") on %s", retval, size, netdev_get_name(netdev_));
 		dev->stats.tx_errors++;
 	    }
             return 0;
@@ -424,10 +424,9 @@ netdev_tunnel_update_seq(struct netdev_dev_tunnel *dev)
 
 static void
 netdev_tunnel_get_port(struct unixctl_conn *conn,
-                     int argc, const char *argv[], void *aux OVS_UNUSED)
+                     int argc OVS_UNUSED, const char *argv[], void *aux OVS_UNUSED)
 {
     struct netdev_dev_tunnel *tunnel_dev;
-    uint16_t port;
     char buf[6];
 
     tunnel_dev = shash_find_data(&tunnel_netdev_devs, argv[1]);
