@@ -169,6 +169,14 @@ netdev_tunnel_close(struct netdev *netdev_)
 static int
 netdev_tunnel_get_config(struct netdev_dev *dev_, struct shash *args)
 {
+    struct netdev_dev_tunnel *netdev_dev = netdev_dev_tunnel_cast(dev_);
+
+    if (netdev_dev->valid_remote_ip)
+    	shash_add(args, "remote_ip",
+	    xasprintf(IP_FMT, IP_ARGS(&netdev_dev->remote_addr.sin_addr)));
+    if (netdev_dev->valid_remote_port)
+        shash_add(args, "remote_port",
+	    xasprintf("%"PRIu16, ntohs(netdev_dev->remote_addr.sin_port)));
     return 0;
 }
 
