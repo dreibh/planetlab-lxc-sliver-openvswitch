@@ -62,7 +62,7 @@ static struct shash tunnel_netdev_devs = SHASH_INITIALIZER(&tunnel_netdev_devs);
 
 static int netdev_tunnel_create(const struct netdev_class *, const char *,
                                struct netdev_dev **);
-static void netdev_tunnel_poll_notify(const struct netdev *);
+static void netdev_tunnel_update_seq(struct netdev_dev_tunnel *);
 
 static bool
 is_tunnel_class(const struct netdev_class *class)
@@ -190,6 +190,7 @@ netdev_tunnel_connect(struct netdev_dev_tunnel *dev)
         return errno;
     }
     dev->connected = true;
+    netdev_tunnel_update_seq(dev);
     VLOG_DBG("%s: connected to (%s, %d)", netdev_dev_get_name(&dev->netdev_dev),
         inet_ntoa(dev->remote_addr.sin_addr), ntohs(dev->remote_addr.sin_port));
     return 0;
@@ -331,7 +332,7 @@ netdev_tunnel_set_etheraddr(struct netdev *netdev,
 
     if (!eth_addr_equals(dev->hwaddr, mac)) {
         memcpy(dev->hwaddr, mac, ETH_ADDR_LEN);
-        netdev_tunnel_poll_notify(netdev);
+        netdev_tunnel_update_seq(dev);
     }
 
     return 0;
@@ -381,11 +382,12 @@ netdev_tunnel_update_flags(struct netdev *netdev,
         return EINVAL;
     }
 
+    // XXX should we actually do something with this flags?
     *old_flagsp = dev->flags;
     dev->flags |= on;
     dev->flags &= ~off;
     if (*old_flagsp != dev->flags) {
-        netdev_tunnel_poll_notify(netdev);
+        netdev_tunnel_update_seq(dev);
     }
     return 0;
 }
@@ -399,11 +401,8 @@ netdev_tunnel_change_seq(const struct netdev *netdev)
 /* Helper functions. */
 
 static void
-netdev_tunnel_poll_notify(const struct netdev *netdev)
+netdev_tunnel_update_seq(struct netdev_dev_tunnel *dev)
 {
-    struct netdev_dev_tunnel *dev =
-        netdev_dev_tunnel_cast(netdev_get_dev(netdev));
-
     dev->change_seq++;
     if (!dev->change_seq) {
         dev->change_seq++;
