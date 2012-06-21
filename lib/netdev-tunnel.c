@@ -299,7 +299,22 @@ netdev_tunnel_send_wait(struct netdev *netdev_)
 static int
 netdev_tunnel_drain(struct netdev *netdev_)
 {
-    struct netdev_tunnel *netdev = netdev_tunnel_cast(netdev_);
+    struct netdev_dev_tunnel *dev = 
+    	netdev_dev_tunnel_cast(netdev_get_dev(netdev_));
+    char buffer[128];
+    int error;
+
+    if (!dev->connected)
+    	return 0;
+    for (;;) {
+    	error = recv(dev->sockfd, buffer, 128, MSG_TRUNC);
+	if (error) {
+            if (error == -EAGAIN)
+	        break;
+            else if (error != -EMSGSIZE)
+	        return error;
+	}
+    }
     return 0;
 }
 
