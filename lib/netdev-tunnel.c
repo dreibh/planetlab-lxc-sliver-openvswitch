@@ -55,7 +55,6 @@ struct netdev_dev_tunnel {
 
 struct netdev_tunnel {
     struct netdev netdev;
-    bool listening;
 };
 
 static struct shash tunnel_netdev_devs = SHASH_INITIALIZER(&tunnel_netdev_devs);
@@ -153,7 +152,6 @@ netdev_tunnel_open(struct netdev_dev *netdev_dev_, struct netdev **netdevp)
 
     netdev = xmalloc(sizeof *netdev);
     netdev_init(&netdev->netdev, netdev_dev_);
-    netdev->listening = false;
 
     *netdevp = &netdev->netdev;
     return 0;
@@ -228,9 +226,6 @@ netdev_tunnel_set_config(struct netdev_dev *dev_, const struct shash *args)
 static int
 netdev_tunnel_listen(struct netdev *netdev_)
 {
-    struct netdev_tunnel *netdev = netdev_tunnel_cast(netdev_);
-    VLOG_DBG("tunnel_listen(%s)", netdev_get_name(netdev_));
-    netdev->listening = true;
     return 0;
 }
 
