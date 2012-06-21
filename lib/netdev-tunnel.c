@@ -202,25 +202,25 @@ netdev_tunnel_set_config(struct netdev_dev *dev_, const struct shash *args)
 {
     struct netdev_dev_tunnel *netdev_dev = netdev_dev_tunnel_cast(dev_);
     struct shash_node *node;
-    void *data;
 
     VLOG_DBG("tunnel_set_config(%s)", netdev_dev_get_name(dev_));
     SHASH_FOR_EACH(node, args) {
-        VLOG_DBG("arg: %s->%s", node->name, node->data);
-    }
-    data = shash_find_data(args, "remote_ip");
-    if (data) {
-        struct in_addr addr;
-        int error = lookup_ip(data, &addr);
-        if (error)
-            return error;
-        netdev_dev->remote_addr.sin_addr = addr;
-        netdev_dev->valid_remote_ip = true;
-    }
-    data = shash_find_data(args, "remote_port");
-    if (data) {
-	netdev_dev->remote_addr.sin_port = htons(atoi(data));
-	netdev_dev->valid_remote_port = true;
+        VLOG_DBG("arg: %s->%s", node->name, (char*)node->data);
+    	if (!strcmp(node->name, "remote_ip")) {
+	    struct in_addr addr;
+	    if (lookup_ip(node->data, &addr)) {
+		VLOG_WARN("%s: bad 'remote_ip'", node->name);
+	    } else {
+		netdev_dev->remote_addr.sin_addr = addr;
+		netdev_dev->valid_remote_ip = true;
+	    }
+	} else if (!strcmp(node->name, "remote_port")) {
+	    netdev_dev->remote_addr.sin_port = htons(atoi(node->data));
+	    netdev_dev->valid_remote_port = true;
+	} else {
+	    VLOG_WARN("%s: unknown argument '%s'", 
+	    	netdev_dev_get_name(dev_), node->name);
+	}
     }
     return netdev_tunnel_connect(netdev_dev);        
 }
