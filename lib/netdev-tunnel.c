@@ -55,7 +55,9 @@ struct netdev_dev_tunnel {
 
 struct netdev_tunnel {
     struct netdev netdev;
-};
+} ;
+
+static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
 static struct shash tunnel_netdev_devs = SHASH_INITIALIZER(&tunnel_netdev_devs);
 
@@ -245,8 +247,8 @@ netdev_tunnel_recv(struct netdev *netdev_, void *buffer, size_t size)
             return retval <= size ? retval : -EMSGSIZE;
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
-                VLOG_WARN("error receiveing Ethernet packet on %s: %s",
-                    strerror(errno), netdev_get_name(netdev_));
+                VLOG_WARN_RL(&rl, "error receiveing Ethernet packet on %s: %s",
+                    netdev_get_name(netdev_), strerror(errno));
             }
             return -errno;
         }
@@ -269,19 +271,23 @@ netdev_tunnel_send(struct netdev *netdev_, const void *buffer, size_t size)
     struct netdev_dev_tunnel *dev = 
     	netdev_dev_tunnel_cast(netdev_get_dev(netdev_));
     if (!dev->connected)
-        return -EAGAIN;
+        return EAGAIN;
     for (;;) {
         ssize_t retval;
         retval = send(dev->sockfd, buffer, size, 0);
     	VLOG_DBG("%s: send(%x, %d) = %d", netdev_get_name(netdev_), buffer, size, retval);
         if (retval >= 0) {
-            return retval;
+	    if (retval != size) {
+	        VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%zd bytes of "
+		             "%zu) on %s", retval, size, netdev_get_name(netdev_));
+	    }
+            return 0;
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
-                VLOG_WARN("error sending Ethernet packet on %s: %s",
-                    strerror(errno), netdev_get_name(netdev_));
+                VLOG_WARN_RL(&rl, "error sending Ethernet packet on %s: %s",
+                    netdev_get_name(netdev_), strerror(errno));
             }
-            return -errno;
+            return errno;
         }
     }
 }
