@@ -9,7 +9,8 @@ dist_sbin_SCRIPTS += \
 	planetlab/scripts/create_port \
 	planetlab/scripts/del_bridge \
 	planetlab/scripts/del_port \
-	planetlab/scripts/Makefile
+	planetlab/scripts/Makefile \
+	planetlab/scripts/showgraph
 
 planetlab_pltap_ovs_pltap_ovs_SOURCES = \
 	planetlab/pltap-ovs/pltap-ovs.c \

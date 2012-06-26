@@ -1,0 +1,7 @@
+make graph.ps
+gv -watch -spartan graph.ps >/dev/null 2>&1 &
+while :
+do
+	inotifywait -e CREATE -e DELETE L
+	make graph.ps 
+done >/dev/null 2>&1

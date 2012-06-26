@@ -15,12 +15,11 @@ if [ -z "$1" ]; then
 	error "Usage: ${0##*/} <bridge name>" 
 fi
 
-# ensure ovs-vswitchd is running
+W=
 if ! is_switch_running; then
-	echo "ovs-vswitchd not runnig" >&2
-	exit 1
+	W="--no-wait"
 fi
 
-if ovs-vsctl bridge-exists "$1"; then
-	ovs-vsctl del-br $1
+if ovs-vsctl br-exists "$1"; then
+	ovs-vsctl $W del-br $1
 fi

@@ -55,17 +55,11 @@ L/%: cache/link.%@1 cache/link.%@2
 	@touch $@
 	@echo "Created link $*"
 
-del.%: del-iface.%@1 del-iface.%@2
+U/%: del-iface.%@1 del-iface.%@2
 	@rm -f L/$*
 	@echo "Deleted link $*"
 
-del-iface.%:
-	@echo "Removing interface for link $(call proj1,$*) from host $(call get,$*)"
-	@ssh -l $(SLICE) $(HOST_$(call get,$*)) \
-		sudo ovs-vsctl del-port L$(call proj1,$*)
-	@rm -f cache/iface.$* cache/link.$* cache/link.$(call opp,$*)
-
-del-bridge.%:
+del-bridge.%: cache/db.%
 	@echo "Deleting bridge on host $*"
 	@if [ -f cache/bridge.$* ]; then \
 		ssh -l $(SLICE) $(HOST_$*) \
@@ -76,23 +70,57 @@ del-bridge.%:
 	      cache/link.$*-*@?  cache/link.*-$*@?  \
 	      L/$*-*		 L/*-$*
 
+del-switchd.%: del-bridge.%
+	@echo "Shutting down switchd on host $*"
+	@if [ -f cache/switchd.$* ]; then \
+		ssh -l $(SLICE) $(HOST_$*) \
+			sudo ovs-appctl exit;\
+	 fi
+	@rm -f cache/switchd.$*
+
+del-db.%:
+	@echo "Shutting down db on host $*"
+	@if [ -f cache/db.$* ]; then \
+		ssh -l $(SLICE) $(HOST_$*) \
+			sudo ovs-appctl --target=$(VARRUN)/ovsdb-server.$$(cat cache/db.$*).ctl exit;\
+	 fi
+	@rm -f cache/db.$*
+
+shutdown: del-switches del-dbs
+
 graph.dot:
 	( echo "digraph $(SLICE) {"; ls L | sed 's/-/->/;s/$$/;/'; echo "}" ) > $@
 
 graph.ps: graph.dot
 	dot -Tps < $^ > $@	
 
-.PHONY: clean del-links graph.dot
+.PHONY: clean del-links graph.dot servers
 
 
 clean: $(addprefix del-,$(notdir $(wildcard cache/bridge.*)))
 
-del-links: $(addprefix del.,$(notdir $(wildcard L/*)))
+del-links: $(addprefix U/,$(notdir $(wildcard L/*)))
+
+switchds: $(wildcard cache/switchd.*)
+
+dbs: $(wildcard cache/db.*)
+
+del-switchds: $(addprefix del-,$(notdir $(wildcard cache/switchd.*)))
+
+del-dbs: $(addprefix del-,$(notdir $(wildcard cache/db.*)))
 
 .SECONDEXPANSION:
 
+del-iface.%: cache/db.$$(call get,%)
+	@echo "Removing interface for link $(call proj1,$*) from host $(call get,$*)"
+	@ssh -l $(SLICE) $(HOST_$(call get,$*)) \
+		sudo del_port L$(call proj1,$*)
+	@rm -f cache/iface.$* cache/link.$* cache/link.$(call opp,$*)
+
+
+
 cache/iface.%: cache/bridge.$$(call get,%)
-	@echo "Creating iterface for link $(call proj1,$*) on host $(call get,$*)"
+	@echo "Creating interface for link $(call proj1,$*) on host $(call get,$*)"
 	@ssh -l $(SLICE) $(HOST_$(call get,$*)) \
 		sudo create_port $$(cat $^) L$(call proj1,$*) > $@ \
 	 || { rm $@; exit 1; }
