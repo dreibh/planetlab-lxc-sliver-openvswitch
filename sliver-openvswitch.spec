@@ -2,7 +2,7 @@
 %define version 0.1
 %define taglevel 1
 
-%global __debug_package 0
+%define debug_package %{nil}
 
 %define release %{taglevel}%{?pldistro:.%{pldistro}}%{?date:.%{date}}
 
