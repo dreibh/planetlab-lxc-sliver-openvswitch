@@ -2,6 +2,8 @@ sbin_PROGRAMS += \
 	planetlab/pltap-ovs/pltap-ovs \
 	planetlab/vsysc/vsysc
 
+# this Makefile is not intended to go on the sliver image - esp. not in /usr/sbin
+#	planetlab/scripts/Makefile \
 dist_sbin_SCRIPTS += \
 	planetlab/scripts/start_ovsdb-server \
 	planetlab/scripts/start_vswitchd \
@@ -9,7 +11,6 @@ dist_sbin_SCRIPTS += \
 	planetlab/scripts/create_port \
 	planetlab/scripts/del_bridge \
 	planetlab/scripts/del_port \
-	planetlab/scripts/Makefile \
 	planetlab/scripts/showgraph
 
 planetlab_pltap_ovs_pltap_ovs_SOURCES = \
