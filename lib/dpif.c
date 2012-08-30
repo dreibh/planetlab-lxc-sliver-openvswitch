@@ -62,6 +62,7 @@ static const struct dpif_class *base_dpif_classes[] = {
     &dpif_linux_class,
 #endif
     &dpif_netdev_class,
+    &dpif_planetlab_class,
 };
 
 struct registered_dpif_class {

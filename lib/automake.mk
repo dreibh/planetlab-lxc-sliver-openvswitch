@@ -86,6 +86,7 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/multipath.c \
 	lib/multipath.h \
 	lib/netdev-dummy.c \
+	lib/netdev-tunnel.c \
 	lib/netdev-provider.h \
 	lib/netdev.c \
 	lib/netdev.h \
@@ -179,6 +180,8 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/timeval.h \
 	lib/token-bucket.c \
 	lib/token-bucket.h \
+	lib/tunalloc.c \
+	lib/tunalloc.h \
 	lib/type-props.h \
 	lib/unaligned.h \
 	lib/unicode.c \

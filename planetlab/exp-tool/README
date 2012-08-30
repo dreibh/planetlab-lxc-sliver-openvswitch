@@ -1,0 +1,159 @@
+* Introduction
+
+The Makefile contained in this directory can be used by an experimenter
+to dynamically create an overlay network in a PlanetLab slice, using the
+sliver-openvswitch distribution. At present, the Makefile only supports
+the creation of the basic topology (nodes and links). All the additional
+configuration of the bridges/switches (in particular, connecting the
+switches to OpenFlow controllers or enabling the STP) has to be done
+using the tools available in the Open vSwitch distribution. This may
+change in the future.
+
+The overlay network supported by the Makefile may consist of:
+
+- at most one Open vSwitch bridge per sliver;
+- at most a pair of tunnels between each pair of slivers.
+
+(Please note that these limitations are due to the simple naming scheme
+adopted by the Makefile, and are not limitations of sliver-openvswitch.)
+
+Each bridge is connected to a tap device in the sliver. The tap device
+has an IP address chosen by the experimenter. The idea is to connect
+all the tap devices through the overlay network made up of Open vSwitch
+bridges and tunnels among them.
+
+
+* Installation
+
+On each sliver we need to install sliver-openvswitch and obtain the
+following tags:
+
+NAME		VALUE
+vsys		fd_tuntap
+vsys		vif_up
+vsys		vif_down
+vsys_net	(some subnet)
+
+
+On the experimenter box we need:
+
+- GNU make
+- the openssh client
+- the host program (usually distributed in bind-tools)
+- (optionally) the dot program from the graphviz distribution
+
+Then, we can simply copy the Makefile in a working directory on the
+experimenter box. The directory must also contain subdirectories 'L'
+and 'cache':
+
+$ mkdir work
+$ cp /path/to/Makefile work
+$ cd work
+$ mkdir -p L cache
+
+
+* Example usage
+
+Assume we have a PlanetLab slice called 'myslice' which
+contains four nodes:
+
+1) onelab7.iet.unipi.it
+2) planet2.elte.hu
+3) planetlab2.ics.forth.gr
+4) planetlab2.urv.cat
+
+
+Assume we have reserverd subnet 10.0.9.0/24 using vsys_net.  We are
+goint to build the following overlay network:
+
+   10.0.9.1/24   10.0.9.2/24   10.0.9.3/24
+	1 ----------- 2 ------------ 3
+	              |
+	              |
+                      |
+		      4 
+		  10.0.9.4/24
+
+
+In the same directory were we have put the Makefile we create a 'conf.mk'
+file containing the following variables:
+
+SLICE=myslice
+HOST_1=onelab7.iet.unipi.it
+IP_1=10.0.9.1/24
+HOST_2=planet2.elte.hu
+IP_2=10.0.9.2/24
+HOST_3=planetlab2.ics.forth.gr
+IP_3=10.0.9.3/24
+HOST_4=planetlab2.urv.cat
+IP_4=10.0.9.4/24
+
+And a 'links' file containing the following lines:
+
+1-2
+2-3
+2-4
+
+Then, we can just type:
+
+$ make -j
+
+Assuming everything has been setup correctly, this command Will start
+the Open vSwitch servers, create the bridges and setup the tunnels. We
+can test that network is up by logging into a node and pinging some
+other node using the private subnet addresses:
+
+$ source conf.mk
+$ ssh -l $SLICE $HOST_1 ping 10.0.9.4
+
+Links can be destroyed and created dynamically. Assume we now want the
+the topology to match the following one:
+
+   10.0.9.1/24   10.0.9.2/24 
+	1 ----------- 2 
+	              |
+	              |
+                      |
+		      4 ----------- 3 
+		  10.0.9.4/24  10.0.9.3/24
+
+
+We can issue the following commands:
+
+$ make -j U/2-3      # unlink nodes 2 and 3
+$ make -j L/4-3      # link nodes 4 and 3
+
+The current state of the links is represented as a set of files in the 'L'
+directory.  If dot is installed, we can obtain a graphical representation
+of the topology by typing:
+
+$ make graph.ps
+
+Or we can save the current state in the 'links' file (so that we can
+recreate it later):
+
+$ ls L > links
+
+
+* Command reference
+
+All targets can be issued with the '-j' flag to (greatly) speed up operations.
+It may also be useful to use the '-k' flag, so that errors on some nodes do not
+stop the setup on the other nodes.
+
+
+all:        	do wathever is needed to setup all the links in the 'links' file.
+
+clean:		tear down all existing links
+
+L/N1-N2:    	setup a link between nodes HOST_N1 and HOST_N2
+
+U/N1-N2:	tear down the link (if it exists) between nodes HOST_N1
+		and HOST_N2
+
+del-bridge.N:	delete the bridge running on node HOST_N (this also tears down
+	        all links that have an endpoint in N)
+
+graph.ps	create a postscript file containing a (simple) graphical
+		representation
+		of the current topology

@@ -69,6 +69,7 @@
 #include "sset.h"
 #include "timer.h"
 #include "vlog.h"
+#include "tunalloc.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_linux);
 
@@ -732,7 +733,7 @@ netdev_linux_destroy(struct netdev_dev *netdev_dev_)
         netdev_dev->tc->ops->tc_destroy(netdev_dev->tc);
     }
 
-    if (class == &netdev_tap_class) {
+    if (class == &netdev_tap_class || class == &netdev_tap_pl_class) {
         destroy_tap(netdev_dev);
     }
     free(netdev_dev);
@@ -768,7 +769,7 @@ netdev_linux_open(struct netdev_dev *netdev_dev_, struct netdev **netdevp)
         }
     }
 
-    if (!strcmp(netdev_dev_get_type(netdev_dev_), "tap") &&
+    if (!strncmp(netdev_dev_get_type(netdev_dev_), "tap", 3) &&
         !netdev_dev->state.tap.opened) {
 
         /* We assume that the first user of the tap device is the primary user
@@ -793,7 +794,7 @@ netdev_linux_close(struct netdev *netdev_)
 {
     struct netdev_linux *netdev = netdev_linux_cast(netdev_);
 
-    if (netdev->fd > 0 && strcmp(netdev_get_type(netdev_), "tap")) {
+    if (netdev->fd > 0 && strncmp(netdev_get_type(netdev_), "tap", 3)) {
         close(netdev->fd);
     }
     free(netdev);
@@ -867,7 +868,8 @@ netdev_linux_recv(struct netdev *netdev_, void *data, size_t size)
     for (;;) {
         ssize_t retval;
 
-        retval = (netdev_->netdev_dev->netdev_class == &netdev_tap_class
+        retval = ((netdev_->netdev_dev->netdev_class == &netdev_tap_class ||
+                   netdev_->netdev_dev->netdev_class == &netdev_tap_pl_class)
                   ? read(netdev->fd, data, size)
                   : recv(netdev->fd, data, size, MSG_TRUNC));
         if (retval >= 0) {
@@ -900,7 +902,7 @@ netdev_linux_drain(struct netdev *netdev_)
     struct netdev_linux *netdev = netdev_linux_cast(netdev_);
     if (netdev->fd < 0) {
         return 0;
-    } else if (!strcmp(netdev_get_type(netdev_), "tap")) {
+    } else if (!strncmp(netdev_get_type(netdev_), "tap", 3)) {
         struct ifreq ifr;
         int error = netdev_linux_do_ioctl(netdev_get_name(netdev_), &ifr,
                                           SIOCGIFTXQLEN, "SIOCGIFTXQLEN");
@@ -1011,7 +1013,7 @@ netdev_linux_send_wait(struct netdev *netdev_)
     struct netdev_linux *netdev = netdev_linux_cast(netdev_);
     if (netdev->fd < 0) {
         /* Nothing to do. */
-    } else if (strcmp(netdev_get_type(netdev_), "tap")) {
+    } else if (strncmp(netdev_get_type(netdev_), "tap", 3)) {
         poll_fd_wait(netdev->fd, POLLOUT);
     } else {
         /* TAP device always accepts packets.*/
@@ -1786,6 +1788,51 @@ netdev_linux_get_qos_types(const struct netdev *netdev OVS_UNUSED,
     return 0;
 }
 
+static int
+netdev_linux_create_tap_pl(const struct netdev_class *class OVS_UNUSED,
+                        const char *name, struct netdev_dev **netdev_devp)
+{
+    struct netdev_dev_linux *netdev_dev;
+    struct tap_state *state;
+    char real_name[IFNAMSIZ];
+    int error;
+
+    netdev_dev = xzalloc(sizeof *netdev_dev);
+    state = &netdev_dev->state.tap;
+
+    error = cache_notifier_ref();
+    if (error) {
+        goto error;
+    }
+
+    /* Open tap device. */
+    state->fd = tun_alloc(IFF_TAP, real_name);
+    if (state->fd < 0) {
+        error = errno;
+        VLOG_WARN("tun_alloc(IFF_TAP, %s) failed: %s", name, strerror(error));
+        goto error_unref_notifier;
+    }
+    if (strcmp(name, real_name)) {
+        VLOG_WARN("tap_pl: requested %s, created %s", name, real_name);
+    }
+
+    /* Make non-blocking. */
+    error = set_nonblocking(state->fd);
+    if (error) {
+        goto error_unref_notifier;
+    }
+
+    netdev_dev_init(&netdev_dev->netdev_dev, name, &netdev_tap_pl_class);
+    *netdev_devp = &netdev_dev->netdev_dev;
+    return 0;
+
+error_unref_notifier:
+    cache_notifier_unref();
+error:
+    free(netdev_dev);
+    return error;
+}
+
 static const struct tc_ops *
 tc_lookup_ovs_name(const char *name)
 {
@@ -2377,6 +2424,13 @@ netdev_linux_update_flags(struct netdev *netdev, enum netdev_flags off,
     return error;
 }
 
+static int
+netdev_tap_pl_update_flags(struct netdev *netdev, enum netdev_flags off,
+                          enum netdev_flags on, enum netdev_flags *old_flagsp)
+{
+    return 0;
+}
+
 static unsigned int
 netdev_linux_change_seq(const struct netdev *netdev)
 {
@@ -2384,7 +2438,8 @@ netdev_linux_change_seq(const struct netdev *netdev)
 }
 
 #define NETDEV_LINUX_CLASS(NAME, CREATE, GET_STATS, SET_STATS,  \
-                           GET_FEATURES, GET_STATUS)            \
+                           GET_FEATURES, GET_STATUS,            \
+                           UPDATE_FLAGS)                        \
 {                                                               \
     NAME,                                                       \
                                                                 \
@@ -2442,7 +2497,7 @@ netdev_linux_change_seq(const struct netdev *netdev)
     GET_STATUS,                                                 \
     netdev_linux_arp_lookup,                                    \
                                                                 \
-    netdev_linux_update_flags,                                  \
+    UPDATE_FLAGS,                                               \
                                                                 \
     netdev_linux_change_seq                                     \
 }
@@ -2454,7 +2509,8 @@ const struct netdev_class netdev_linux_class =
         netdev_linux_get_stats,
         NULL,                    /* set_stats */
         netdev_linux_get_features,
-        netdev_linux_get_drv_info);
+        netdev_linux_get_drv_info,
+        netdev_linux_update_flags);
 
 const struct netdev_class netdev_tap_class =
     NETDEV_LINUX_CLASS(
@@ -2463,7 +2519,8 @@ const struct netdev_class netdev_tap_class =
         netdev_tap_get_stats,
         NULL,                   /* set_stats */
         netdev_linux_get_features,
-        netdev_linux_get_drv_info);
+        netdev_linux_get_drv_info,
+        netdev_linux_update_flags);
 
 const struct netdev_class netdev_internal_class =
     NETDEV_LINUX_CLASS(
@@ -2472,7 +2529,18 @@ const struct netdev_class netdev_internal_class =
         netdev_internal_get_stats,
         netdev_vport_set_stats,
         NULL,                  /* get_features */
-        netdev_internal_get_drv_info);
+        netdev_internal_get_drv_info,
+        netdev_linux_update_flags);
+
+const struct netdev_class netdev_tap_pl_class =
+    NETDEV_LINUX_CLASS(
+        "tap_pl",
+        netdev_linux_create_tap_pl,
+        netdev_tap_get_stats,
+        NULL,                   /* set_stats */
+        netdev_linux_get_features,
+        netdev_linux_get_drv_info,
+	netdev_tap_pl_update_flags);	
 
 /* HTB traffic control class. */
 
