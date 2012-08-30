@@ -17,8 +17,12 @@
 
 #define VSYS_TUNTAP "/vsys/fd_tuntap.control"
 
+
+int tun_alloc(int iftype, char *if_name);
+
 /* Reads vif FD from "fd", writes interface name to vif_name, and returns vif FD.
  * vif_name should be IFNAMSIZ chars long. */
+static
 int receive_vif_fd(int fd, char *vif_name)
 {
 	struct msghdr msg;
@@ -26,6 +30,7 @@ int receive_vif_fd(int fd, char *vif_name)
 	int rv;
 	size_t ccmsg[CMSG_SPACE(sizeof(int)) / sizeof(size_t)];
 	struct cmsghdr *cmsg;
+	unsigned char *data;
 
     /* Use IOV to read interface name */
 	iov.iov_base = vif_name;
@@ -56,7 +61,8 @@ int receive_vif_fd(int fd, char *vif_name)
 			cmsg->cmsg_type);
 		return -1;
 	}
-	return *(int*)CMSG_DATA(cmsg);
+	data = CMSG_DATA(cmsg);
+	return *(int*)data;
 }
 
 
