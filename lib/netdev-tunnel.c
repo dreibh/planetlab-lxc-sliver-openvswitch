@@ -164,15 +164,15 @@ netdev_tunnel_close(struct netdev *netdev_)
 }
 
 static int
-netdev_tunnel_get_config(struct netdev_dev *dev_, struct shash *args)
+netdev_tunnel_get_config(struct netdev_dev *dev_, struct smap *args)
 {
     struct netdev_dev_tunnel *netdev_dev = netdev_dev_tunnel_cast(dev_);
 
     if (netdev_dev->valid_remote_ip)
-    	shash_add(args, "remote_ip",
+    	smap_add(args, "remote_ip",
 	    xasprintf(IP_FMT, IP_ARGS(&netdev_dev->remote_addr.sin_addr)));
     if (netdev_dev->valid_remote_port)
-        shash_add(args, "remote_port",
+        smap_add(args, "remote_port",
 	    xasprintf("%"PRIu16, ntohs(netdev_dev->remote_addr.sin_port)));
     return 0;
 }
@@ -196,13 +196,13 @@ netdev_tunnel_connect(struct netdev_dev_tunnel *dev)
 }
 
 static int
-netdev_tunnel_set_config(struct netdev_dev *dev_, const struct shash *args)
+netdev_tunnel_set_config(struct netdev_dev *dev_, const struct smap *args)
 {
     struct netdev_dev_tunnel *netdev_dev = netdev_dev_tunnel_cast(dev_);
     struct shash_node *node;
 
     VLOG_DBG("tunnel_set_config(%s)", netdev_dev_get_name(dev_));
-    SHASH_FOR_EACH(node, args) {
+    SMAP_FOR_EACH(node, args) {
         VLOG_DBG("arg: %s->%s", node->name, (char*)node->data);
     	if (!strcmp(node->name, "remote_ip")) {
 	    struct in_addr addr;
