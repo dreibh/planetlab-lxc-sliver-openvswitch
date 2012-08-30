@@ -15,6 +15,8 @@
 
 #define OVS_SOCK "/var/run/pl-ovs.control"
 
+void send_fd(int p, int fd, char* vif_name);
+
 char *appname;
 
 #define ERROR(msg)								\
@@ -24,6 +26,7 @@ char *appname;
         } while (0)
 
 
+static
 int send_vif_fd(int sock_fd, int vif_fd, char *vif_name)
 {
         int retval;
@@ -105,12 +108,15 @@ int main(int argc, char* argv[])
         char if_name[IFNAMSIZ];
         int p[2]; // synchronization pipe
         char dummy;
+	int tun_fd;
+
+	(void) argc; // unused
 
         if (pipe(p) < 0) {
                 ERROR("pipe");
         }
 
-        int tun_fd = tun_alloc(IFF_TAP, if_name);
+        tun_fd = tun_alloc(IFF_TAP, if_name);
 
         appname = argv[0];
 
