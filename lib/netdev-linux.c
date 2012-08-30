@@ -2425,8 +2425,8 @@ netdev_linux_update_flags(struct netdev *netdev, enum netdev_flags off,
 }
 
 static int
-netdev_tap_pl_update_flags(struct netdev *netdev, enum netdev_flags off,
-                          enum netdev_flags on, enum netdev_flags *old_flagsp)
+netdev_tap_pl_update_flags(struct netdev *netdev OVS_UNUSED, enum netdev_flags off OVS_UNUSED,
+                          enum netdev_flags on OVS_UNUSED, enum netdev_flags *old_flagsp OVS_UNUSED)
 {
     return 0;
 }
