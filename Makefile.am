@@ -129,7 +129,7 @@ dist-hook-git: distfiles
 	  (cd datapath && $(MAKE) distfiles);				    \
 	  (cat distfiles; sed 's|^|datapath/|' datapath/distfiles) |	    \
 	    sort -u > all-distfiles;					    \
-	  (cd $(srcdir) && git ls-files) | grep -v '\.gitignore$$' |	    \
+	  (cd $(srcdir) && git ls-files) | grep -vFf $(srcdir)/.non-distfiles |	    \
 	    sort -u > all-gitfiles;					    \
 	  comm -1 -3 all-distfiles all-gitfiles > missing-distfiles;	    \
 	  if test -s missing-distfiles; then				    \
