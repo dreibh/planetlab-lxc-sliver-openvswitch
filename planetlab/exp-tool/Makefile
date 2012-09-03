@@ -34,19 +34,19 @@ cache/host.%:
 
 cache/db.%:
 	@echo "Starting db server on host $*"
-	@ssh -l $(SLICE) $(HOST_$*) \
+	@ssh -t -l $(SLICE) $(HOST_$*) \
 		sudo start_ovsdb-server > $@ \
 	 || { rm $@; exit 1; }
 
 cache/switchd.%: cache/db.%
 	@echo "Starting vswitchd on host $*"
-	@ssh -l $(SLICE) $(HOST_$*) \
+	@ssh -t -l $(SLICE) $(HOST_$*) \
 		sudo start_vswitchd > $@ \
 	 || { rm $@; exit 1; }
 
 cache/bridge.%: cache/switchd.%
 	@echo "Creating bridge on host $*"
-	@ssh -l $(SLICE) $(HOST_$*) \
+	@ssh -t -l $(SLICE) $(HOST_$*) \
 		sudo create_bridge $(IP_$*) > $@ \
 	 || { rm $@; exit 1; }
 
@@ -62,7 +62,7 @@ U/%: del-iface.%@1 del-iface.%@2
 del-bridge.%: cache/db.%
 	@echo "Deleting bridge on host $*"
 	@if [ -f cache/bridge.$* ]; then \
-		ssh -l $(SLICE) $(HOST_$*) \
+		ssh -t -l $(SLICE) $(HOST_$*) \
 			sudo del_bridge $$(cat cache/bridge.$*);\
 	 fi
 	@rm -f cache/bridge.$* \
@@ -73,7 +73,7 @@ del-bridge.%: cache/db.%
 del-switchd.%: del-bridge.%
 	@echo "Shutting down switchd on host $*"
 	@if [ -f cache/switchd.$* ]; then \
-		ssh -l $(SLICE) $(HOST_$*) \
+		ssh -t -l $(SLICE) $(HOST_$*) \
 			sudo ovs-appctl exit;\
 	 fi
 	@rm -f cache/switchd.$*
@@ -81,7 +81,7 @@ del-switchd.%: del-bridge.%
 del-db.%:
 	@echo "Shutting down db on host $*"
 	@if [ -f cache/db.$* ]; then \
-		ssh -l $(SLICE) $(HOST_$*) \
+		ssh -t -l $(SLICE) $(HOST_$*) \
 			sudo ovs-appctl --target=$(VARRUN)/ovsdb-server.$$(cat cache/db.$*).ctl exit;\
 	 fi
 	@rm -f cache/db.$*
@@ -113,7 +113,7 @@ del-dbs: $(addprefix del-,$(notdir $(wildcard cache/db.*)))
 
 del-iface.%: cache/db.$$(call get,%)
 	@echo "Removing interface for link $(call proj1,$*) from host $(call get,$*)"
-	@ssh -l $(SLICE) $(HOST_$(call get,$*)) \
+	@ssh -t -l $(SLICE) $(HOST_$(call get,$*)) \
 		sudo del_port L$(call proj1,$*)
 	@rm -f cache/iface.$* cache/link.$* cache/link.$(call opp,$*)
 
@@ -121,13 +121,13 @@ del-iface.%: cache/db.$$(call get,%)
 
 cache/iface.%: cache/bridge.$$(call get,%)
 	@echo "Creating interface for link $(call proj1,$*) on host $(call get,$*)"
-	@ssh -l $(SLICE) $(HOST_$(call get,$*)) \
+	@ssh -t -l $(SLICE) $(HOST_$(call get,$*)) \
 		sudo create_port $$(cat $^) L$(call proj1,$*) > $@ \
 	 || { rm $@; exit 1; }
 
 cache/link.%: cache/host.$$(call rget,$$*) cache/iface.% cache/iface.$$(call opp,$$*)
 	@echo "Setting port number of link $(call proj1,$*) on host $(call get,$*)"
-	@ssh -l $(SLICE) $(HOST_$(call get,$*)) \
+	@ssh -t -l $(SLICE) $(HOST_$(call get,$*)) \
 		sudo ovs-vsctl set interface L$(call proj1,$*) \
 			options:remote_ip=$$(cat cache/host.$(call rget,$*)) \
 			options:remote_port=$$(cat cache/iface.$(call opp,$*)) \
