@@ -1,0 +1,21 @@
+SLICE=inri_sl1
+
+# f12-32
+HOST_SENDER=vnode09.pl.sophia.inria.fr
+# f12-64
+HOST_MUX=vnode02.pl.sophia.inria.fr
+# f14-32
+HOST_END1=vnode10.pl.sophia.inria.fr
+# f14-64
+HOST_END2=vnode07.pl.sophia.inria.fr
+
+IP_SENDER=10.0.100.1
+IP_MUX=10.0.100.2
+IP_END1=10.0.100.3
+IP_END2=10.0.100.4
+
+# the ssh key to use; optional
+SSH_KEY=key_user.rsa
+
+# how to display nodes in messages
+display="$(call solve,$(1))"

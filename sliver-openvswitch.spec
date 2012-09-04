@@ -36,6 +36,8 @@ make
 
 %install
 make install DESTDIR=$RPM_BUILD_ROOT
+mkdir -p $RPM_BUILD_ROOT/usr/bin
+rsync -av planetlab/scripts/* $RPM_BUILD_ROOT/usr/bin
 
 %clean
 rm -rf $RPM_BUILD_ROOT

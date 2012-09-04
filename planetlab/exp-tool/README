@@ -1,13 +1,15 @@
 * Introduction
 
-The Makefile contained in this directory can be used by an experimenter
-to dynamically create an overlay network in a PlanetLab slice, using the
-sliver-openvswitch distribution. At present, the Makefile only supports
-the creation of the basic topology (nodes and links). All the additional
-configuration of the bridges/switches (in particular, connecting the
-switches to OpenFlow controllers or enabling the STP) has to be done
-using the tools available in the Open vSwitch distribution. This may
-change in the future.
+The Makefile contained in this directory can be used by an
+experimenter to dynamically create an overlay network in a PlanetLab
+slice, using the sliver-openvswitch distribution. At present, the
+Makefile only supports the creation of the basic topology (nodes and
+links). 
+All the additional configuration of the bridges/switches (in
+particular, connecting the switches to OpenFlow controllers or
+enabling the Spanning Tree Protocol aka STP) has to be done using the
+tools available in the Open vSwitch distribution. This may change in
+the future.
 
 The overlay network supported by the Makefile may consist of:
 
@@ -78,6 +80,7 @@ goint to build the following overlay network:
 In the same directory were we have put the Makefile we create a 'conf.mk'
 file containing the following variables:
 
+----------
 SLICE=myslice
 HOST_1=onelab7.iet.unipi.it
 IP_1=10.0.9.1/24
@@ -87,12 +90,20 @@ HOST_3=planetlab2.ics.forth.gr
 IP_3=10.0.9.3/24
 HOST_4=planetlab2.urv.cat
 IP_4=10.0.9.4/24
+----------
 
 And a 'links' file containing the following lines:
 
+----------
 1-2
 2-3
 2-4
+----------
+
+NOTE. In this example we have chosen to use numbers (1,2,3,4) as ids
+for nodes, you can use any other name that is convenient for you.
+See the example files in this directory for an example of this.
+
 
 Then, we can just type:
 
