@@ -54,7 +54,7 @@ all: $(addprefix L/,$(shell cat links))
 .PHONY: all
 
 nodes:
-	@echo $(foreach id,$(ALL_NODE_IDS),$(call display,$(id)))
+	@$(foreach id,$(ALL_NODE_IDS),echo $(id)=$(call display,$(id));)
 .PHONY: nodes
 
 sshchecks: $(foreach id,$(ALL_NODE_IDS),cache/sshcheck.$(id))
