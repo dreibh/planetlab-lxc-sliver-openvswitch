@@ -30,11 +30,11 @@ function wait_server () {
     server_name="$@"; shift
 
     ## wait for it to be up - xxx todo - could use a timeout of some kind
-    while [ ! -f "pid_file" ]; do
+    while [ ! -f "$pid_file" ]; do
 	echo "Waiting for $server_name to start..." >&2
 	sleep 1;
     done
-    cat "$PID_FILE"
+    cat "$pid_file"
 }
 
 
@@ -124,8 +124,8 @@ function del_port () {
 
 
 CONF_FILE=/usr/etc/openvswitch/conf.db
-RUN_DIR=/usr/var/run/openvswitch
-DB_PID_FILE=/usr/var/run/openvswitch/ovsdb-server.pid
+RUN_DIR=/var/run/openvswitch
+DB_PID_FILE=/var/run/openvswitch/ovsdb-server.pid
 
 function start_db () {
 
@@ -145,15 +145,16 @@ function start_db () {
 
     ## run the stuff
     if [ ! -f "$DB_PID_FILE" ]; then
-	ovsdb-server --remote=punix:/usr/var/run/openvswitch/db.sock \
+	ovsdb-server --remote=punix:/var/run/openvswitch/db.sock \
 	    --remote=db:Open_vSwitch,manager_options \
 	    --private-key=db:SSL,private_key \
 	    --certificate=db:SSL,certificate \
 	    --bootstrap-ca-cert=db:SSL,ca_cert \
 	    --pidfile=$DB_PID_FILE --detach
+    else
+	echo 'ovsdb-server appears to be running already, *not* starting'
     fi
-    pid=$(wait_server $DB_PID_FILE ovsdb-server)
-    echo $pid
+    wait_server $DB_PID_FILE ovsdb-server
 }
 
 SWITCH_PID_FILE=/usr/var/run/openvswitch/ovs-vswitchd.pid
@@ -162,8 +163,12 @@ function start_switch () {
 
     [[ -n "$@" ]] && error "Usage: $COMMAND start-switch"
 
-    [ -f "$SWITCH_PID_FILE" ] || ovs-vswitchd --pidfile=$SWITCH_PID_FILE --detach --log-file >/dev/null
-    wait_server $SWITCH_PID_FILE
+    if [ ! -f "$SWITCH_PID_FILE" ] ; then
+	ovs-vswitchd --pidfile=$SWITCH_PID_FILE --detach --log-file >/dev/null
+    else
+	echo 'ovs-vswitchd appears to be running already, *not* starting'
+    fi
+    wait_server $SWITCH_PID_FILE ovs-vswitchd
 }
 
 SUBCOMMANDS="create_bridge create_port del_bridge del_port start_db start_switch"
@@ -178,9 +183,7 @@ $SUBCOMMANDS"
 	# support dashes instead of underscores
 	subcommand=$(echo $subcommand | sed -e s,-,_,)
         found=""
-        for supported in $SUBCOMMANDS; do [ "$subcommand" = "$supported" ] && found=yes ; echo sc=X${subcommand}X sup=Y${supported}Y; done
-	echo subcommand=$subcommand
-	echo found=$found
+        for supported in $SUBCOMMANDS; do [ "$subcommand" = "$supported" ] && found=yes; done
 
 	[ -z "$found" ] && error $message
 
