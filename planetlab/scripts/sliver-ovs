@@ -1,0 +1,190 @@
+#!/bin/bash
+# -*-shell-mode-*-
+
+### expected to be run as root
+
+COMMAND=$0
+
+#################### helper functions
+
+function kill_pltap_ovs () {
+    killall pltap-ovs 2>/dev/null || :
+}
+
+function error {
+    echo "$@" >&2
+    exit 1
+}
+
+function is_switch_running {
+    ovs-appctl version >/dev/null 2>&1
+}
+
+function tapname () {
+    IP=$1; shift
+    echo $(ip addr show to "$IP/32" | perl -ne '/^\s*\d+:\s*([\w-]+):/ && print $1')
+}
+    
+function wait_server () {
+    pid_file=$1; shift
+    server_name="$@"; shift
+
+    ## wait for it to be up - xxx todo - could use a timeout of some kind
+    while [ ! -f "pid_file" ]; do
+	echo "Waiting for $server_name to start..." >&2
+	sleep 1;
+    done
+    cat "$PID_FILE"
+}
+
+
+function create_bridge () {
+    
+    [[ -z "$@" ]] && error "Usage: ${COMMAND} create-bridge <IP/PREFIX>"
+    ip_prefix=$1; shift
+    [[ -n "$@" ]] && error "Usage: ${COMMAND} create-bridge <IP/PREFIX>"
+
+    IP=${ip_prefix%/*}
+    PREFIX=${ip_prefix#*/}
+
+    set -e
+    # ensure ovs-vswitchd is running
+    is_switch_running || { echo "ovs-vswitchd not running" >&2 ; exit 1 ; }
+
+    # check whether the address is already assigned
+    TAPNAME=$(tapname $IP)
+    if [ ! -z "$TAPNAME" ]; then
+	if ovs-vsctl br-exists "$TAPNAME"; then
+	    echo $TAPNAME
+	    exit 0
+	fi
+	kill_pltap_ovs
+	error "$IP already assigned to $TAPNAME"
+    fi
+
+    # we're clear
+    TAPNAME=$(pltap-ovs)
+    # xxx wouldn't that be safer if left-aligned ?
+    vsysc vif_up << EOF
+	$TAPNAME
+	$IP
+	$PREFIX
+EOF
+    while ! ip link show up | egrep -q "^[0-9]+: +$TAPNAME:"; do
+	echo "Waiting for $TAPNAME to come UP..." >&2
+	sleep 1
+    done
+    ovs-vsctl add-br $TAPNAME -- set bridge $TAPNAME datapath_type=planetlab
+    echo $TAPNAME
+    return 0
+}
+
+function create_port () {
+
+    bridge=$1; shift
+    [[ -z "$@" ]] || error "$COMMAND create-port <bridge> <port>"
+    port=$1; shift
+    [[ -n "$@" ]] || error "$COMMAND create-port <bridge> <port>"
+
+    set -e
+    if ! ovs-vsctl list-ports "$bridge" | grep -q "^$port\$"; then
+	ovs-vsctl add-port "$bridge" "$port" -- set interface "$port" type=tunnel
+    fi
+    ovs-appctl netdev-tunnel/get-port "$port"
+    return 0
+}
+
+
+function del_bridge () {
+    
+    [[ -z "$@" ]] && error "Usage: ${COMMAND} del-bridge <bridge name>"
+    bridge_name=$1; shift
+    [[ -n "$@" ]] && error "Usage: ${COMMAND} del-bridge <bridge name>"
+
+    W=
+    is_switch_running || W="--no-wait"
+
+    if ovs-vsctl br-exists "$bridge_name"; then
+	ovs-vsctl $W del-br $bridge_name
+    fi
+    return 0
+}
+
+function del_port () {
+    [[ -z "$@" ]] && error "Usage: ${COMMAND} del-port <port>"
+    bridge_name=$1; shift
+    [[ -n "$@" ]] && error "Usage: ${COMMAND} del-port <port>"
+
+    set -e
+    if ovs-vsctl port-to-br "$1" >/dev/null 2>&1; then
+	ovs-vsctl del-port "$1"
+    fi
+    return 0
+}
+
+
+CONF_FILE=/usr/etc/openvswitch/conf.db
+RUN_DIR=/usr/var/run/openvswitch
+DB_PID_FILE=/usr/var/run/openvswitch/ovsdb-server.pid
+
+function start_db () {
+
+    [[ -n "$@" ]] && error "Usage: $COMMAND start-db"
+
+    ## init conf
+    conf_dir=$(dirname $CONF_FILE)
+    [ -d $conf_dir ] || mkdir -p $conf_dir
+    [ -f $CONF_FILE ] || ovsdb-tool create $CONF_FILE /usr/share/openvswitch/vswitch.ovsschema
+
+    ## init run
+    [ -d $RUN_DIR ] || mkdir -p $RUN_DIR
+
+    ## check 
+    [ -f $CONF_FILE ] || { echo "Could not initialize $CONF_FILE - exiting" ; exit 1 ; }
+    [ -d $RUN_DIR ] || { echo "Could not initialize $RUN_DIR - exiting" ; exit 1 ; }
+
+    ## run the stuff
+    if [ ! -f "$DB_PID_FILE" ]; then
+	ovsdb-server --remote=punix:/usr/var/run/openvswitch/db.sock \
+	    --remote=db:Open_vSwitch,manager_options \
+	    --private-key=db:SSL,private_key \
+	    --certificate=db:SSL,certificate \
+	    --bootstrap-ca-cert=db:SSL,ca_cert \
+	    --pidfile=$DB_PID_FILE --detach
+    fi
+    pid=$(wait_server $DB_PID_FILE ovsdb-server)
+    echo $pid
+}
+
+SWITCH_PID_FILE=/usr/var/run/openvswitch/ovs-vswitchd.pid
+
+function start_switch () {
+
+    [[ -n "$@" ]] && error "Usage: $COMMAND start-switch"
+
+    [ -f "$SWITCH_PID_FILE" ] || ovs-vswitchd --pidfile=$SWITCH_PID_FILE --detach --log-file >/dev/null
+    wait_server $SWITCH_PID_FILE
+}
+
+SUBCOMMANDS="create_bridge create_port del_bridge del_port start_db start_switch"
+
+function main () {
+	message="Usage: $COMMAND <subcommand> ...
+Supported subcommands are:
+$SUBCOMMANDS"
+	[[ -z "$@" ]] && error "$message"
+
+	subcommand=$1; shift
+	# support dashes instead of underscores
+	subcommand=$(echo $subcommand | sed -e s,-,_,)
+        found=""
+        for supported in $SUBCOMMANDS; do [ "$subcommand" = "$supported" ] && found=yes ; echo sc=X${subcommand}X sup=Y${supported}Y; done
+	echo subcommand=$subcommand
+	echo found=$found
+
+	[ -z "$found" ] && error $message
+
+	$subcommand "$@"
+}
+
+main "$@"
