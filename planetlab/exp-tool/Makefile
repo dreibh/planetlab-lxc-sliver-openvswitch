@@ -53,9 +53,12 @@ FORCE:
 all: $(addprefix L/,$(shell cat links))
 .PHONY: all
 
-nodes:
+# could also do make ++SLICE
+showslice: ++SLICE FORCE
+
+shownodes:
 	@$(foreach id,$(ALL_NODE_IDS),echo $(id)=$(call display,$(id));)
-.PHONY: nodes
+.PHONY: shownodes
 
 sshchecks: $(foreach id,$(ALL_NODE_IDS),cache/sshcheck.$(id))
 .PHONY: sshchecks
