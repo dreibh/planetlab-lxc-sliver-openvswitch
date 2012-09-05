@@ -72,7 +72,6 @@ cache/host.%:
 	@host $(HOST_$*) | sed -n 's/^.*has address *//p' > $@
 
 cache/db.%:
-<<<<<<< HEAD
 	@echo "Starting db server on $(call display,$*)"
 	@$(SSH) $(HOST_$*) sudo start_ovsdb-server > $@ \
 	 || { rm $@; exit 1; }
