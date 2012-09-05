@@ -170,7 +170,7 @@ SUBCOMMANDS="create_bridge create_port del_bridge del_port start_db start_switch
 
 function main () {
 	message="Usage: $COMMAND <subcommand> ...
-Supported subcommands are:
+Supported subcommands are (dash or underscore is the same):
 $SUBCOMMANDS"
 	[[ -z "$@" ]] && error "$message"
 
