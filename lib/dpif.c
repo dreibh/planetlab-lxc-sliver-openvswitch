@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -411,18 +411,26 @@ dpif_get_dp_stats(const struct dpif *dpif, struct dpif_dp_stats *stats)
     return error;
 }
 
-/* Attempts to add 'netdev' as a port on 'dpif'.  If successful, returns 0 and
- * sets '*port_nop' to the new port's port number (if 'port_nop' is non-null).
- * On failure, returns a positive errno value and sets '*port_nop' to
- * UINT16_MAX (if 'port_nop' is non-null). */
+/* Attempts to add 'netdev' as a port on 'dpif'.  If 'port_nop' is
+ * non-null and its value is not UINT16_MAX, then attempts to use the
+ * value as the port number.
+ *
+ * If successful, returns 0 and sets '*port_nop' to the new port's port
+ * number (if 'port_nop' is non-null).  On failure, returns a positive
+ * errno value and sets '*port_nop' to UINT16_MAX (if 'port_nop' is
+ * non-null). */
 int
 dpif_port_add(struct dpif *dpif, struct netdev *netdev, uint16_t *port_nop)
 {
     const char *netdev_name = netdev_get_name(netdev);
-    uint16_t port_no;
+    uint16_t port_no = UINT16_MAX;
     int error;
 
     COVERAGE_INC(dpif_port_add);
+
+    if (port_nop) {
+        port_no = *port_nop;
+    }
 
     error = dpif->dpif_class->port_add(dpif, netdev, &port_no);
     if (!error) {
@@ -541,6 +549,9 @@ dpif_get_max_ports(const struct dpif *dpif)
 /* Returns the Netlink PID value to supply in OVS_ACTION_ATTR_USERSPACE actions
  * as the OVS_USERSPACE_ATTR_PID attribute's value, for use in flows whose
  * packets arrived on port 'port_no'.
+ *
+ * A 'port_no' of UINT16_MAX is a special case: it returns a reserved PID, not
+ * allocated to any port, that the client may use for special purposes.
  *
  * The return value is only meaningful when DPIF_UC_ACTION has been enabled in
  * the 'dpif''s listen mask.  It is allowed to change when DPIF_UC_ACTION is
@@ -675,15 +686,16 @@ dpif_port_poll_wait(const struct dpif *dpif)
 }
 
 /* Extracts the flow stats for a packet.  The 'flow' and 'packet'
- * arguments must have been initialized through a call to flow_extract(). */
+ * arguments must have been initialized through a call to flow_extract().
+ * 'used' is stored into stats->used. */
 void
 dpif_flow_stats_extract(const struct flow *flow, const struct ofpbuf *packet,
-                        struct dpif_flow_stats *stats)
+                        long long int used, struct dpif_flow_stats *stats)
 {
     stats->tcp_flags = packet_get_tcp_flags(packet, flow);
     stats->n_bytes = packet->size;
     stats->n_packets = 1;
-    stats->used = time_msec();
+    stats->used = used;
 }
 
 /* Appends a human-readable representation of 'stats' to 's'. */

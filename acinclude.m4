@@ -1,6 +1,6 @@
 # -*- autoconf -*-
 
-# Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira Networks.
+# Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -247,6 +247,7 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
   OVS_GREP_IFELSE([$KSRC/include/linux/skbuff.h], [skb_warn_if_lro],
                   [OVS_DEFINE([HAVE_SKB_WARN_LRO])])
   OVS_GREP_IFELSE([$KSRC/include/linux/skbuff.h], [consume_skb])
+  OVS_GREP_IFELSE([$KSRC/include/linux/skbuff.h], [skb_frag_page])
 
   OVS_GREP_IFELSE([$KSRC/include/linux/string.h], [kmemdup], [],
                   [OVS_GREP_IFELSE([$KSRC/include/linux/slab.h], [kmemdup])])
@@ -285,6 +286,17 @@ AC_DEFUN([OVS_CHECK_IF_PACKET],
    if test "$HAVE_IF_PACKET" = yes; then
       AC_DEFINE([HAVE_IF_PACKET], [1],
                 [Define to 1 if net/if_packet.h is available.])
+   fi])
+
+dnl Checks for net/if_dl.h.
+AC_DEFUN([OVS_CHECK_IF_DL],
+  [AC_CHECK_HEADER([net/if_dl.h],
+                   [HAVE_IF_DL=yes],
+                   [HAVE_IF_DL=no])
+   AM_CONDITIONAL([HAVE_IF_DL], [test "$HAVE_IF_DL" = yes])
+   if test "$HAVE_IF_DL" = yes; then
+      AC_DEFINE([HAVE_IF_DL], [1],
+                [Define to 1 if net/if_dl.h is available.])
    fi])
 
 dnl Checks for buggy strtok_r.
@@ -393,7 +405,7 @@ dnl OVS_MAKE_HAS_IF([if-true], [if-false])
 dnl
 dnl Checks whether make has the GNU make $(if condition,then,else) extension.
 dnl Runs 'if-true' if so, 'if-false' otherwise.
-AC_DEFUN([OVS_MAKE_HAS_IF],
+AC_DEFUN([OVS_CHECK_MAKE_IF],
   [AC_CACHE_CHECK(
      [whether ${MAKE-make} has GNU make \$(if) extension],
      [ovs_cv_gnu_make_if],
@@ -413,8 +425,28 @@ EOF
         ovs_cv_gnu_make_if=yes
       else
         ovs_cv_gnu_make_if=no
-      fi])
-   AS_IF([test $ovs_cv_gnu_make_if = yes], [$1], [$2])])
+      fi])])
+
+dnl OVS_CHECK_GNU_MAKE
+dnl
+dnl Checks whether make is GNU make (because Linux kernel Makefiles
+dnl only work with GNU make).
+AC_DEFUN([OVS_CHECK_GNU_MAKE],
+  [AC_CACHE_CHECK(
+     [whether ${MAKE-make} is GNU make],
+     [ovs_cv_gnu_make],
+     [rm -f conftest.out
+      AS_ECHO(["$as_me:$LINENO: invoking ${MAKE-make} --version:"]) >&AS_MESSAGE_LOG_FD 2>&1
+      ${MAKE-make} --version >conftest.out 2>&1
+      cat conftest.out >&AS_MESSAGE_LOG_FD 2>&1
+      result=`cat conftest.out`
+      rm -f conftest.mk conftest.out
+
+      case $result in # (
+        GNU*) ovs_cv_gnu_make=yes ;; # (
+        *) ovs_cv_gnu_make=no ;;
+      esac])
+   AM_CONDITIONAL([GNU_MAKE], [test $ovs_cv_gnu_make = yes])])
 
 dnl OVS_CHECK_SPARSE_TARGET
 dnl
@@ -438,8 +470,10 @@ AC_DEFUN([OVS_CHECK_SPARSE_TARGET],
 dnl OVS_ENABLE_SPARSE
 AC_DEFUN([OVS_ENABLE_SPARSE],
   [AC_REQUIRE([OVS_CHECK_SPARSE_TARGET])
-   OVS_MAKE_HAS_IF(
-     [AC_CONFIG_COMMANDS_PRE(
-        [: ${SPARSE=sparse}
-         AC_SUBST([SPARSE])
-         CC='$(if $(C),REAL_CC="'"$CC"'" CHECK="$(SPARSE) -I $(top_srcdir)/include/sparse $(SPARSEFLAGS)" cgcc $(CGCCFLAGS),'"$CC"')'])])])
+   AC_REQUIRE([OVS_CHECK_MAKE_IF])
+   : ${SPARSE=sparse}
+   AC_SUBST([SPARSE])
+   AC_CONFIG_COMMANDS_PRE(
+     [if test $ovs_cv_gnu_make_if = yes; then
+        CC='$(if $(C),REAL_CC="'"$CC"'" CHECK="$(SPARSE) -I $(top_srcdir)/include/sparse $(SPARSEFLAGS)" cgcc $(CGCCFLAGS),'"$CC"')'
+      fi])])

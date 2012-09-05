@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -793,6 +793,7 @@ jsonrpc_session_open_unreliably(struct jsonrpc *jsonrpc)
     reconnect_set_name(s->reconnect, jsonrpc_get_name(jsonrpc));
     reconnect_set_max_tries(s->reconnect, 0);
     reconnect_connected(s->reconnect, time_msec());
+    s->dscp = 0;
     s->rpc = jsonrpc;
     s->stream = NULL;
     s->pstream = NULL;
@@ -1058,5 +1059,8 @@ void
 jsonrpc_session_set_dscp(struct jsonrpc_session *s,
                          uint8_t dscp)
 {
-    s->dscp = dscp;
+    if (s->dscp != dscp) {
+        s->dscp = dscp;
+        jsonrpc_session_force_reconnect(s);
+    }
 }

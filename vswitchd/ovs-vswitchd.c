@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira Networks
+/* Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,12 +34,14 @@
 #include "dpif.h"
 #include "dummy.h"
 #include "leak-checker.h"
+#include "memory.h"
 #include "netdev.h"
 #include "openflow/openflow.h"
 #include "ovsdb-idl.h"
 #include "poll-loop.h"
 #include "process.h"
 #include "signals.h"
+#include "simap.h"
 #include "stream-ssl.h"
 #include "stream.h"
 #include "stress.h"
@@ -50,8 +52,13 @@
 #include "vconn.h"
 #include "vlog.h"
 #include "lib/vswitch-idl.h"
+#include "worker.h"
 
 VLOG_DEFINE_THIS_MODULE(vswitchd);
+
+/* --mlockall: If set, locks all process memory into physical RAM, preventing
+ * the kernel from paging any of its memory to disk. */
+static bool want_mlockall;
 
 static unixctl_cb_func ovs_vswitchd_exit;
 
@@ -79,6 +86,18 @@ main(int argc, char *argv[])
 
     daemonize_start();
 
+    if (want_mlockall) {
+#ifdef HAVE_MLOCKALL
+        if (mlockall(MCL_CURRENT | MCL_FUTURE)) {
+            VLOG_ERR("mlockall failed: %s", strerror(errno));
+        }
+#else
+        VLOG_ERR("mlockall not supported on this system");
+#endif
+    }
+
+    worker_start();
+
     retval = unixctl_server_create(unixctl_path, &unixctl);
     if (retval) {
         exit(EXIT_FAILURE);
@@ -90,8 +109,18 @@ main(int argc, char *argv[])
 
     exiting = false;
     while (!exiting) {
+        worker_run();
         if (signal_poll(sighup)) {
             vlog_reopen_log_file();
+        }
+        memory_run();
+        if (memory_should_report()) {
+            struct simap usage;
+
+            simap_init(&usage);
+            bridge_get_memory_usage(&usage);
+            memory_report(&usage);
+            simap_destroy(&usage);
         }
         bridge_run_fast();
         bridge_run();
@@ -99,7 +128,9 @@ main(int argc, char *argv[])
         unixctl_server_run(unixctl);
         netdev_run();
 
+        worker_wait();
         signal_wait(sighup);
+        memory_wait();
         bridge_wait();
         unixctl_server_wait(unixctl);
         netdev_wait();
@@ -163,13 +194,7 @@ parse_options(int argc, char *argv[], char **unixctl_pathp)
             exit(EXIT_SUCCESS);
 
         case OPT_MLOCKALL:
-#ifdef HAVE_MLOCKALL
-            if (mlockall(MCL_CURRENT | MCL_FUTURE)) {
-                VLOG_ERR("mlockall failed: %s", strerror(errno));
-            }
-#else
-            VLOG_ERR("mlockall not supported on this system");
-#endif
+            want_mlockall = true;
             break;
 
         case OPT_UNIXCTL:

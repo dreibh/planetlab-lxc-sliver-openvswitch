@@ -33,7 +33,7 @@ else
 SSH_KEY_OPTION ?= -i $(SSH_KEY)
 endif
 
-SSH_OPTIONS ?= $(SSH_KEY_OPTION) -l $(SLICE)
+SSH_OPTIONS ?= $(SSH_KEY_OPTION) -l $(SLICE) -t
 SSH = ssh $(SSH_OPTIONS)
 
 ALL_NODE_IDS=$(shell (cut -d- -f1 < links; cut -d- -f2 < links) | sort -u)
@@ -72,6 +72,7 @@ cache/host.%:
 	@host $(HOST_$*) | sed -n 's/^.*has address *//p' > $@
 
 cache/db.%:
+<<<<<<< HEAD
 	@echo "Starting db server on $(call display,$*)"
 	@$(SSH) $(HOST_$*) sudo start_ovsdb-server > $@ \
 	 || { rm $@; exit 1; }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,8 +21,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "openflow/openflow.h"
+
 struct ds;
-struct ofp_header;
+struct ofpbuf;
 
 /* Error codes.
  *
@@ -129,6 +131,20 @@ enum ofperr {
      * valid. */
     OFPERR_NXBRC_BAD_REASON,
 
+    /* NX1.0+(1,517).  The 'id' in an NXST_FLOW_MONITOR request is the same as
+     * an existing monitor id (or two monitors in the same NXST_FLOW_MONITOR
+     * request have the same 'id').  */
+    OFPERR_NXBRC_FM_DUPLICATE_ID,
+
+    /* NX1.0+(1,518).  The 'flags' in an NXST_FLOW_MONITOR request either does
+     * not specify at least one of the NXFMF_ADD, NXFMF_DELETE, or NXFMF_MODIFY
+     * flags, or specifies a flag bit that is not defined. */
+    OFPERR_NXBRC_FM_BAD_FLAGS,
+
+    /* NX1.0+(1,519).  The 'id' in an NXT_FLOW_MONITOR_CANCEL request is not
+     * the id of any existing monitor. */
+    OFPERR_NXBRC_FM_BAD_ID,
+
 /* ## ---------------- ## */
 /* ## OFPET_BAD_ACTION ## */
 /* ## ---------------- ## */
@@ -193,7 +209,7 @@ enum ofperr {
 /* ## --------------------- ## */
 
     /* OF1.1+(3).  Error in instruction list. */
-    OFPERR_OFPET_BAD_INSTRUCTION,
+    OFPERR_OFPIT_BAD_INSTRUCTION,
 
     /* OF1.1+(3,0).  Unknown instruction. */
     OFPERR_OFPBIC_UNKNOWN_INST,
@@ -221,6 +237,9 @@ enum ofperr {
 
     /* OF1.2+(3,8).  Permissions error. */
     OFPERR_OFPBIC_EPERM,
+
+    /* NX1.1+(3,256).  Duplicate instruction type in set of instructions. */
+    OFPERR_NXBIC_DUP_TYPE,
 
 /* ## --------------- ## */
 /* ## OFPET_BAD_MATCH ## */
@@ -320,6 +339,9 @@ enum ofperr {
      * "command" field of struct ofp_flow_mod, when the nxt_flow_mod_table_id
      * extension is enabled. */
     OFPERR_NXFMFC_BAD_TABLE_ID,
+
+    /* NX1.0+(3,258).  'out_group' specified but groups not yet supported. */
+    OFPERR_NXFMFC_GROUPS_NOT_SUPPORTED,
 
 /* ## ---------------------- ## */
 /* ## OFPET_GROUP_MOD_FAILED ## */
@@ -466,7 +488,6 @@ enum ofperr {
     /* NX1.0(1,513), NX1.1(1,513), OF1.2+(11,2).  Invalid role. */
     OFPERR_OFPRRFC_BAD_ROLE,
 
-
 /* ## ------------------ ## */
 /* ## OFPET_EXPERIMENTER ## */
 /* ## ------------------ ## */
@@ -475,29 +496,24 @@ enum ofperr {
     OFPERR_OFPET_EXPERIMENTER,
 };
 
-extern const struct ofperr_domain ofperr_of10;
-extern const struct ofperr_domain ofperr_of11;
-extern const struct ofperr_domain ofperr_of12;
-
-const struct ofperr_domain *ofperr_domain_from_version(uint8_t version);
-const char *ofperr_domain_get_name(const struct ofperr_domain *);
+const char *ofperr_domain_get_name(enum ofp_version);
 
 bool ofperr_is_valid(enum ofperr);
 bool ofperr_is_category(enum ofperr);
 bool ofperr_is_nx_extension(enum ofperr);
-bool ofperr_is_encodable(enum ofperr, const struct ofperr_domain *);
+bool ofperr_is_encodable(enum ofperr, enum ofp_version);
 
-enum ofperr ofperr_decode(const struct ofperr_domain *,
-                          uint16_t type, uint16_t code);
-enum ofperr ofperr_decode_type(const struct ofperr_domain *, uint16_t type);
+enum ofperr ofperr_decode(enum ofp_version, uint16_t type, uint16_t code);
+enum ofperr ofperr_decode_type(enum ofp_version, uint16_t type);
 enum ofperr ofperr_from_name(const char *);
 
-enum ofperr ofperr_decode_msg(const struct ofp_header *, size_t *payload_ofs);
+enum ofperr ofperr_decode_msg(const struct ofp_header *,
+                              struct ofpbuf *payload);
 struct ofpbuf *ofperr_encode_reply(enum ofperr, const struct ofp_header *);
-struct ofpbuf *ofperr_encode_hello(enum ofperr, const struct ofperr_domain *,
+struct ofpbuf *ofperr_encode_hello(enum ofperr, enum ofp_version ofp_version,
                                    const char *);
-int ofperr_get_type(enum ofperr, const struct ofperr_domain *);
-int ofperr_get_code(enum ofperr, const struct ofperr_domain *);
+int ofperr_get_type(enum ofperr, enum ofp_version);
+int ofperr_get_code(enum ofperr, enum ofp_version);
 
 const char *ofperr_get_name(enum ofperr);
 const char *ofperr_get_description(enum ofperr);

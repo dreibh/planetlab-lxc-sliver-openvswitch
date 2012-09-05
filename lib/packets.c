@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@
 #include "byte-order.h"
 #include "csum.h"
 #include "flow.h"
+#include "hmap.h"
 #include "dynamic-string.h"
 #include "ofpbuf.h"
 
@@ -43,6 +44,83 @@ dpid_from_string(const char *s, uint64_t *dpidp)
     return *dpidp != 0;
 }
 
+/* Returns true if 'ea' is a reserved address, that a bridge must never
+ * forward, false otherwise.
+ *
+ * If you change this function's behavior, please update corresponding
+ * documentation in vswitch.xml at the same time. */
+bool
+eth_addr_is_reserved(const uint8_t ea[ETH_ADDR_LEN])
+{
+    struct eth_addr_node {
+        struct hmap_node hmap_node;
+        uint64_t ea64;
+    };
+
+    static struct eth_addr_node nodes[] = {
+        /* STP, IEEE pause frames, and other reserved protocols. */
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000000ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000001ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000002ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000003ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000004ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000005ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000006ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000007ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000008ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000009ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c200000aULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c200000bULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c200000cULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c200000dULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c200000eULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0108c200000fULL },
+
+        /* Extreme protocols. */
+        { HMAP_NODE_NULL_INITIALIZER, 0x00e02b000000ULL }, /* EDP. */
+        { HMAP_NODE_NULL_INITIALIZER, 0x00e02b000004ULL }, /* EAPS. */
+        { HMAP_NODE_NULL_INITIALIZER, 0x00e02b000006ULL }, /* EAPS. */
+
+        /* Cisco protocols. */
+        { HMAP_NODE_NULL_INITIALIZER, 0x01000c000000ULL }, /* ISL. */
+        { HMAP_NODE_NULL_INITIALIZER, 0x01000cccccccULL }, /* PAgP, UDLD, CDP,
+                                                            * DTP, VTP. */
+        { HMAP_NODE_NULL_INITIALIZER, 0x01000ccccccdULL }, /* PVST+. */
+        { HMAP_NODE_NULL_INITIALIZER, 0x01000ccdcdcdULL }, /* STP Uplink Fast,
+                                                            * FlexLink. */
+
+        /* Cisco CFM. */
+        { HMAP_NODE_NULL_INITIALIZER, 0x01000cccccc0ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x01000cccccc1ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x01000cccccc2ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x01000cccccc3ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x01000cccccc4ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x01000cccccc5ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x01000cccccc6ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x01000cccccc7ULL },
+    };
+
+    static struct hmap addrs = HMAP_INITIALIZER(&addrs);
+    struct eth_addr_node *node;
+    uint64_t ea64;
+
+    if (hmap_is_empty(&addrs)) {
+        for (node = nodes; node < &nodes[ARRAY_SIZE(nodes)]; node++) {
+            hmap_insert(&addrs, &node->hmap_node,
+                        hash_2words(node->ea64, node->ea64 >> 32));
+        }
+    }
+
+    ea64 = eth_addr_to_uint64(ea);
+    HMAP_FOR_EACH_IN_BUCKET (node, hmap_node, hash_2words(ea64, ea64 >> 32),
+                             &addrs) {
+        if (node->ea64 == ea64) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool
 eth_addr_from_string(const char *s, uint8_t ea[ETH_ADDR_LEN])
 {
@@ -55,27 +133,37 @@ eth_addr_from_string(const char *s, uint8_t ea[ETH_ADDR_LEN])
     }
 }
 
-/* Fills 'b' with an 802.2 SNAP packet with Ethernet source address 'eth_src',
- * the Nicira OUI as SNAP organization and 'snap_type' as SNAP type.  The text
- * string in 'tag' is enclosed as the packet payload.
- *
+/* Fills 'b' with a Reverse ARP packet with Ethernet source address 'eth_src'.
  * This function is used by Open vSwitch to compose packets in cases where
- * context is important but content doesn't (or shouldn't) matter.  For this
- * purpose, 'snap_type' should be a random number and 'tag' should be an
- * English phrase that explains the purpose of the packet.  (The English phrase
- * gives hapless admins running Wireshark the opportunity to figure out what's
- * going on.) */
+ * context is important but content doesn't (or shouldn't) matter.
+ *
+ * The returned packet has enough headroom to insert an 802.1Q VLAN header if
+ * desired. */
 void
-compose_benign_packet(struct ofpbuf *b, const char *tag, uint16_t snap_type,
-                      const uint8_t eth_src[ETH_ADDR_LEN])
+compose_rarp(struct ofpbuf *b, const uint8_t eth_src[ETH_ADDR_LEN])
 {
-    size_t tag_size = strlen(tag) + 1;
-    char *payload;
+    struct eth_header *eth;
+    struct arp_eth_header *arp;
 
-    payload = snap_compose(b, eth_addr_broadcast, eth_src, 0x002320, snap_type,
-                           tag_size + ETH_ADDR_LEN);
-    memcpy(payload, tag, tag_size);
-    memcpy(payload + tag_size, eth_src, ETH_ADDR_LEN);
+    ofpbuf_clear(b);
+    ofpbuf_prealloc_tailroom(b, ETH_HEADER_LEN + VLAN_HEADER_LEN
+                             + ARP_ETH_HEADER_LEN);
+    ofpbuf_reserve(b, VLAN_HEADER_LEN);
+    eth = ofpbuf_put_uninit(b, sizeof *eth);
+    memcpy(eth->eth_dst, eth_addr_broadcast, ETH_ADDR_LEN);
+    memcpy(eth->eth_src, eth_src, ETH_ADDR_LEN);
+    eth->eth_type = htons(ETH_TYPE_RARP);
+
+    arp = ofpbuf_put_uninit(b, sizeof *arp);
+    arp->ar_hrd = htons(ARP_HRD_ETHERNET);
+    arp->ar_pro = htons(ARP_PRO_IP);
+    arp->ar_hln = sizeof arp->ar_sha;
+    arp->ar_pln = sizeof arp->ar_spa;
+    arp->ar_op = htons(ARP_OP_RARP);
+    memcpy(arp->ar_sha, eth_src, ETH_ADDR_LEN);
+    arp->ar_spa = htonl(0);
+    memcpy(arp->ar_tha, eth_src, ETH_ADDR_LEN);
+    arp->ar_tpa = htonl(0);
 }
 
 /* Insert VLAN header according to given TCI. Packet passed must be Ethernet
@@ -148,13 +236,36 @@ eth_from_hex(const char *hex, struct ofpbuf **packetp)
     return NULL;
 }
 
+void
+eth_format_masked(const uint8_t eth[ETH_ADDR_LEN],
+                  const uint8_t mask[ETH_ADDR_LEN], struct ds *s)
+{
+    ds_put_format(s, ETH_ADDR_FMT, ETH_ADDR_ARGS(eth));
+    if (mask && !eth_mask_is_exact(mask)) {
+        ds_put_format(s, "/"ETH_ADDR_FMT, ETH_ADDR_ARGS(mask));
+    }
+}
+
+void
+eth_addr_bitand(const uint8_t src[ETH_ADDR_LEN],
+                const uint8_t mask[ETH_ADDR_LEN],
+                uint8_t dst[ETH_ADDR_LEN])
+{
+    int i;
+
+    for (i = 0; i < ETH_ADDR_LEN; i++) {
+        dst[i] = src[i] & mask[i];
+    }
+}
+
 /* Given the IP netmask 'netmask', returns the number of bits of the IP address
- * that it specifies, that is, the number of 1-bits in 'netmask'.  'netmask'
- * must be a CIDR netmask (see ip_is_cidr()). */
+ * that it specifies, that is, the number of 1-bits in 'netmask'.
+ *
+ * If 'netmask' is not a CIDR netmask (see ip_is_cidr()), the return value will
+ * still be in the valid range but isn't otherwise meaningful. */
 int
 ip_count_cidr_bits(ovs_be32 netmask)
 {
-    assert(ip_is_cidr(netmask));
     return 32 - ctz(ntohl(netmask));
 }
 
@@ -252,15 +363,16 @@ ipv6_create_mask(int mask)
 
 /* Given the IPv6 netmask 'netmask', returns the number of bits of the IPv6
  * address that it specifies, that is, the number of 1-bits in 'netmask'.
- * 'netmask' must be a CIDR netmask (see ipv6_is_cidr()). */
+ * 'netmask' must be a CIDR netmask (see ipv6_is_cidr()).
+ *
+ * If 'netmask' is not a CIDR netmask (see ipv6_is_cidr()), the return value
+ * will still be in the valid range but isn't otherwise meaningful. */
 int
 ipv6_count_cidr_bits(const struct in6_addr *netmask)
 {
     int i;
     int count = 0;
     const uint8_t *netmaskp = &netmask->s6_addr[0];
-
-    assert(ipv6_is_cidr(netmask));
 
     for (i=0; i<16; i++) {
         if (netmaskp[i] == 0xff) {
@@ -335,49 +447,6 @@ eth_compose(struct ofpbuf *b, const uint8_t eth_dst[ETH_ADDR_LEN],
     b->l3 = data;
 
     return data;
-}
-
-/* Populates 'b' with an Ethernet LLC+SNAP packet headed with the given
- * 'eth_dst', 'eth_src', 'snap_org', and 'snap_type'.  A payload of 'size'
- * bytes is allocated in 'b' and returned.  This payload may be populated with
- * appropriate information by the caller.
- *
- * The returned packet has enough headroom to insert an 802.1Q VLAN header if
- * desired. */
-void *
-snap_compose(struct ofpbuf *b, const uint8_t eth_dst[ETH_ADDR_LEN],
-             const uint8_t eth_src[ETH_ADDR_LEN],
-             unsigned int oui, uint16_t snap_type, size_t size)
-{
-    struct eth_header *eth;
-    struct llc_snap_header *llc_snap;
-    void *payload;
-
-    /* Compose basic packet structure.  (We need the payload size to stick into
-     * the 802.2 header.) */
-    ofpbuf_clear(b);
-    ofpbuf_prealloc_tailroom(b, ETH_HEADER_LEN + VLAN_HEADER_LEN
-                             + LLC_SNAP_HEADER_LEN + size);
-    ofpbuf_reserve(b, VLAN_HEADER_LEN);
-    eth = ofpbuf_put_zeros(b, ETH_HEADER_LEN);
-    llc_snap = ofpbuf_put_zeros(b, LLC_SNAP_HEADER_LEN);
-    payload = ofpbuf_put_uninit(b, size);
-
-    /* Compose 802.2 header. */
-    memcpy(eth->eth_dst, eth_dst, ETH_ADDR_LEN);
-    memcpy(eth->eth_src, eth_src, ETH_ADDR_LEN);
-    eth->eth_type = htons(b->size - ETH_HEADER_LEN);
-
-    /* Compose LLC, SNAP headers. */
-    llc_snap->llc.llc_dsap = LLC_DSAP_SNAP;
-    llc_snap->llc.llc_ssap = LLC_SSAP_SNAP;
-    llc_snap->llc.llc_cntl = LLC_CNTL_SNAP;
-    llc_snap->snap.snap_org[0] = oui >> 16;
-    llc_snap->snap.snap_org[1] = oui >> 8;
-    llc_snap->snap.snap_org[2] = oui;
-    llc_snap->snap.snap_type = htons(snap_type);
-
-    return payload;
 }
 
 static void

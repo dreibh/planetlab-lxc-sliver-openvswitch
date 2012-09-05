@@ -66,6 +66,12 @@ associated with that device will be printed.  \fInetdev\fR can be an
 OpenFlow assigned port number or device name, e.g. \fBeth0\fR.
 .
 .TP
+\fBdump\-ports\-desc \fIswitch\fR
+Prints to the console detailed information about network devices
+associated with \fIswitch\fR (version 1.7 or later).  This is a subset
+of the information provided by the \fBshow\fR command.
+.
+.TP
 \fBmod\-port \fIswitch\fR \fInetdev\fR \fIaction\fR
 Modify characteristics of an interface monitored by \fIswitch\fR.  
 \fInetdev\fR can be referred to by its OpenFlow assigned port number or 
@@ -73,31 +79,49 @@ the device name, e.g. \fBeth0\fR.  The \fIaction\fR may be any one of the
 following:
 .
 .RS
-.IP \fBup\fR
-Enables the interface.  This is equivalent to ``ifconfig up'' on a Unix
-system.
+.IQ \fBup\fR
+.IQ \fBdown\fR
+Enable or disable the interface.  This is equivalent to \fBifconfig
+up\fR or \fBifconfig down\fR on a Unix system.
 .
-.IP \fBdown\fR
-Disables the interface.  This is equivalent to ``ifconfig down'' on a Unix
-system.
+.IP \fBstp\fR
+.IQ \fBno\-stp\fR
+Enable or disable 802.1D spanning tree protocol (STP) on the
+interface.  OpenFlow implementations that don't support STP will
+refuse to enable it.
+.
+.IP \fBreceive\fR
+.IQ \fBno\-receive\fR
+.IQ \fBreceive\-stp\fR
+.IQ \fBno\-receive\-stp\fR
+Enable or disable OpenFlow processing of packets received on this
+interface.  When packet processing is disabled, packets will be
+dropped instead of being processed through the OpenFlow table.  The
+\fBreceive\fR or \fBno\-receive\fR setting applies to all packets
+except 802.1D spanning tree packets, which are separately controlled
+by \fBreceive\-stp\fR or \fBno\-receive\-stp\fR.
 .
 .IP \fBforward\fR
-Allows forwarding of traffic on this interface.  This is the default posture
-for all ports.
-.
-.IP \fBnoforward\fR
-Disallows forwarding of traffic on this interface.
+.IQ \fBno\-forward\fR
+Allow or disallow forwarding of traffic to this interface.  By
+default, forwarding is enabled.
 .
 .IP \fBflood\fR
-When a \fIflood\fR action is specified, traffic will be sent out this
-interface.  This is the default posture for monitored ports.
+.IQ \fBno\-flood\fR
+Controls whether an OpenFlow \fBflood\fR action will send traffic out
+this interface.  By default, flooding is enabled.  Disabling flooding
+is primarily useful to prevent loops when a spanning tree protocol is
+not in use.
 .
-.IP \fBnoflood\fR
-When a \fIflood\fR action is specified, traffic will not be sent out 
-this interface.  This is primarily useful to prevent loops when a
-spanning tree protocol is not in use.
-.
+.IP \fBpacket\-in\fR
+.IQ \fBno\-packet\-in\fR
+Controls whether packets received on this interface that do not match
+a flow table entry generate a ``packet in'' message to the OpenFlow
+controller.  By default, ``packet in'' messages are enabled.
 .RE
+.IP
+The \fBshow\fR command displays (among other information) the
+configuration that \fBmod\-port\fR changes.
 .
 .IP "\fBget\-frags \fIswitch\fR"
 Prints \fIswitch\fR's fragment handling mode.  See \fBset\-frags\fR,
@@ -137,12 +161,18 @@ whether a packet is a fragment and on its fragment offset.
 Prints to the console all flow entries in \fIswitch\fR's
 tables that match \fIflows\fR.  If \fIflows\fR is omitted, all flows
 in the switch are retrieved.  See \fBFlow Syntax\fR, below, for the
-syntax of \fIflows\fR.  The output format is described in 
+syntax of \fIflows\fR.  The output format is described in
 \fBTable Entry Output\fR.
+.
+.IP
+By default, \fBovs\-ofctl\fR prints flow entries in the same order
+that the switch sends them, which is unlikely to be intuitive or
+consistent.  See the description of \fB\-\-sort\fR and \fB\-\-rsort\fR,
+under \fBOPTIONS\fR below, to influence the display order.
 .
 .TP
 \fBdump\-aggregate \fIswitch \fR[\fIflows\fR]
-Prints to the console aggregate statistics for flows in 
+Prints to the console aggregate statistics for flows in
 \fIswitch\fR's tables that match \fIflows\fR.  If \fIflows\fR is omitted, 
 the statistics are aggregated across all flows in the switch's flow
 tables.  See \fBFlow Syntax\fR, below, for the syntax of \fIflows\fR.
@@ -252,7 +282,7 @@ If a switch has no controller configured, or if
 the configured controller is disconnected, no traffic is sent, so
 monitoring will not show any traffic.
 .
-.IP "\fBmonitor \fIswitch\fR [\fImiss-len\fR] [\fIinvalid_ttl\fR]"
+.IP "\fBmonitor \fIswitch\fR [\fImiss-len\fR] [\fBinvalid_ttl\fR] [\fBwatch:\fR[\fIspec\fR...]]"
 Connects to \fIswitch\fR and prints to the console all OpenFlow
 messages received.  Usually, \fIswitch\fR should specify the name of a
 bridge in the \fBovs\-vswitchd\fR database.
@@ -265,15 +295,46 @@ does not send these and other asynchronous messages to an
 specified on this argument.  (Thus, if \fImiss\-len\fR is not
 specified, very little traffic will ordinarily be printed.)
 .IP
-.IP
 If \fBinvalid_ttl\fR is passed, \fBovs\-ofctl\fR sends an OpenFlow ``set
 configuration'' message at connection setup time that requests
-\fIINVALID_TTL_TO_CONTROLLER\fR, so that \fBovs\-ofctl monitor\fR can
-receive ``packets-in'' messages when TTL reaches zero on \fBdec_ttl\fR action.
+\fBINVALID_TTL_TO_CONTROLLER\fR, so that \fBovs\-ofctl monitor\fR can
+receive ``packet-in'' messages when TTL reaches zero on \fBdec_ttl\fR action.
 .IP
-
+\fBwatch:\fR[\fB\fIspec\fR...] causes \fBovs\-ofctl\fR to send a
+``monitor request'' Nicira extension message to the switch at
+connection setup time.  This message causes the switch to send
+information about flow table changes as they occur.  The following
+comma-separated \fIspec\fR syntax is available:
+.RS
+.IP "\fB!initial\fR"
+Do not report the switch's initial flow table contents.
+.IP "\fB!add\fR"
+Do not report newly added flows.
+.IP "\fB!delete\fR"
+Do not report deleted flows.
+.IP "\fB!modify\fR"
+Do not report modifications to existing flows.
+.IP "\fB!own\fR"
+Abbreviate changes made to the flow table by \fBovs\-ofctl\fR's own
+connection to the switch.  (These could only occur using the
+\fBofctl/send\fR command described below under \fBRUNTIME MANAGEMENT
+COMMANDS\fR.)
+.IP "\fB!actions\fR"
+Do not report actions as part of flow updates.
+.IP "\fBtable=\fInumber\fR"
+Limits the monitoring to the table with the given \fInumber\fR between
+0 and 254.  By default, all tables are monitored.
+.IP "\fBout_port=\fIport\fR"
+If set, only flows that output to \fIport\fR are monitored.
+.IP "\fIfield\fB=\fIvalue\fR"
+Monitors only flows that have \fIfield\fR specified as the given
+\fIvalue\fR.  Any syntax valid for matching on \fBdump\-flows\fR may
+be used.
+.RE
+.IP
 This command may be useful for debugging switch or controller
-implementations.
+implementations.  With \fBwatch:\fR, it is particularly useful for
+observing how a controller updates flow tables.
 .
 .SS "OpenFlow Switch and Controller Commands"
 .
@@ -357,11 +418,13 @@ Matches an Ethernet source (or destination) address specified as 6
 pairs of hexadecimal digits delimited by colons
 (e.g. \fB00:0A:E4:25:6B:B0\fR).
 .
-.IP \fBdl_dst=\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB/\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fR
+.IP \fBdl_src=\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB/\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fR
+.IQ \fBdl_dst=\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB/\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fR
 Matches an Ethernet destination address specified as 6 pairs of
 hexadecimal digits delimited by colons (e.g. \fB00:0A:E4:25:6B:B0\fR),
-with a wildcard mask following the slash.  Only
-the following masks are allowed:
+with a wildcard mask following the slash. Open vSwitch 1.8 and later
+support arbitrary masks for source and/or destination. Earlier
+versions only support masking the destination with the following masks:
 .RS
 .IP \fB01:00:00:00:00:00\fR
 Match only the multicast bit.  Thus,
@@ -392,7 +455,9 @@ which may be specified as an IP address or host name
 \fInetmask\fR allows restricting a match to an IPv4 address prefix.
 The netmask may be specified as a dotted quad
 (e.g. \fB192.168.1.0/255.255.255.0\fR) or as a CIDR block
-(e.g. \fB192.168.1.0/24\fR).
+(e.g. \fB192.168.1.0/24\fR).  Open vSwitch 1.8 and later support
+arbitrary dotted quad masks; earlier versions support only CIDR masks,
+that is, the dotted quads that are equivalent to some CIDR block.
 .IP
 When \fBdl_type=0x0806\fR or \fBarp\fR is specified, matches the
 \fBar_spa\fR or \fBar_tpa\fR field, respectively, in ARP packets for
@@ -549,6 +614,14 @@ When this field is specified in \fBadd-flow\fR, \fBadd-flows\fR,
 extension to OpenFlow, which as of this writing is only known to be
 implemented by Open vSwitch.
 .
+.IP \fBmetadata=\fIvalue\fR[\fB/\fImask\fR]
+Matches \fIvalue\fR either exactly or with optional \fImask\fR in the metadata
+field. \fIvalue\fR and \fImask\fR are 64-bit integers, by default in decimal
+(use a \fB0x\fR prefix to specify hexadecimal). Arbitrary \fImask\fR values
+are allowed: a 1-bit in \fImask\fR indicates that the corresponding bit in
+\fIvalue\fR must match exactly, and a 0-bit wildcards that bit. Matching on
+metadata was added in Open vSwitch 1.8.
+.
 .PP
 The following shorthand notations are also available:
 .
@@ -648,7 +721,11 @@ which may be specified as defined in RFC 2373.  The preferred format is
 address.  A single instance of \fB::\fR may be used to indicate multiple
 groups of 16-bits of zeros.  The optional \fInetmask\fR allows
 restricting a match to an IPv6 address prefix.  A netmask is specified
-as a CIDR block (e.g. \fB2001:db8:3c4d:1::/64\fR).
+as an IPv6 address (e.g. \fB2001:db8:3c4d:1::/ffff:ffff:ffff:ffff::\fR)
+or a CIDR block (e.g. \fB2001:db8:3c4d:1::/64\fR).  Open vSwitch 1.8
+and later support arbitrary masks; earlier versions support only CIDR
+masks, that is, CIDR block and IPv6 addresses that are equivalent to
+CIDR blocks.
 .
 .IP \fBipv6_label=\fIlabel\fR
 When \fBdl_type\fR is 0x86dd (possibly via shorthand, e.g., \fBipv6\fR
@@ -873,19 +950,29 @@ Restores the queue to the value it was before any \fBset_queue\fR
 actions were applied.
 .
 .IP \fBdec_ttl\fR
+.IQ \fBdec_ttl\fB[\fR(\fIid1,id2\fI)\fR]\fR
 Decrement TTL of IPv4 packet or hop limit of IPv6 packet.  If the
 TTL or hop limit is initially zero, no decrement occurs.  Instead,
 a ``packet-in'' message with reason code \fBOFPR_INVALID_TTL\fR is
 sent to each connected controller that has enabled receiving them,
-if any.  Processing the current set of actions then stops.
-However, if the current set of actions was reached through
-``resubmit'' then remaining actions in outer levels resume
-processing.
+if any.  Processing the current set of actions then stops.  However,
+if the current set of actions was reached through ``resubmit'' then
+remaining actions in outer levels resume processing.  This action
+also optionally supports the ability to specify a list of valid
+controller ids.  Each of controllers in the list will receive the
+``packet_in'' message only if they have registered to receive the
+invalid ttl packets.  If controller ids are not specified, the
+``packet_in'' message will be sent only to the controllers having
+controller id zero which have registered for the invalid ttl packets.
 .
 .IP \fBnote:\fR[\fIhh\fR]...
 Does nothing at all.  Any number of bytes represented as hex digits
 \fIhh\fR may be included.  Pairs of hex digits may be separated by
 periods for readability.
+The \fBnote\fR action's format doesn't include an exact length for its
+payload, so the provided bytes will be padded on the right by enough
+bytes with value 0 to make the total number 6 more than a multiple of
+8.
 .
 .IP "\fBmove:\fIsrc\fB[\fIstart\fB..\fIend\fB]\->\fIdst\fB[\fIstart\fB..\fIend\fB]\fR"
 Copies the named bits from field \fIsrc\fR to field \fIdst\fR.
@@ -926,6 +1013,8 @@ the \fBiter_hash\fR algorithm uses \fIarg\fR.
 Refer to \fBnicira\-ext.h\fR for more details.
 .
 .IP "\fBautopath(\fIid\fB, \fIdst\fB[\fIstart\fB..\fIend\fB])\fR"
+Deprecated and slated for removal in Feburary 2013.
+.IP
 Given \fIid\fR, chooses an OpenFlow port and populates it in
 \fIdst\fB[\fIstart\fB..\fIend\fB]\fR, which must be an NXM field as
 described above.
@@ -1066,26 +1155,42 @@ levels of the \fBresubmit\fR call stack, are ignored.
 An opaque identifier called a cookie can be used as a handle to identify
 a set of flows:
 .
-.IP \fBcookie=\fIvalue\fR[\fB/\fImask\fR]
+.IP \fBcookie=\fIvalue\fR
 .
-A cookie can be associated with a flow using the \fBadd-flow\fR and
-\fBadd-flows\fR commands.  \fIvalue\fR can be any 64-bit number and need
-not be unique among flows.  If this field is omitted, a default cookie
-value of 0 is used.
-.IP
+A cookie can be associated with a flow using the \fBadd\-flow\fR,
+\fBadd\-flows\fR, and \fBmod\-flows\fR commands.  \fIvalue\fR can be any
+64-bit number and need not be unique among flows.  If this field is
+omitted, a default cookie value of 0 is used.
+.
+.IP \fBcookie=\fIvalue\fR\fB/\fImask\fR
+.
 When using NXM, the cookie can be used as a handle for querying,
-modifying, and deleting flows.  In addition to \fIvalue\fR, an optional
-\fImask\fR may be supplied for the \fBdel-flows\fR, \fBmod-flows\fR,
-\fBdump-flows\fR, and \fBdump-aggregate\fR commands to limit matching
-cookies.  A 1-bit in \fImask\fR indicates that the corresponding bit in
-\fIcookie\fR must match exactly, and a 0-bit wildcards that bit.
+modifying, and deleting flows.  \fIvalue\fR and \fImask\fR may be
+supplied for the \fBdel\-flows\fR, \fBmod\-flows\fR, \fBdump\-flows\fR, and
+\fBdump\-aggregate\fR commands to limit matching cookies.  A 1-bit in
+\fImask\fR indicates that the corresponding bit in \fIcookie\fR must
+match exactly, and a 0-bit wildcards that bit.  A mask of \-1 may be used
+to exactly match a cookie.
+.IP
+The \fBmod\-flows\fR command can update the cookies of flows that
+match a cookie by specifying the \fIcookie\fR field twice (once with a
+mask for matching and once without to indicate the new value):
+.RS
+.IP "\fBovs\-ofctl mod\-flows br0 cookie=1,actions=normal\fR"
+Change all flows' cookies to 1 and change their actions to \fBnormal\fR.
+.IP "\fBovs\-ofctl mod\-flows br0 cookie=1/\-1,cookie=2,actions=normal\fR"
+Update cookies with a value of 1 to 2 and change their actions to
+\fBnormal\fR.
+.RE
+.IP
+The ability to match on cookies was added in Open vSwitch 1.5.0.
 .
 .PP
 The following additional field sets the priority for flows added by
 the \fBadd\-flow\fR and \fBadd\-flows\fR commands.  For
 \fBmod\-flows\fR and \fBdel\-flows\fR when \fB\-\-strict\fR is
 specified, priority must match along with the rest of the flow
-specification.  For \fBmod\-flows\fR without \fB\-\-strict\fR,
+specification.  For \fBmod-flows\fR without \fB\-\-strict\fR,
 priority is only significant if the command creates a new flow, that
 is, non-strict \fBmod\-flows\fR does not match on priority and will
 not change the priority of existing flows.  Other commands do not
@@ -1098,6 +1203,13 @@ others.  \fIvalue\fR is a number between 0 and 65535, inclusive.  A higher
 have priority over an entry containing wildcards, so it has an implicit 
 priority value of 65535.  When adding a flow, if the field is not specified, 
 the flow's priority will default to 32768.
+.IP
+OpenFlow leaves behavior undefined when two or more flows with the
+same priority can match a single packet.  Some users expect
+``sensible'' behavior, such as more specific flows taking precedence
+over less specific flows, but OpenFlow does not specify this and Open
+vSwitch does not implement it.  Users should therefore take care to
+use priorities to ensure the behavior that they expect.
 .
 .PP
 The \fBadd\-flow\fR, \fBadd\-flows\fR, and \fBmod\-flows\fR commands
@@ -1257,6 +1369,33 @@ affects the \fBmonitor\fR and \fBsnoop\fR commands.
 Increases the verbosity of OpenFlow messages printed and logged by
 \fBovs\-ofctl\fR commands.  Specify this option more than once to
 increase verbosity further.
+.
+.IP \fB\-\-sort\fR[\fB=\fIfield\fR]
+.IQ \fB\-\-rsort\fR[\fB=\fIfield\fR]
+Display output sorted by flow \fIfield\fR in ascending
+(\fB\-\-sort\fR) or descending (\fB\-\-rsort\fR) order, where
+\fIfield\fR is any of the fields that are allowed for matching or
+\fBpriority\fR to sort by priority.  When \fIfield\fR is omitted, the
+output is sorted by priority.  Specify these options multiple times to
+sort by multiple fields.
+.IP
+Any given flow will not necessarily specify a value for a given
+field.  This requires special treatement:
+.RS
+.IP \(bu
+A flow that does not specify any part of a field that is used for sorting is
+sorted after all the flows that do specify the field.  For example,
+\fB\-\-sort=tcp_src\fR will sort all the flows that specify a TCP
+source port in ascending order, followed by the flows that do not
+specify a TCP source port at all.  
+.IP \(bu
+A flow that only specifies some bits in a field is sorted as if the
+wildcarded bits were zero.  For example, \fB\-\-sort=nw_src\fR would
+sort a flow that specifies \fBnw_src=192.168.0.0/24\fR the same as
+\fBnw_src=192.168.0.0\fR.
+.RE
+.IP
+These options currently affect only \fBdump\-flows\fR output.
 .
 .ds DD \
 \fBovs\-ofctl\fR detaches only when executing the \fBmonitor\fR or \

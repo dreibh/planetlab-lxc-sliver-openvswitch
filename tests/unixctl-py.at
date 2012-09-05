@@ -73,6 +73,7 @@ AT_CLEANUP
 
 AT_SETUP([unixctl bad target - Python])
 OVS_RUNDIR=`pwd`; export OVS_RUNDIR
+OVS_DBDIR=`pwd`; export OVS_DBDIR
 AT_SKIP_IF([test $HAVE_PYTHON = no])
 
 AT_CHECK([PYAPPCTL -t bogus doit], [1], [], [stderr])
@@ -91,8 +92,9 @@ AT_SETUP([unixctl server - Python])
 AT_SKIP_IF([test $HAVE_PYTHON = no])
 OVS_RUNDIR=`pwd`; export OVS_RUNDIR
 OVS_LOGDIR=`pwd`; export OVS_LOGDIR
+OVS_DBDIR=`pwd`; export OVS_DBDIR
 OVS_SYSCONFDIR=`pwd`; export OVS_SYSCONFDIR
-trap 'kill `cat test-unixctl.py.pid`' 0
+ON_EXIT([kill `cat test-unixctl.py.pid`])
 AT_CAPTURE_FILE([`pwd`/test-unixctl.py.log])
 AT_CHECK([$PYTHON $srcdir/test-unixctl.py --log-file --pidfile --detach])
 
@@ -104,7 +106,11 @@ The available commands are:
   echo_error              [[arg ...]]
   exit
   help
+  log                     [[arg ...]]
   version
+  vlog/list
+  vlog/reopen
+  vlog/set                spec
 ])
 mv stdout expout
 AT_CHECK([PYAPPCTL -t test-unixctl.py help], [0], [expout])
@@ -153,7 +159,6 @@ sed 's/ovs-appctl/appctl.py/' stderr > experr
 AT_CHECK([PYAPPCTL -t test-unixctl.py bogus], [2], [], [experr])
 
 AT_CHECK([APPCTL -t test-unixctl.py exit])
-trap '' 0]
 AT_CLEANUP
 
 

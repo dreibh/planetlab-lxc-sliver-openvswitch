@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,6 +39,7 @@ struct netdev;
 struct ofproto;
 struct ofport;
 struct shash;
+struct simap;
 struct netdev_stats;
 
 struct ofproto_controller_info {
@@ -131,7 +132,7 @@ struct ofproto_controller {
     uint8_t dscp;               /* DSCP value for controller connection. */
 };
 
-#define DEFAULT_MFR_DESC "Nicira Networks, Inc."
+#define DEFAULT_MFR_DESC "Nicira, Inc."
 #define DEFAULT_HW_DESC "Open vSwitch"
 #define DEFAULT_SW_DESC VERSION
 #define DEFAULT_SERIAL_DESC "None"
@@ -152,6 +153,8 @@ int ofproto_run(struct ofproto *);
 int ofproto_run_fast(struct ofproto *);
 void ofproto_wait(struct ofproto *);
 bool ofproto_is_alive(const struct ofproto *);
+
+void ofproto_get_memory_usage(const struct ofproto *, struct simap *);
 
 /* A port within an OpenFlow switch.
  *
@@ -198,6 +201,7 @@ int ofproto_port_query_by_name(const struct ofproto *, const char *devname,
                                struct ofproto_port *);
 
 /* Top-level configuration. */
+uint64_t ofproto_get_datapath_id(const struct ofproto *);
 void ofproto_set_datapath_id(struct ofproto *, uint64_t datapath_id);
 void ofproto_set_controllers(struct ofproto *,
                              const struct ofproto_controller *, size_t n);
@@ -345,6 +349,7 @@ void ofproto_get_all_flows(struct ofproto *p, struct ds *);
 void ofproto_get_netflow_ids(const struct ofproto *,
                              uint8_t *engine_type, uint8_t *engine_id);
 int ofproto_port_get_cfm_fault(const struct ofproto *, uint16_t ofp_port);
+int ofproto_port_get_cfm_opup(const struct ofproto *, uint16_t ofp_port);
 int ofproto_port_get_cfm_remote_mpids(const struct ofproto *,
                                       uint16_t ofp_port, const uint64_t **rmps,
                                       size_t *n_rmps);

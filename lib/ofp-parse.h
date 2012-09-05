@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,8 +23,10 @@
 #include <stdint.h>
 #include <stdio.h>
 
+struct flow;
 struct ofpbuf;
 struct ofputil_flow_mod;
+struct ofputil_flow_monitor_request;
 struct ofputil_flow_stats_request;
 
 void parse_ofp_str(struct ofputil_flow_mod *, int command, const char *str_,
@@ -39,6 +41,11 @@ void parse_ofp_flow_stats_request_str(struct ofputil_flow_stats_request *,
                                       bool aggregate, const char *string);
 
 
-void parse_ofp_actions(const char *, struct ofpbuf *actions);
+void parse_ofpacts(const char *, struct ofpbuf *ofpacts);
+
+char *parse_ofp_exact_flow(struct flow *, const char *);
+
+void parse_flow_monitor_request(struct ofputil_flow_monitor_request *,
+                                const char *);
 
 #endif /* ofp-parse.h */

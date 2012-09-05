@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,7 +61,18 @@
 #define BUILD_ASSERT_DECL_GCCONLY(EXPR) ((void) 0)
 #endif
 
+/* Casts 'pointer' to 'type' and issues a compiler warning if the cast changes
+ * anything other than an outermost "const" or "volatile" qualifier.
+ *
+ * The cast to int is present only to suppress an "expression using sizeof
+ * bool" warning from "sparse" (see
+ * http://permalink.gmane.org/gmane.comp.parsers.sparse/2967). */
+#define CONST_CAST(TYPE, POINTER)                               \
+    ((void) sizeof ((int) ((POINTER) == (TYPE) (POINTER))),     \
+     (TYPE) (POINTER))
+
 extern const char *program_name;
+extern const char *subprogram_name;
 
 /* Returns the number of elements in ARRAY. */
 #define ARRAY_SIZE(ARRAY) (sizeof ARRAY / sizeof *ARRAY)
@@ -187,6 +198,8 @@ void ovs_strzcpy(char *dst, const char *src, size_t size);
 
 void ovs_abort(int err_no, const char *format, ...)
     PRINTF_FORMAT(2, 3) NO_RETURN;
+void ovs_abort_valist(int err_no, const char *format, va_list)
+    PRINTF_FORMAT(2, 0) NO_RETURN;
 void ovs_fatal(int err_no, const char *format, ...)
     PRINTF_FORMAT(2, 3) NO_RETURN;
 void ovs_fatal_valist(int err_no, const char *format, va_list)
@@ -215,6 +228,9 @@ char *get_cwd(void);
 char *dir_name(const char *file_name);
 char *base_name(const char *file_name);
 char *abs_file_name(const char *dir, const char *file_name);
+
+char *xreadlink(const char *filename);
+char *follow_symlinks(const char *filename);
 
 void ignore(bool x OVS_UNUSED);
 int log_2_floor(uint32_t);

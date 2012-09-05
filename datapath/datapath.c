@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2012 Nicira Networks.
+ * Copyright (c) 2007-2012 Nicira, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -39,7 +39,6 @@
 #include <linux/version.h>
 #include <linux/ethtool.h>
 #include <linux/wait.h>
-#include <asm/system.h>
 #include <asm/div64.h>
 #include <linux/highmem.h>
 #include <linux/netfilter_bridge.h>
@@ -62,8 +61,8 @@
 #include "vport-internal_dev.h"
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18) || \
-    LINUX_VERSION_CODE >= KERNEL_VERSION(3,4,0)
-#error Kernels before 2.6.18 or after 3.3 are not supported by this version of Open vSwitch.
+    LINUX_VERSION_CODE >= KERNEL_VERSION(3,6,0)
+#error Kernels before 2.6.18 or after 3.5 are not supported by this version of Open vSwitch.
 #endif
 
 #define REHASH_FLOW_INTERVAL (10 * 60 * HZ)
@@ -405,14 +404,15 @@ static int queue_gso_packets(struct net *net, int dp_ifindex,
 			     struct sk_buff *skb,
 			     const struct dp_upcall_info *upcall_info)
 {
+	unsigned short gso_type = skb_shinfo(skb)->gso_type;
 	struct dp_upcall_info later_info;
 	struct sw_flow_key later_key;
 	struct sk_buff *segs, *nskb;
 	int err;
 
 	segs = skb_gso_segment(skb, NETIF_F_SG | NETIF_F_HW_CSUM);
-	if (IS_ERR(skb))
-		return PTR_ERR(skb);
+	if (IS_ERR(segs))
+		return PTR_ERR(segs);
 
 	/* Queue all of the segments. */
 	skb = segs;
@@ -421,7 +421,7 @@ static int queue_gso_packets(struct net *net, int dp_ifindex,
 		if (err)
 			break;
 
-		if (skb == segs && skb_shinfo(skb)->gso_type & SKB_GSO_UDP) {
+		if (skb == segs && gso_type & SKB_GSO_UDP) {
 			/* The initial flow key extracted by ovs_flow_extract()
 			 * in this case is for a first fragment, so we need to
 			 * properly mark later fragments.
@@ -558,6 +558,19 @@ static int validate_sample(const struct nlattr *attr,
 	return validate_actions(actions, key, depth + 1);
 }
 
+static int validate_tp_port(const struct sw_flow_key *flow_key)
+{
+	if (flow_key->eth.type == htons(ETH_P_IP)) {
+		if (flow_key->ipv4.tp.src || flow_key->ipv4.tp.dst)
+			return 0;
+	} else if (flow_key->eth.type == htons(ETH_P_IPV6)) {
+		if (flow_key->ipv6.tp.src || flow_key->ipv6.tp.dst)
+			return 0;
+	}
+
+	return -EINVAL;
+}
+
 static int validate_set(const struct nlattr *a,
 			const struct sw_flow_key *flow_key)
 {
@@ -584,7 +597,7 @@ static int validate_set(const struct nlattr *a,
 		if (flow_key->eth.type != htons(ETH_P_IP))
 			return -EINVAL;
 
-		if (!flow_key->ipv4.addr.src || !flow_key->ipv4.addr.dst)
+		if (!flow_key->ip.proto)
 			return -EINVAL;
 
 		ipv4_key = nla_data(ovs_key);
@@ -600,18 +613,13 @@ static int validate_set(const struct nlattr *a,
 		if (flow_key->ip.proto != IPPROTO_TCP)
 			return -EINVAL;
 
-		if (!flow_key->ipv4.tp.src || !flow_key->ipv4.tp.dst)
-			return -EINVAL;
-
-		break;
+		return validate_tp_port(flow_key);
 
 	case OVS_KEY_ATTR_UDP:
 		if (flow_key->ip.proto != IPPROTO_UDP)
 			return -EINVAL;
 
-		if (!flow_key->ipv4.tp.src || !flow_key->ipv4.tp.dst)
-			return -EINVAL;
-		break;
+		return validate_tp_port(flow_key);
 
 	default:
 		return -EINVAL;
@@ -1399,6 +1407,8 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
 	dp->ifobj.kset = NULL;
 	kobject_init(&dp->ifobj, &dp_ktype);
 
+	ovs_dp_set_net(dp, hold_net(sock_net(skb->sk)));
+
 	/* Allocate table. */
 	err = -ENOMEM;
 	rcu_assign_pointer(dp->table, ovs_flow_tbl_alloc(TBL_MIN_BUCKETS));
@@ -1410,7 +1420,6 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
 		err = -ENOMEM;
 		goto err_destroy_table;
 	}
-	ovs_dp_set_net(dp, hold_net(sock_net(skb->sk)));
 
 	dp->ports = kmalloc(DP_VPORT_HASH_BUCKETS * sizeof(struct hlist_head),
 			    GFP_KERNEL);
@@ -1465,6 +1474,7 @@ err_destroy_percpu:
 err_destroy_table:
 	ovs_flow_tbl_destroy(genl_dereference(dp->table));
 err_free_dp:
+	release_net(ovs_dp_get_net(dp));
 	kfree(dp);
 err_unlock_rtnl:
 	rtnl_unlock();
@@ -1891,10 +1901,9 @@ static int ovs_vport_cmd_set(struct sk_buff *skb, struct genl_info *info)
 	reply = ovs_vport_cmd_build_info(vport, info->snd_pid, info->snd_seq,
 					 OVS_VPORT_CMD_NEW);
 	if (IS_ERR(reply)) {
-		err = PTR_ERR(reply);
 		netlink_set_err(GENL_SOCK(sock_net(skb->sk)), 0,
-				ovs_dp_vport_multicast_group.id, err);
-		return 0;
+				ovs_dp_vport_multicast_group.id, PTR_ERR(reply));
+		goto exit_unlock;
 	}
 
 	genl_notify(reply, genl_info_net(info), info->snd_pid,

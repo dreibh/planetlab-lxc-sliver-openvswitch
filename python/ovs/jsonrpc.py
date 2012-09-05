@@ -1,4 +1,4 @@
-# Copyright (c) 2010, 2011, 2012 Nicira Networks
+# Copyright (c) 2010, 2011, 2012 Nicira, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -210,7 +210,7 @@ class Connection(object):
         if not self.status:
             self.stream.run_wait(poller)
             if len(self.output):
-                self.stream.send_wait()
+                self.stream.send_wait(poller)
 
     def get_status(self):
         return self.status

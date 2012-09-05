@@ -1,4 +1,4 @@
-/* Copyright (c) 2009, 2010, 2011, 2012 Nicira Networks.
+/* Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -230,6 +230,7 @@ ovsdb_idl_destroy(struct ovsdb_idl *idl)
         json_destroy(idl->monitor_request_id);
         free(idl->lock_name);
         json_destroy(idl->lock_request_id);
+        hmap_destroy(&idl->outstanding_txns);
         free(idl);
     }
 }
@@ -906,6 +907,7 @@ static struct ovsdb_idl_row *
 ovsdb_idl_row_create__(const struct ovsdb_idl_table_class *class)
 {
     struct ovsdb_idl_row *row = xzalloc(class->allocation_size);
+    class->row_init(row);
     list_init(&row->src_arcs);
     list_init(&row->dst_arcs);
     hmap_node_nullify(&row->txn_node);
@@ -1819,7 +1821,7 @@ ovsdb_idl_txn_write(const struct ovsdb_idl_row *row_,
                     const struct ovsdb_idl_column *column,
                     struct ovsdb_datum *datum)
 {
-    struct ovsdb_idl_row *row = (struct ovsdb_idl_row *) row_;
+    struct ovsdb_idl_row *row = CONST_CAST(struct ovsdb_idl_row *, row_);
     const struct ovsdb_idl_table_class *class;
     size_t column_idx;
 
@@ -1906,7 +1908,7 @@ void
 ovsdb_idl_txn_verify(const struct ovsdb_idl_row *row_,
                      const struct ovsdb_idl_column *column)
 {
-    struct ovsdb_idl_row *row = (struct ovsdb_idl_row *) row_;
+    struct ovsdb_idl_row *row = CONST_CAST(struct ovsdb_idl_row *, row_);
     const struct ovsdb_idl_table_class *class;
     size_t column_idx;
 
@@ -1945,7 +1947,7 @@ ovsdb_idl_txn_verify(const struct ovsdb_idl_row *row_,
 void
 ovsdb_idl_txn_delete(const struct ovsdb_idl_row *row_)
 {
-    struct ovsdb_idl_row *row = (struct ovsdb_idl_row *) row_;
+    struct ovsdb_idl_row *row = CONST_CAST(struct ovsdb_idl_row *, row_);
 
     if (ovsdb_idl_row_is_synthetic(row)) {
         return;

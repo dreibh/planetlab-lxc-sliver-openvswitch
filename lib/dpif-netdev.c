@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -70,8 +70,13 @@ enum { MAX_QUEUE_LEN = 128 };   /* Maximum number of packets per queue. */
 enum { QUEUE_MASK = MAX_QUEUE_LEN - 1 };
 BUILD_ASSERT_DECL(IS_POW2(MAX_QUEUE_LEN));
 
+struct dp_netdev_upcall {
+    struct dpif_upcall upcall;  /* Queued upcall information. */
+    struct ofpbuf buf;          /* ofpbuf instance for upcall.packet. */
+};
+
 struct dp_netdev_queue {
-    struct dpif_upcall *upcalls[MAX_QUEUE_LEN];
+    struct dp_netdev_upcall upcalls[MAX_QUEUE_LEN];
     unsigned int head, tail;
 };
 
@@ -171,9 +176,9 @@ dpif_netdev_enumerate(struct sset *all_dps)
     struct shash_node *node;
 
     SHASH_FOR_EACH(node, &dp_netdevs) {
-        sset_add(all_dps, node->name);        
+        sset_add(all_dps, node->name);
     }
-    return 0;    
+    return 0;
 }
 
 static struct dpif *
@@ -259,10 +264,8 @@ dp_netdev_purge_queues(struct dp_netdev *dp)
         struct dp_netdev_queue *q = &dp->queues[i];
 
         while (q->tail != q->head) {
-            struct dpif_upcall *upcall = q->upcalls[q->tail++ & QUEUE_MASK];
-
-            ofpbuf_delete(upcall->packet);
-            free(upcall);
+            struct dp_netdev_upcall *u = &q->upcalls[q->tail++ & QUEUE_MASK];
+            ofpbuf_uninit(&u->buf);
         }
     }
 }
@@ -416,7 +419,16 @@ dpif_netdev_port_add(struct dpif *dpif, struct netdev *netdev,
     struct dp_netdev *dp = get_dp_netdev(dpif);
     int port_no;
 
-    port_no = choose_port(dpif, netdev);
+    if (*port_nop != UINT16_MAX) {
+        if (*port_nop >= MAX_PORTS) {
+            return EFBIG;
+        } else if (dp->ports[*port_nop]) {
+            return EBUSY;
+        }
+        port_no = *port_nop;
+    } else {
+        port_no = choose_port(dpif, netdev);
+    }
     if (port_no >= 0) {
         *port_nop = port_no;
         return do_add_port(dp, netdev_get_name(netdev),
@@ -722,10 +734,9 @@ set_flow_actions(struct dp_netdev_flow *flow,
 }
 
 static int
-add_flow(struct dpif *dpif, const struct flow *key,
-         const struct nlattr *actions, size_t actions_len)
+dp_netdev_flow_add(struct dp_netdev *dp, const struct flow *key,
+                   const struct nlattr *actions, size_t actions_len)
 {
-    struct dp_netdev *dp = get_dp_netdev(dpif);
     struct dp_netdev_flow *flow;
     int error;
 
@@ -771,7 +782,8 @@ dpif_netdev_flow_put(struct dpif *dpif, const struct dpif_flow_put *put)
                 if (put->stats) {
                     memset(put->stats, 0, sizeof *put->stats);
                 }
-                return add_flow(dpif, &key, put->actions, put->actions_len);
+                return dp_netdev_flow_add(dp, &key, put->actions,
+                                          put->actions_len);
             } else {
                 return EFBIG;
             }
@@ -960,12 +972,13 @@ dpif_netdev_recv(struct dpif *dpif, struct dpif_upcall *upcall,
 {
     struct dp_netdev_queue *q = find_nonempty_queue(dpif);
     if (q) {
-        struct dpif_upcall *u = q->upcalls[q->tail++ & QUEUE_MASK];
-        *upcall = *u;
-        free(u);
+        struct dp_netdev_upcall *u = &q->upcalls[q->tail++ & QUEUE_MASK];
+
+        *upcall = u->upcall;
+        upcall->packet = buf;
 
         ofpbuf_uninit(buf);
-        *buf = *u->packet;
+        *buf = u->buf;
 
         return 0;
     } else {
@@ -1011,7 +1024,7 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
     if (packet->size < ETH_HEADER_LEN) {
         return;
     }
-    flow_extract(packet, 0, 0, port->port_no, &key);
+    flow_extract(packet, 0, 0, odp_port_to_ofp_port(port->port_no), &key);
     flow = dp_netdev_lookup_flow(dp, &key);
     if (flow) {
         dp_netdev_flow_used(flow, &key, packet);
@@ -1087,6 +1100,7 @@ dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
                          int queue_no, const struct flow *flow, uint64_t arg)
 {
     struct dp_netdev_queue *q = &dp->queues[queue_no];
+    struct dp_netdev_upcall *u;
     struct dpif_upcall *upcall;
     struct ofpbuf *buf;
     size_t key_len;
@@ -1096,21 +1110,22 @@ dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
         return ENOBUFS;
     }
 
-    buf = ofpbuf_new(ODPUTIL_FLOW_KEY_BYTES + 2 + packet->size);
+    u = &q->upcalls[q->head++ & QUEUE_MASK];
+
+    buf = &u->buf;
+    ofpbuf_init(buf, ODPUTIL_FLOW_KEY_BYTES + 2 + packet->size);
     odp_flow_key_from_flow(buf, flow);
     key_len = buf->size;
     ofpbuf_pull(buf, key_len);
     ofpbuf_reserve(buf, 2);
     ofpbuf_put(buf, packet->data, packet->size);
 
-    upcall = xzalloc(sizeof *upcall);
+    upcall = &u->upcall;
     upcall->type = queue_no;
     upcall->packet = buf;
     upcall->key = buf->base;
     upcall->key_len = key_len;
     upcall->userdata = arg;
-
-    q->upcalls[q->head++ & QUEUE_MASK] = upcall;
 
     return 0;
 }

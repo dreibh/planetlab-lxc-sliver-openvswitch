@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira Networks
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
 #include "openflow/openflow.h"
 #include "openvswitch/types.h"
 
-/* The following vendor extensions, proposed by Nicira Networks, are not yet
+/* The following vendor extensions, proposed by Nicira, are not yet
  * standardized, so they are not included in openflow.h.  Some of them may be
  * suitable for standardization; others we never expect to standardize. */
 
@@ -73,66 +73,26 @@ struct nx_vendor_error {
 struct nicira_header {
     struct ofp_header header;
     ovs_be32 vendor;            /* NX_VENDOR_ID. */
-    ovs_be32 subtype;           /* One of NXT_* below. */
+    ovs_be32 subtype;           /* See the NXT numbers in ofp-msgs.h. */
 };
 OFP_ASSERT(sizeof(struct nicira_header) == 16);
 
-/* Values for the 'subtype' member of struct nicira_header. */
-enum nicira_type {
-    /* No longer used. */
-    NXT_STATUS_REQUEST__OBSOLETE = 0,
-    NXT_STATUS_REPLY__OBSOLETE = 1,
-    NXT_ACT_SET_CONFIG__OBSOLETE = 2,
-    NXT_ACT_GET_CONFIG__OBSOLETE = 3,
-    NXT_COMMAND_REQUEST__OBSOLETE = 4,
-    NXT_COMMAND_REPLY__OBSOLETE = 5,
-    NXT_FLOW_END_CONFIG__OBSOLETE = 6,
-    NXT_FLOW_END__OBSOLETE = 7,
-    NXT_MGMT__OBSOLETE = 8,
-    NXT_TUN_ID_FROM_COOKIE__OBSOLETE = 9,
-
-    /* Controller role support.  The request body is struct nx_role_request.
-     * The reply echos the request. */
-    NXT_ROLE_REQUEST = 10,
-    NXT_ROLE_REPLY = 11,
-
-    /* Flexible flow specification (aka NXM = Nicira Extended Match). */
-    NXT_SET_FLOW_FORMAT = 12,   /* Set flow format. */
-    NXT_FLOW_MOD = 13,          /* Analogous to OFPT_FLOW_MOD. */
-    NXT_FLOW_REMOVED = 14,      /* Analogous to OFPT_FLOW_REMOVED. */
-
-    /* Use the upper 8 bits of the 'command' member in struct ofp_flow_mod to
-     * designate the table to which a flow is to be added?  See the big comment
-     * on struct nx_flow_mod_table_id for more information. */
-    NXT_FLOW_MOD_TABLE_ID = 15,
-
-    /* Alternative PACKET_IN message formats. */
-    NXT_SET_PACKET_IN_FORMAT = 16, /* Set Packet In format. */
-    NXT_PACKET_IN = 17,            /* Nicira Packet In. */
-
-    /* Are the idle_age and hard_age members in struct nx_flow_stats supported?
-     * If so, the switch does not reply to this message (which consists only of
-     * a "struct nicira_header").  If not, the switch sends an error reply. */
-    NXT_FLOW_AGE = 18,
-
-    NXT_SET_ASYNC_CONFIG = 19,  /* struct nx_async_config. */
-    NXT_SET_CONTROLLER_ID = 20, /* struct nx_controller_id. */
-};
-
-/* Header for Nicira vendor stats request and reply messages. */
-struct nicira_stats_msg {
-    struct ofp_vendor_stats_msg vsm; /* Vendor NX_VENDOR_ID. */
+/* Header for Nicira vendor stats request and reply messages in OpenFlow
+ * 1.0. */
+struct nicira10_stats_msg {
+    struct ofp10_vendor_stats_msg vsm; /* Vendor NX_VENDOR_ID. */
     ovs_be32 subtype;           /* One of NXST_* below. */
     uint8_t pad[4];             /* Align to 64-bits. */
 };
-OFP_ASSERT(sizeof(struct nicira_stats_msg) == 24);
+OFP_ASSERT(sizeof(struct nicira10_stats_msg) == 24);
 
-/* Values for the 'subtype' member of struct nicira_stats_msg. */
-enum nicira_stats_type {
-    /* Flexible flow specification (aka NXM = Nicira Extended Match). */
-    NXST_FLOW,                  /* Analogous to OFPST_FLOW. */
-    NXST_AGGREGATE              /* Analogous to OFPST_AGGREGATE. */
+/* Header for Nicira vendor stats request and reply messages in OpenFlow
+ * 1.1. */
+struct nicira11_stats_msg {
+    struct ofp11_vendor_stats_msg vsm; /* Vendor NX_VENDOR_ID. */
+    ovs_be32 subtype;           /* One of NXST_* below. */
 };
+OFP_ASSERT(sizeof(struct nicira11_stats_msg) == 24);
 
 /* Fields to use when hashing flows. */
 enum nx_hash_fields {
@@ -158,7 +118,7 @@ enum nx_hash_fields {
  * instead of having the switch decide which table is most appropriate as
  * required by OpenFlow 1.0.  By default, the extension is disabled.
  *
- * When this feature is enabled, Open vSwitch treats struct ofp_flow_mod's
+ * When this feature is enabled, Open vSwitch treats struct ofp10_flow_mod's
  * 16-bit 'command' member as two separate fields.  The upper 8 bits are used
  * as the table ID, the lower 8 bits specify the command as usual.  A table ID
  * of 0xff is treated like a wildcarded table ID.
@@ -192,13 +152,10 @@ enum nx_hash_fields {
  *      table match, then none is modified or deleted.
  */
 struct nx_flow_mod_table_id {
-    struct ofp_header header;
-    ovs_be32 vendor;            /* NX_VENDOR_ID. */
-    ovs_be32 subtype;           /* NXT_FLOW_MOD_TABLE_ID. */
     uint8_t set;                /* Nonzero to enable, zero to disable. */
     uint8_t pad[7];
 };
-OFP_ASSERT(sizeof(struct nx_flow_mod_table_id) == 24);
+OFP_ASSERT(sizeof(struct nx_flow_mod_table_id) == 8);
 
 enum nx_packet_in_format {
     NXPIF_OPENFLOW10 = 0,       /* Standard OpenFlow 1.0 compatible. */
@@ -207,37 +164,44 @@ enum nx_packet_in_format {
 
 /* NXT_SET_PACKET_IN_FORMAT request. */
 struct nx_set_packet_in_format {
-    struct nicira_header nxh;
     ovs_be32 format;            /* One of NXPIF_*. */
 };
-OFP_ASSERT(sizeof(struct nx_set_packet_in_format) == 20);
+OFP_ASSERT(sizeof(struct nx_set_packet_in_format) == 4);
 
 /* NXT_PACKET_IN (analogous to OFPT_PACKET_IN).
  *
- * The NXT_PACKET_IN format is intended to model the OpenFlow-1.2 PACKET_IN
- * with some minor tweaks.  Most notably NXT_PACKET_IN includes the cookie of
- * the rule which triggered the NXT_PACKET_IN message, and the match fields are
- * in NXM format.
+ * NXT_PACKET_IN is similar to the OpenFlow 1.2 OFPT_PACKET_IN.  The
+ * differences are:
  *
- * The match fields in the NXT_PACKET_IN are intended to contain flow
- * processing metadata collected at the time the NXT_PACKET_IN message was
- * triggered.  It is minimally required to contain the NXM_OF_IN_PORT of the
- * packet, but may include other NXM headers such as flow registers.  The match
- * fields are allowed to contain non-metadata (e.g. NXM_OF_ETH_SRC etc).
- * However, this information can typically be found in the packet directly, so
- * it may be redundant.
+ *     - NXT_PACKET_IN includes the cookie of the rule that triggered the
+ *       message.  (OpenFlow 1.3 OFPT_PACKET_IN also includes the cookie.)
+ *
+ *     - The metadata fields use NXM (instead of OXM) field numbers.
+ *
+ * Open vSwitch 1.9.0 and later omits metadata fields that are zero (as allowed
+ * by OpenFlow 1.2).  Earlier versions included all implemented metadata
+ * fields.
+ *
+ * Open vSwitch does not include non-metadata in the nx_match, because by
+ * definition that information can be found in the packet itself.  The format
+ * and the standards allow this, however, so controllers should be prepared to
+ * tolerate future changes.
+ *
+ * The NXM format is convenient for reporting metadata values, but it is
+ * important not to interpret the format as matching against a flow, because it
+ * does not.  Nothing is being matched; arbitrary metadata masks would not be
+ * meaningful.
  *
  * Whereas in most cases a controller can expect to only get back NXM fields
  * that it set up itself (e.g. flow dumps will ordinarily report only NXM
  * fields from flows that the controller added), NXT_PACKET_IN messages might
  * contain fields that the controller does not understand, because the switch
  * might support fields (new registers, new protocols, etc.) that the
- * controller does not.  The controller must prepared to tolerate these.
+ * controller does not.  The controller must prepared to tolerate these.
  *
  * The 'cookie' and 'table_id' fields have no meaning when 'reason' is
  * OFPR_NO_MATCH.  In this case they should be set to 0. */
 struct nx_packet_in {
-    struct nicira_header nxh;
     ovs_be32 buffer_id;       /* ID assigned by datapath. */
     ovs_be16 total_len;       /* Full length of frame. */
     uint8_t reason;           /* Reason packet is sent (one of OFPR_*). */
@@ -255,11 +219,11 @@ struct nx_packet_in {
      * The padding bytes preceding the Ethernet frame ensure that the IP
      * header (if any) following the Ethernet header is 32-bit aligned. */
 
-    /* uint8_t nxm_fields[...]; */ /* Match. */
+    /* uint8_t nxm_fields[...]; */ /* NXM headers. */
     /* uint8_t pad[2]; */          /* Align to 64 bit + 16 bit. */
     /* uint8_t data[0]; */         /* Ethernet frame. */
 };
-OFP_ASSERT(sizeof(struct nx_packet_in) == 40);
+OFP_ASSERT(sizeof(struct nx_packet_in) == 24);
 
 /* Configures the "role" of the sending controller.  The default role is:
  *
@@ -281,10 +245,9 @@ OFP_ASSERT(sizeof(struct nx_packet_in) == 40);
  *      messages, but they do receive OFPT_PORT_STATUS messages.
  */
 struct nx_role_request {
-    struct nicira_header nxh;
     ovs_be32 role;              /* One of NX_ROLE_*. */
 };
-OFP_ASSERT(sizeof(struct nx_role_request) == 20);
+OFP_ASSERT(sizeof(struct nx_role_request) == 4);
 
 enum nx_role {
     NX_ROLE_OTHER,              /* Default role, full access. */
@@ -305,14 +268,16 @@ enum nx_role {
  * with value 1<<2 == 4 in port_status_mask[1] determines whether the
  * controller will receive OFPT_PORT_STATUS messages with reason OFPPR_MODIFY
  * (value 2) when the controller has a "slave" role.
+ *
+ * As a side effect, for service controllers, this message changes the
+ * miss_send_len from default of zero to OFP_DEFAULT_MISS_SEND_LEN (128).
  */
 struct nx_async_config {
-    struct nicira_header nxh;
     ovs_be32 packet_in_mask[2];    /* Bitmasks of OFPR_* values. */
     ovs_be32 port_status_mask[2];  /* Bitmasks of OFPRR_* values. */
     ovs_be32 flow_removed_mask[2]; /* Bitmasks of OFPPR_* values. */
 };
-OFP_ASSERT(sizeof(struct nx_async_config) == 40);
+OFP_ASSERT(sizeof(struct nx_async_config) == 24);
 
 /* Nicira vendor flow actions. */
 
@@ -328,7 +293,7 @@ enum nx_action_subtype {
     NXAST_NOTE,                 /* struct nx_action_note */
     NXAST_SET_TUNNEL64,         /* struct nx_action_set_tunnel64 */
     NXAST_MULTIPATH,            /* struct nx_action_multipath */
-    NXAST_AUTOPATH,             /* struct nx_action_autopath */
+    NXAST_AUTOPATH__DEPRECATED, /* struct nx_action_autopath */
     NXAST_BUNDLE,               /* struct nx_action_bundle */
     NXAST_BUNDLE_LOAD,          /* struct nx_action_bundle */
     NXAST_RESUBMIT_TABLE,       /* struct nx_action_resubmit */
@@ -338,6 +303,7 @@ enum nx_action_subtype {
     NXAST_DEC_TTL,              /* struct nx_action_header */
     NXAST_FIN_TIMEOUT,          /* struct nx_action_fin_timeout */
     NXAST_CONTROLLER,           /* struct nx_action_controller */
+    NXAST_DEC_TTL_CNT_IDS,      /* struct nx_action_cnt_ids */
 };
 
 /* Header for Nicira-defined actions. */
@@ -426,7 +392,7 @@ OFP_ASSERT(sizeof(struct nx_action_set_tunnel) == 16);
  * Sets the encapsulating tunnel ID to a 64-bit value. */
 struct nx_action_set_tunnel64 {
     ovs_be16 type;                  /* OFPAT_VENDOR. */
-    ovs_be16 len;                   /* Length is 16. */
+    ovs_be16 len;                   /* Length is 24. */
     ovs_be32 vendor;                /* NX_VENDOR_ID. */
     ovs_be16 subtype;               /* NXAST_SET_TUNNEL64. */
     uint8_t pad[6];
@@ -540,7 +506,7 @@ OFP_ASSERT(sizeof(struct nx_action_pop_queue) == 16);
  */
 struct nx_action_reg_move {
     ovs_be16 type;                  /* OFPAT_VENDOR. */
-    ovs_be16 len;                   /* Length is 16. */
+    ovs_be16 len;                   /* Length is 24. */
     ovs_be32 vendor;                /* NX_VENDOR_ID. */
     ovs_be16 subtype;               /* NXAST_REG_MOVE. */
     ovs_be16 n_bits;                /* Number of bits. */
@@ -579,7 +545,7 @@ OFP_ASSERT(sizeof(struct nx_action_reg_move) == 24);
  */
 struct nx_action_reg_load {
     ovs_be16 type;                  /* OFPAT_VENDOR. */
-    ovs_be16 len;                   /* Length is 16. */
+    ovs_be16 len;                   /* Length is 24. */
     ovs_be32 vendor;                /* NX_VENDOR_ID. */
     ovs_be16 subtype;               /* NXAST_REG_LOAD. */
     ovs_be16 ofs_nbits;             /* (ofs << 6) | (n_bits - 1). */
@@ -1003,7 +969,7 @@ OFP_ASSERT(sizeof(struct nx_action_fin_timeout) == 16);
  */
 struct nx_action_autopath {
     ovs_be16 type;              /* OFPAT_VENDOR. */
-    ovs_be16 len;               /* Length is 20. */
+    ovs_be16 len;               /* Length is 24. */
     ovs_be32 vendor;            /* NX_VENDOR_ID. */
     ovs_be16 subtype;           /* NXAST_AUTOPATH. */
 
@@ -1104,6 +1070,35 @@ enum nx_bd_algorithm {
      * Uses the 'fields' and 'basis' parameters. */
     NX_BD_ALG_HRW /* Highest Random Weight. */
 };
+
+
+/* Action structure for NXAST_DEC_TTL_CNT_IDS.
+ *
+ * If the packet is not IPv4 or IPv6, does nothing.  For IPv4 or IPv6, if the
+ * TTL or hop limit is at least 2, decrements it by 1.  Otherwise, if TTL or
+ * hop limit is 0 or 1, sends a packet-in to the controllers with each of the
+ * 'n_controllers' controller IDs specified in 'cnt_ids'.
+ *
+ * (This differs from NXAST_DEC_TTL in that for NXAST_DEC_TTL the packet-in is
+ * sent only to controllers with id 0.)
+ */
+struct nx_action_cnt_ids {
+    ovs_be16 type;              /* OFPAT_VENDOR. */
+    ovs_be16 len;               /* Length including slaves. */
+    ovs_be32 vendor;            /* NX_VENDOR_ID. */
+    ovs_be16 subtype;           /* NXAST_DEC_TTL_CNT_IDS. */
+
+    ovs_be16 n_controllers;     /* Number of controllers. */
+    uint8_t zeros[4];           /* Must be zero. */
+
+    /* Followed by 1 or more controller ids.
+     *
+     * uint16_t cnt_ids[];        // Controller ids.
+     * uint8_t pad[];           // Must be 0 to 8-byte align cnt_ids[].
+     */
+};
+OFP_ASSERT(sizeof(struct nx_action_cnt_ids) == 16);
+
 
 /* Action structure for NXAST_OUTPUT_REG.
  *
@@ -1149,11 +1144,11 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
 
 /* Flexible flow specifications (aka NXM = Nicira Extended Match).
  *
- * OpenFlow 1.0 has "struct ofp_match" for specifying flow matches.  This
+ * OpenFlow 1.0 has "struct ofp10_match" for specifying flow matches.  This
  * structure is fixed-length and hence difficult to extend.  This section
  * describes a more flexible, variable-length flow match, called "nx_match" for
  * short, that is also supported by Open vSwitch.  This section also defines a
- * replacement for each OpenFlow message that includes struct ofp_match.
+ * replacement for each OpenFlow message that includes struct ofp10_match.
  *
  *
  * Format
@@ -1211,7 +1206,7 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
  *     matches bit J in nxm_value.  A 0-bit in nxm_mask causes the
  *     corresponding bits in nxm_value and the field's value to be ignored.
  *     (The sense of the nxm_mask bits is the opposite of that used by the
- *     "wildcards" member of struct ofp_match.)
+ *     "wildcards" member of struct ofp10_match.)
  *
  *     When nxm_hasmask is 1, nxm_length is always even.
  *
@@ -1368,13 +1363,13 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
  *
  * Format: 48-bit Ethernet MAC address.
  *
- * Masking: The nxm_mask patterns 01:00:00:00:00:00 and FE:FF:FF:FF:FF:FF must
- *   be supported for NXM_OF_ETH_DST_W (as well as the trivial patterns that
- *   are all-0-bits or all-1-bits).  Support for other patterns and for masking
- *   of NXM_OF_ETH_SRC is optional. */
+ * Masking: Fully maskable, in versions 1.8 and later. Earlier versions only
+ *   supported the following masks for NXM_OF_ETH_DST_W: 00:00:00:00:00:00,
+ *   fe:ff:ff:ff:ff:ff, 01:00:00:00:00:00, ff:ff:ff:ff:ff:ff. */
 #define NXM_OF_ETH_DST    NXM_HEADER  (0x0000,  1, 6)
 #define NXM_OF_ETH_DST_W  NXM_HEADER_W(0x0000,  1, 6)
 #define NXM_OF_ETH_SRC    NXM_HEADER  (0x0000,  2, 6)
+#define NXM_OF_ETH_SRC_W  NXM_HEADER_W(0x0000,  2, 6)
 
 /* Packet's Ethernet type.
  *
@@ -1461,7 +1456,8 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
  *
  * Format: 32-bit integer in network byte order.
  *
- * Masking: Only CIDR masks are allowed, that is, masks that consist of N
+ * Masking: Fully maskable, in Open vSwitch 1.8 and later.  In earlier
+ *   versions, only CIDR masks are allowed, that is, masks that consist of N
  *   high-order bits set to 1 and the other 32-N bits set to 0. */
 #define NXM_OF_IP_SRC     NXM_HEADER  (0x0000,  7, 4)
 #define NXM_OF_IP_SRC_W   NXM_HEADER_W(0x0000,  7, 4)
@@ -1530,7 +1526,8 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
  *
  * Format: 32-bit integer in network byte order.
  *
- * Masking: Only CIDR masks are allowed, that is, masks that consist of N
+ * Masking: Fully maskable, in Open vSwitch 1.8 and later.  In earlier
+ *   versions, only CIDR masks are allowed, that is, masks that consist of N
  *   high-order bits set to 1 and the other 32-N bits set to 0. */
 #define NXM_OF_ARP_SPA    NXM_HEADER  (0x0000, 16, 4)
 #define NXM_OF_ARP_SPA_W  NXM_HEADER_W(0x0000, 16, 4)
@@ -1606,7 +1603,8 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
  *
  * Format: 128-bit IPv6 address.
  *
- * Masking: Only CIDR masks are allowed, that is, masks that consist of N
+ * Masking: Fully maskable, in Open vSwitch 1.8 and later.  In previous
+ *   versions, only CIDR masks are allowed, that is, masks that consist of N
  *   high-order bits set to 1 and the other 128-N bits set to 0. */
 #define NXM_NX_IPV6_SRC    NXM_HEADER  (0x0001, 19, 16)
 #define NXM_NX_IPV6_SRC_W  NXM_HEADER_W(0x0001, 19, 16)
@@ -1634,7 +1632,8 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
  *
  * Format: 128-bit IPv6 address.
  *
- * Masking: Only CIDR masks are allowed, that is, masks that consist of N
+ * Masking: Fully maskable, in Open vSwitch 1.8 and later.  In previous
+ *   versions, only CIDR masks are allowed, that is, masks that consist of N
  *   high-order bits set to 1 and the other 128-N bits set to 0. */
 #define NXM_NX_ND_TARGET     NXM_HEADER    (0x0001, 23, 16)
 #define NXM_NX_ND_TARGET_W   NXM_HEADER_W  (0x0001, 23, 16)
@@ -1764,26 +1763,23 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
 
 enum nx_flow_format {
     NXFF_OPENFLOW10 = 0,         /* Standard OpenFlow 1.0 compatible. */
-    NXFF_NXM = 2                 /* Nicira extended match. */
+    NXFF_NXM = 2,                /* Nicira extended match. */
+    NXFF_OPENFLOW12 = 3          /* OpenFlow 1.2 format. */
 };
 
 /* NXT_SET_FLOW_FORMAT request. */
 struct nx_set_flow_format {
-    struct nicira_header nxh;
     ovs_be32 format;            /* One of NXFF_*. */
 };
-OFP_ASSERT(sizeof(struct nx_set_flow_format) == 20);
+OFP_ASSERT(sizeof(struct nx_set_flow_format) == 4);
 
 /* NXT_FLOW_MOD (analogous to OFPT_FLOW_MOD).
  *
  * It is possible to limit flow deletions and modifications to certain
- * cookies by using the NXM_NX_COOKIE and NXM_NX_COOKIE_W matches.  For
- * these commands, the "cookie" field is always ignored.  Flow additions
- * make use of the "cookie" field and ignore any NXM_NX_COOKIE*
- * definitions.
+ * cookies by using the NXM_NX_COOKIE(_W) matches.  The "cookie" field
+ * is used only to add or modify flow cookies.
  */
 struct nx_flow_mod {
-    struct nicira_header nxh;
     ovs_be64 cookie;              /* Opaque controller-issued identifier. */
     ovs_be16 command;             /* One of OFPFC_*. */
     ovs_be16 idle_timeout;        /* Idle time before discarding (seconds). */
@@ -1806,11 +1802,10 @@ struct nx_flow_mod {
      *     multiple of 8).
      */
 };
-OFP_ASSERT(sizeof(struct nx_flow_mod) == 48);
+OFP_ASSERT(sizeof(struct nx_flow_mod) == 32);
 
 /* NXT_FLOW_REMOVED (analogous to OFPT_FLOW_REMOVED). */
 struct nx_flow_removed {
-    struct nicira_header nxh;
     ovs_be64 cookie;          /* Opaque controller-issued identifier. */
     ovs_be16 priority;        /* Priority level of flow entry. */
     uint8_t reason;           /* One of OFPRR_*. */
@@ -1827,7 +1822,7 @@ struct nx_flow_removed {
      *   - Exactly (match_len + 7)/8*8 - match_len (between 0 and 7) bytes of
      *     all-zero bytes. */
 };
-OFP_ASSERT(sizeof(struct nx_flow_removed) == 56);
+OFP_ASSERT(sizeof(struct nx_flow_removed) == 40);
 
 /* Nicira vendor stats request of type NXST_FLOW (analogous to OFPST_FLOW
  * request).
@@ -1836,7 +1831,6 @@ OFP_ASSERT(sizeof(struct nx_flow_removed) == 56);
  * NXM_NX_COOKIE and NXM_NX_COOKIE_W matches.
  */
 struct nx_flow_stats_request {
-    struct nicira_stats_msg nsm;
     ovs_be16 out_port;        /* Require matching entries to include this
                                  as an output port.  A value of OFPP_NONE
                                  indicates no restriction. */
@@ -1851,7 +1845,7 @@ struct nx_flow_stats_request {
      *     message.
      */
 };
-OFP_ASSERT(sizeof(struct nx_flow_stats_request) == 32);
+OFP_ASSERT(sizeof(struct nx_flow_stats_request) == 8);
 
 /* Body for Nicira vendor stats reply of type NXST_FLOW (analogous to
  * OFPST_FLOW reply).
@@ -1882,8 +1876,7 @@ struct nx_flow_stats {
     ovs_be32 duration_sec;    /* Time flow has been alive in seconds. */
     ovs_be32 duration_nsec;   /* Time flow has been alive in nanoseconds
                                  beyond duration_sec. */
-    ovs_be16 priority;        /* Priority of the entry. Only meaningful
-                                 when this is not an exact-match entry. */
+    ovs_be16 priority;        /* Priority of the entry. */
     ovs_be16 idle_timeout;    /* Number of seconds idle before expiration. */
     ovs_be16 hard_timeout;    /* Number of seconds before expiration. */
     ovs_be16 match_len;       /* Length of nx_match. */
@@ -1903,9 +1896,11 @@ struct nx_flow_stats {
 OFP_ASSERT(sizeof(struct nx_flow_stats) == 48);
 
 /* Nicira vendor stats request of type NXST_AGGREGATE (analogous to
- * OFPST_AGGREGATE request). */
+ * OFPST_AGGREGATE request).
+ *
+ * The reply format is identical to the reply format for OFPST_AGGREGATE,
+ * except for the header. */
 struct nx_aggregate_stats_request {
-    struct nicira_stats_msg nsm;
     ovs_be16 out_port;        /* Require matching entries to include this
                                  as an output port.  A value of OFPP_NONE
                                  indicates no restriction. */
@@ -1920,18 +1915,7 @@ struct nx_aggregate_stats_request {
      *     message.
      */
 };
-OFP_ASSERT(sizeof(struct nx_aggregate_stats_request) == 32);
-
-/* Body for nicira_stats_msg reply of type NXST_AGGREGATE (analogous to
- * OFPST_AGGREGATE reply). */
-struct nx_aggregate_stats_reply {
-    struct nicira_stats_msg nsm;
-    ovs_be64 packet_count;     /* Number of packets, UINT64_MAX if unknown. */
-    ovs_be64 byte_count;       /* Number of bytes, UINT64_MAX if unknown. */
-    ovs_be32 flow_count;       /* Number of flows. */
-    uint8_t pad[4];            /* Align to 64 bits. */
-};
-OFP_ASSERT(sizeof(struct nx_aggregate_stats_reply) == 48);
+OFP_ASSERT(sizeof(struct nx_aggregate_stats_request) == 8);
 
 /* NXT_SET_CONTROLLER_ID.
  *
@@ -1943,11 +1927,10 @@ OFP_ASSERT(sizeof(struct nx_aggregate_stats_reply) == 48);
  * The NXAST_CONTROLLER action is the only current user of controller
  * connection IDs. */
 struct nx_controller_id {
-    struct nicira_header nxh;
     uint8_t zero[6];            /* Must be zero. */
     ovs_be16 controller_id;     /* New controller connection ID. */
 };
-OFP_ASSERT(sizeof(struct nx_controller_id) == 24);
+OFP_ASSERT(sizeof(struct nx_controller_id) == 8);
 
 /* Action structure for NXAST_CONTROLLER.
  *
@@ -1972,5 +1955,241 @@ struct nx_action_controller {
     uint8_t zero;                   /* Must be zero. */
 };
 OFP_ASSERT(sizeof(struct nx_action_controller) == 16);
+
+/* Flow Table Monitoring
+ * =====================
+ *
+ * NXST_FLOW_MONITOR allows a controller to keep track of changes to OpenFlow
+ * flow table(s) or subsets of them, with the following workflow:
+ *
+ * 1. The controller sends an NXST_FLOW_MONITOR request to begin monitoring
+ *    flows.  The 'id' in the request must be unique among all monitors that
+ *    the controller has started and not yet canceled on this OpenFlow
+ *    connection.
+ *
+ * 2. The switch responds with an NXST_FLOW_MONITOR reply.  If the request's
+ *    'flags' included NXFMF_INITIAL, the reply includes all the flows that
+ *    matched the request at the time of the request (with event NXFME_ADDED).
+ *    If 'flags' did not include NXFMF_INITIAL, the reply is empty.
+ *
+ *    The reply uses the xid of the request (as do all replies to OpenFlow
+ *    requests).
+ *
+ * 3. Whenever a change to a flow table entry matches some outstanding monitor
+ *    request's criteria and flags, the switch sends a notification to the
+ *    controller as an additional NXST_FLOW_MONITOR reply with xid 0.
+ *
+ *    When multiple outstanding monitors match a single change, only a single
+ *    notification is sent.  This merged notification includes the information
+ *    requested in any of the individual monitors.  That is, if any of the
+ *    matching monitors requests actions (NXFMF_ACTIONS), the notification
+ *    includes actions, and if any of the monitors request full changes for the
+ *    controller's own changes (NXFMF_OWN), the controller's own changes will
+ *    be included in full.
+ *
+ * 4. The controller may cancel a monitor with NXT_FLOW_MONITOR_CANCEL.  No
+ *    further notifications will be sent on the basis of the canceled monitor
+ *    afterward.
+ *
+ *
+ * Buffer Management
+ * =================
+ *
+ * OpenFlow messages for flow monitor notifications can overflow the buffer
+ * space available to the switch, either temporarily (e.g. due to network
+ * conditions slowing OpenFlow traffic) or more permanently (e.g. the sustained
+ * rate of flow table change exceeds the network bandwidth between switch and
+ * controller).
+ *
+ * When Open vSwitch's notification buffer space reaches a limiting threshold,
+ * OVS reacts as follows:
+ *
+ * 1. OVS sends an NXT_FLOW_MONITOR_PAUSED message to the controller, following
+ *    all the already queued notifications.  After it receives this message,
+ *    the controller knows that its view of the flow table, as represented by
+ *    flow monitor notifications, is incomplete.
+ *
+ * 2. As long as the notification buffer is not empty:
+ *
+ *        - NXMFE_ADD and NXFME_MODIFIED notifications will not be sent.
+ *
+ *        - NXFME_DELETED notifications will still be sent, but only for flows
+ *          that existed before OVS sent NXT_FLOW_MONITOR_PAUSED.
+ *
+ *        - NXFME_ABBREV notifications will not be sent.  They are treated as
+ *          the expanded version (and therefore only the NXFME_DELETED
+ *          components, if any, are sent).
+ *
+ * 3. When the notification buffer empties, OVS sends NXFME_ADD notifications
+ *    for flows added since the buffer reached its limit and NXFME_MODIFIED
+ *    notifications for flows that existed before the limit was reached and
+ *    changed after the limit was reached.
+ *
+ * 4. OVS sends an NXT_FLOW_MONITOR_RESUMED message to the controller.  After
+ *    it receives this message, the controller knows that its view of the flow
+ *    table, as represented by flow monitor notifications, is again complete.
+ *
+ * This allows the maximum buffer space requirement for notifications to be
+ * bounded by the limit plus the maximum number of supported flows.
+ *
+ *
+ * "Flow Removed" messages
+ * =======================
+ *
+ * The flow monitor mechanism is independent of OFPT_FLOW_REMOVED and
+ * NXT_FLOW_REMOVED.  Flow monitor updates for deletion are sent if
+ * NXFMF_DELETE is set on a monitor, regardless of whether the
+ * OFPFF_SEND_FLOW_REM flag was set when the flow was added. */
+
+/* NXST_FLOW_MONITOR request.
+ *
+ * The NXST_FLOW_MONITOR request's body consists of an array of zero or more
+ * instances of this structure.  The request arranges to monitor the flows
+ * that match the specified criteria, which are interpreted in the same way as
+ * for NXST_FLOW.
+ *
+ * 'id' identifies a particular monitor for the purpose of allowing it to be
+ * canceled later with NXT_FLOW_MONITOR_CANCEL.  'id' must be unique among
+ * existing monitors that have not already been canceled.
+ *
+ * The reply includes the initial flow matches for monitors that have the
+ * NXFMF_INITIAL flag set.  No single flow will be included in the reply more
+ * than once, even if more than one requested monitor matches that flow.  The
+ * reply will be empty if none of the monitors has NXFMF_INITIAL set or if none
+ * of the monitors initially matches any flows.
+ *
+ * For NXFMF_ADD, an event will be reported if 'out_port' matches against the
+ * actions of the flow being added or, for a flow that is replacing an existing
+ * flow, if 'out_port' matches against the actions of the flow being replaced.
+ * For NXFMF_DELETE, 'out_port' matches against the actions of a flow being
+ * deleted.  For NXFMF_MODIFY, an event will be reported if 'out_port' matches
+ * either the old or the new actions. */
+struct nx_flow_monitor_request {
+    ovs_be32 id;                /* Controller-assigned ID for this monitor. */
+    ovs_be16 flags;             /* NXFMF_*. */
+    ovs_be16 out_port;          /* Required output port, if not OFPP_NONE. */
+    ovs_be16 match_len;         /* Length of nx_match. */
+    uint8_t table_id;           /* One table's ID or 0xff for all tables. */
+    uint8_t zeros[5];           /* Align to 64 bits (must be zero). */
+    /* Followed by:
+     *   - Exactly match_len (possibly 0) bytes containing the nx_match, then
+     *   - Exactly (match_len + 7)/8*8 - match_len (between 0 and 7) bytes of
+     *     all-zero bytes. */
+};
+OFP_ASSERT(sizeof(struct nx_flow_monitor_request) == 16);
+
+/* 'flags' bits in struct nx_flow_monitor_request. */
+enum nx_flow_monitor_flags {
+    /* When to send updates. */
+    NXFMF_INITIAL = 1 << 0,     /* Initially matching flows. */
+    NXFMF_ADD = 1 << 1,         /* New matching flows as they are added. */
+    NXFMF_DELETE = 1 << 2,      /* Old matching flows as they are removed. */
+    NXFMF_MODIFY = 1 << 3,      /* Matching flows as they are changed. */
+
+    /* What to include in updates. */
+    NXFMF_ACTIONS = 1 << 4,     /* If set, actions are included. */
+    NXFMF_OWN = 1 << 5,         /* If set, include own changes in full. */
+};
+
+/* NXST_FLOW_MONITOR reply header.
+ *
+ * The body of an NXST_FLOW_MONITOR reply is an array of variable-length
+ * structures, each of which begins with this header.  The 'length' member may
+ * be used to traverse the array, and the 'event' member may be used to
+ * determine the particular structure.
+ *
+ * Every instance is a multiple of 8 bytes long. */
+struct nx_flow_update_header {
+    ovs_be16 length;            /* Length of this entry. */
+    ovs_be16 event;             /* One of NXFME_*. */
+    /* ...other data depending on 'event'... */
+};
+OFP_ASSERT(sizeof(struct nx_flow_update_header) == 4);
+
+/* 'event' values in struct nx_flow_update_header. */
+enum nx_flow_update_event {
+    /* struct nx_flow_update_full. */
+    NXFME_ADDED = 0,            /* Flow was added. */
+    NXFME_DELETED = 1,          /* Flow was deleted. */
+    NXFME_MODIFIED = 2,         /* Flow (generally its actions) was changed. */
+
+    /* struct nx_flow_update_abbrev. */
+    NXFME_ABBREV = 3,           /* Abbreviated reply. */
+};
+
+/* NXST_FLOW_MONITOR reply for NXFME_ADDED, NXFME_DELETED, and
+ * NXFME_MODIFIED. */
+struct nx_flow_update_full {
+    ovs_be16 length;            /* Length is 24. */
+    ovs_be16 event;             /* One of NXFME_*. */
+    ovs_be16 reason;            /* OFPRR_* for NXFME_DELETED, else zero. */
+    ovs_be16 priority;          /* Priority of the entry. */
+    ovs_be16 idle_timeout;      /* Number of seconds idle before expiration. */
+    ovs_be16 hard_timeout;      /* Number of seconds before expiration. */
+    ovs_be16 match_len;         /* Length of nx_match. */
+    uint8_t table_id;           /* ID of flow's table. */
+    uint8_t pad;                /* Reserved, currently zeroed. */
+    ovs_be64 cookie;            /* Opaque controller-issued identifier. */
+    /* Followed by:
+     *   - Exactly match_len (possibly 0) bytes containing the nx_match, then
+     *   - Exactly (match_len + 7)/8*8 - match_len (between 0 and 7) bytes of
+     *     all-zero bytes, then
+     *   - Actions to fill out the remainder 'length' bytes (always a multiple
+     *     of 8).  If NXFMF_ACTIONS was not specified, or 'event' is
+     *     NXFME_DELETED, no actions are included.
+     */
+};
+OFP_ASSERT(sizeof(struct nx_flow_update_full) == 24);
+
+/* NXST_FLOW_MONITOR reply for NXFME_ABBREV.
+ *
+ * When the controller does not specify NXFMF_OWN in a monitor request, any
+ * flow tables changes due to the controller's own requests (on the same
+ * OpenFlow channel) will be abbreviated, when possible, to this form, which
+ * simply specifies the 'xid' of the OpenFlow request (e.g. an OFPT_FLOW_MOD or
+ * NXT_FLOW_MOD) that caused the change.
+ *
+ * Some changes cannot be abbreviated and will be sent in full:
+ *
+ *   - Changes that only partially succeed.  This can happen if, for example,
+ *     a flow_mod with type OFPFC_MODIFY affects multiple flows, but only some
+ *     of those modifications succeed (e.g. due to hardware limitations).
+ *
+ *     This cannot occur with the current implementation of the Open vSwitch
+ *     software datapath.  It could happen with other datapath implementations.
+ *
+ *   - Changes that race with conflicting changes made by other controllers or
+ *     other flow_mods (not separated by barriers) by the same controller.
+ *
+ *     This cannot occur with the current Open vSwitch implementation
+ *     (regardless of datapath) because Open vSwitch internally serializes
+ *     potentially conflicting changes.
+ *
+ * A flow_mod that does not change the flow table will not trigger any
+ * notification, even an abbreviated one.  For example, a "modify" or "delete"
+ * flow_mod that does not match any flows will not trigger a notification.
+ * Whether an "add" or "modify" that specifies all the same parameters that a
+ * flow already has triggers a notification is unspecified and subject to
+ * change in future versions of Open vSwitch.
+ *
+ * OVS will always send the notifications for a given flow table change before
+ * the reply to a OFPT_BARRIER_REQUEST request that precedes the flow table
+ * change.  Thus, if the controller does not receive an abbreviated
+ * notification for a flow_mod before the next OFPT_BARRIER_REPLY, it will
+ * never receive one. */
+struct nx_flow_update_abbrev {
+    ovs_be16 length;            /* Length is 8. */
+    ovs_be16 event;             /* NXFME_ABBREV. */
+    ovs_be32 xid;               /* Controller-specified xid from flow_mod. */
+};
+OFP_ASSERT(sizeof(struct nx_flow_update_abbrev) == 8);
+
+/* NXT_FLOW_MONITOR_CANCEL.
+ *
+ * Used by a controller to cancel an outstanding monitor. */
+struct nx_flow_monitor_cancel {
+    ovs_be32 id;                /* 'id' from nx_flow_monitor_request. */
+};
+OFP_ASSERT(sizeof(struct nx_flow_monitor_cancel) == 4);
 
 #endif /* openflow/nicira-ext.h */

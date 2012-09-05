@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@
 #include "fatal-signal.h"
 #include "flow.h"
 #include "ofp-errors.h"
+#include "ofp-msgs.h"
 #include "ofp-print.h"
 #include "ofp-util.h"
 #include "ofpbuf.h"
@@ -137,10 +138,10 @@ vconn_usage(bool active, bool passive, bool bootstrap OVS_UNUSED)
     printf("\n");
     if (active) {
         printf("Active OpenFlow connection methods:\n");
-        printf("  tcp:IP[:PORT]         "
+        printf("  tcp:IP[:PORT]           "
                "PORT (default: %d) at remote IP\n", OFP_TCP_PORT);
 #ifdef HAVE_OPENSSL
-        printf("  ssl:IP[:PORT]         "
+        printf("  ssl:IP[:PORT]           "
                "SSL PORT (default: %d) at remote IP\n", OFP_SSL_PORT);
 #endif
         printf("  unix:FILE               Unix domain socket named FILE\n");
@@ -261,6 +262,12 @@ error:
 void
 vconn_run(struct vconn *vconn)
 {
+    if (vconn->state == VCS_CONNECTING ||
+        vconn->state == VCS_SEND_HELLO ||
+        vconn->state == VCS_RECV_HELLO) {
+        vconn_connect(vconn);
+    }
+
     if (vconn->class->run) {
         (vconn->class->run)(vconn);
     }
@@ -271,13 +278,20 @@ vconn_run(struct vconn *vconn)
 void
 vconn_run_wait(struct vconn *vconn)
 {
+    if (vconn->state == VCS_CONNECTING ||
+        vconn->state == VCS_SEND_HELLO ||
+        vconn->state == VCS_RECV_HELLO) {
+        vconn_connect_wait(vconn);
+    }
+
     if (vconn->class->run_wait) {
         (vconn->class->run_wait)(vconn);
     }
 }
 
 int
-vconn_open_block(const char *name, int min_version, struct vconn **vconnp)
+vconn_open_block(const char *name, enum ofp_version min_version,
+                 struct vconn **vconnp)
 {
     struct vconn *vconn;
     int error;
@@ -286,13 +300,7 @@ vconn_open_block(const char *name, int min_version, struct vconn **vconnp)
 
     error = vconn_open(name, min_version, &vconn, DSCP_DEFAULT);
     if (!error) {
-        while ((error = vconn_connect(vconn)) == EAGAIN) {
-            vconn_run(vconn);
-            vconn_run_wait(vconn);
-            vconn_connect_wait(vconn);
-            poll_block();
-        }
-        assert(error != EINPROGRESS);
+        error = vconn_connect_block(vconn);
     }
 
     if (error) {
@@ -363,7 +371,7 @@ vconn_get_local_port(const struct vconn *vconn)
 int
 vconn_get_version(const struct vconn *vconn)
 {
-    return vconn->version;
+    return vconn->version ? vconn->version : -1;
 }
 
 static void
@@ -385,7 +393,7 @@ vcs_send_hello(struct vconn *vconn)
     struct ofpbuf *b;
     int retval;
 
-    make_openflow(sizeof(struct ofp_header), OFPT_HELLO, &b);
+    b = ofpraw_alloc(OFPRAW_OFPT_HELLO, OFP10_VERSION, 0);
     retval = do_send(vconn, b);
     if (!retval) {
         vconn->state = VCS_RECV_HELLO;
@@ -406,9 +414,12 @@ vcs_recv_hello(struct vconn *vconn)
 
     retval = do_recv(vconn, &b);
     if (!retval) {
-        struct ofp_header *oh = b->data;
+        const struct ofp_header *oh = b->data;
+        enum ofptype type;
+        enum ofperr error;
 
-        if (oh->type == OFPT_HELLO) {
+        error = ofptype_decode(&type, b->data);
+        if (!error && type == OFPTYPE_HELLO) {
             if (b->size > sizeof *oh) {
                 struct ds msg = DS_EMPTY_INITIALIZER;
                 ds_put_format(&msg, "%s: extra-long hello:\n", vconn->name);
@@ -462,9 +473,8 @@ vcs_send_error(struct vconn *vconn)
 
     snprintf(s, sizeof s, "We support versions 0x%02x to 0x%02x inclusive but "
              "you support no later than version 0x%02"PRIx8".",
-             vconn->min_version, OFP10_VERSION, vconn->version);
-    b = ofperr_encode_hello(OFPERR_OFPHFC_INCOMPATIBLE,
-                            ofperr_domain_from_version(vconn->version), s);
+             vconn->min_version, OFP12_VERSION, vconn->version);
+    b = ofperr_encode_hello(OFPERR_OFPHFC_INCOMPATIBLE, vconn->version, s);
     retval = do_send(vconn, b);
     if (retval) {
         ofpbuf_delete(b);
@@ -529,10 +539,33 @@ vconn_connect(struct vconn *vconn)
 int
 vconn_recv(struct vconn *vconn, struct ofpbuf **msgp)
 {
-    int retval = vconn_connect(vconn);
+    struct ofpbuf *msg;
+    int retval;
+
+    retval = vconn_connect(vconn);
     if (!retval) {
-        retval = do_recv(vconn, msgp);
+        retval = do_recv(vconn, &msg);
     }
+    if (!retval) {
+        const struct ofp_header *oh = msg->data;
+        if (oh->version != vconn->version) {
+            enum ofptype type;
+
+            if (ofptype_decode(&type, msg->data)
+                || (type != OFPTYPE_HELLO &&
+                    type != OFPTYPE_ERROR &&
+                    type != OFPTYPE_ECHO_REQUEST &&
+                    type != OFPTYPE_ECHO_REPLY)) {
+                VLOG_ERR_RL(&bad_ofmsg_rl, "%s: received OpenFlow version "
+                            "0x%02"PRIx8" != expected %02x",
+                            vconn->name, oh->version, vconn->version);
+                ofpbuf_delete(msg);
+                retval = EPROTO;
+            }
+        }
+    }
+
+    *msgp = retval ? NULL : msg;
     return retval;
 }
 
@@ -541,40 +574,12 @@ do_recv(struct vconn *vconn, struct ofpbuf **msgp)
 {
     int retval = (vconn->class->recv)(vconn, msgp);
     if (!retval) {
-        struct ofp_header *oh;
-
         COVERAGE_INC(vconn_received);
         if (VLOG_IS_DBG_ENABLED()) {
             char *s = ofp_to_string((*msgp)->data, (*msgp)->size, 1);
             VLOG_DBG_RL(&ofmsg_rl, "%s: received: %s", vconn->name, s);
             free(s);
         }
-
-        oh = ofpbuf_at_assert(*msgp, 0, sizeof *oh);
-        if ((oh->version != vconn->version || oh->version == 0)
-            && oh->type != OFPT_HELLO
-            && oh->type != OFPT_ERROR
-            && oh->type != OFPT_ECHO_REQUEST
-            && oh->type != OFPT_ECHO_REPLY
-            && oh->type != OFPT_VENDOR)
-        {
-            if (vconn->version == 0) {
-                VLOG_ERR_RL(&bad_ofmsg_rl,
-                            "%s: received OpenFlow message type %"PRIu8" "
-                            "before version negotiation complete",
-                            vconn->name, oh->type);
-            } else {
-                VLOG_ERR_RL(&bad_ofmsg_rl,
-                            "%s: received OpenFlow version 0x%02"PRIx8" "
-                            "!= expected %02x",
-                            vconn->name, oh->version, vconn->version);
-            }
-            ofpbuf_delete(*msgp);
-            retval = EPROTO;
-        }
-    }
-    if (retval) {
-        *msgp = NULL;
     }
     return retval;
 }
@@ -605,7 +610,8 @@ do_send(struct vconn *vconn, struct ofpbuf *msg)
     int retval;
 
     assert(msg->size >= sizeof(struct ofp_header));
-    assert(((struct ofp_header *) msg->data)->length == htons(msg->size));
+
+    ofpmsg_update_length(msg);
     if (!VLOG_IS_DBG_ENABLED()) {
         COVERAGE_INC(vconn_sent);
         retval = (vconn->class->send)(vconn, msg);
@@ -619,6 +625,24 @@ do_send(struct vconn *vconn, struct ofpbuf *msg)
         free(s);
     }
     return retval;
+}
+
+/* Same as vconn_connect(), except that it waits until the connection on
+ * 'vconn' completes or fails.  Thus, it will never return EAGAIN. */
+int
+vconn_connect_block(struct vconn *vconn)
+{
+    int error;
+
+    while ((error = vconn_connect(vconn)) == EAGAIN) {
+        vconn_run(vconn);
+        vconn_run_wait(vconn);
+        vconn_connect_wait(vconn);
+        poll_block();
+    }
+    assert(error != EINPROGRESS);
+
+    return error;
 }
 
 /* Same as vconn_send, except that it waits until 'msg' can be transmitted. */
@@ -743,7 +767,7 @@ vconn_transact_noreply(struct vconn *vconn, struct ofpbuf *request,
     }
 
     /* Send barrier. */
-    barrier = ofputil_encode_barrier_request();
+    barrier = ofputil_encode_barrier_request(vconn_get_version(vconn));
     barrier_xid = ((struct ofp_header *) barrier->data)->xid;
     error = vconn_send_block(vconn, barrier);
     if (error) {

@@ -1,4 +1,4 @@
-# Copyright (C) 2009, 2010, 2011, 2012 Nicira Networks, Inc.
+# Copyright (C) 2009, 2010, 2011, 2012 Nicira, Inc.
 #
 # Copying and distribution of this file, with or without modification,
 # are permitted in any medium without royalty provided the copyright
@@ -79,6 +79,8 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/lockfile.h \
 	lib/mac-learning.c \
 	lib/mac-learning.h \
+	lib/memory.c \
+	lib/memory.h \
 	lib/meta-flow.c \
 	lib/meta-flow.h \
 	lib/multipath.c \
@@ -95,8 +97,12 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/nx-match.h \
 	lib/odp-util.c \
 	lib/odp-util.h \
+	lib/ofp-actions.c \
+	lib/ofp-actions.h \
 	lib/ofp-errors.c \
 	lib/ofp-errors.h \
+	lib/ofp-msgs.c \
+	lib/ofp-msgs.h \
 	lib/ofp-parse.c \
 	lib/ofp-parse.h \
 	lib/ofp-print.c \
@@ -136,8 +142,12 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/sha1.h \
 	lib/shash.c \
 	lib/shash.h \
+	lib/simap.c \
+	lib/simap.h \
 	lib/signals.c \
 	lib/signals.h \
+	lib/smap.c \
+	lib/smap.h \
 	lib/socket-util.c \
 	lib/socket-util.h \
 	lib/sort.c \
@@ -168,6 +178,8 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/timer.h \
 	lib/timeval.c \
 	lib/timeval.h \
+	lib/token-bucket.c \
+	lib/token-bucket.h \
 	lib/tunalloc.c \
 	lib/tunalloc.h \
 	lib/type-props.h \
@@ -192,7 +204,9 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/vlog.c \
 	lib/vlog.h \
 	lib/vswitch-idl.c \
-	lib/vswitch-idl.h
+	lib/vswitch-idl.h \
+	lib/worker.c \
+	lib/worker.h
 
 nodist_lib_libopenvswitch_a_SOURCES = \
 	lib/dirs.c
@@ -233,6 +247,14 @@ lib_libopenvswitch_a_SOURCES += \
 	lib/route-table.h
 endif
 
+if HAVE_IF_DL
+lib_libopenvswitch_a_SOURCES += \
+	lib/netdev-bsd.c \
+	lib/rtbsd.c \
+	lib/rtbsd.h \
+	lib/route-table-bsd.c
+endif
+
 if HAVE_OPENSSL
 lib_libopenvswitch_a_SOURCES += lib/stream-ssl.c
 nodist_lib_libopenvswitch_a_SOURCES += lib/dhparams.c
@@ -260,6 +282,7 @@ MAN_FRAGMENTS += \
 	lib/daemon.man \
 	lib/daemon-syn.man \
 	lib/leak-checker.man \
+	lib/memory-unixctl.man \
 	lib/ovs.tmac \
 	lib/ssl-bootstrap.man \
 	lib/ssl-bootstrap-syn.man \
@@ -293,6 +316,7 @@ lib/dirs.c: lib/dirs.c.in Makefile
 		-e 's,[@]srcdir[@],$(srcdir),g' \
 		-e 's,[@]LOGDIR[@],"$(LOGDIR)",g' \
 		-e 's,[@]RUNDIR[@],"$(RUNDIR)",g' \
+		-e 's,[@]DBDIR[@],"$(DBDIR)",g' \
 		-e 's,[@]bindir[@],"$(bindir)",g' \
 		-e 's,[@]sysconfdir[@],"$(sysconfdir)",g' \
 		-e 's,[@]pkgdatadir[@],"$(pkgdatadir)",g') \
@@ -301,16 +325,24 @@ lib/dirs.c: lib/dirs.c.in Makefile
 
 $(srcdir)/lib/ofp-errors.inc: \
 	lib/ofp-errors.h $(srcdir)/build-aux/extract-ofp-errors
-	$(PYTHON) $(srcdir)/build-aux/extract-ofp-errors \
+	$(run_python) $(srcdir)/build-aux/extract-ofp-errors \
 		$(srcdir)/lib/ofp-errors.h > $@.tmp && mv $@.tmp $@
 $(srcdir)/lib/ofp-errors.c: $(srcdir)/lib/ofp-errors.inc
 EXTRA_DIST += build-aux/extract-ofp-errors lib/ofp-errors.inc
+
+$(srcdir)/lib/ofp-msgs.inc: \
+	lib/ofp-msgs.h $(srcdir)/build-aux/extract-ofp-msgs
+	$(run_python) $(srcdir)/build-aux/extract-ofp-msgs \
+		$(srcdir)/lib/ofp-msgs.h $@ > $@.tmp && mv $@.tmp $@
+$(srcdir)/lib/ofp-msgs.c: $(srcdir)/lib/ofp-msgs.inc
+EXTRA_DIST += build-aux/extract-ofp-msgs lib/ofp-msgs.inc
 
 INSTALL_DATA_LOCAL += lib-install-data-local
 lib-install-data-local:
 	$(MKDIR_P) $(DESTDIR)$(RUNDIR)
 	$(MKDIR_P) $(DESTDIR)$(PKIDIR)
 	$(MKDIR_P) $(DESTDIR)$(LOGDIR)
+	$(MKDIR_P) $(DESTDIR)$(DBDIR)
 
 if !USE_LINKER_SECTIONS
 # All distributed sources, with names adjust properly for referencing

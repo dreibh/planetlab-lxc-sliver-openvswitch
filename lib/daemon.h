@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -72,5 +72,8 @@ void ignore_existing_pidfile(void);
 void daemon_usage(void);
 pid_t read_pidfile(const char *name);
 pid_t read_pidfile_if_exists(const char *name);
+
+pid_t fork_and_clean_up(void);
+void daemonize_post_detach(void);
 
 #endif /* daemon.h */

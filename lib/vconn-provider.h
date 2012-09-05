@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010 Nicira Networks.
+ * Copyright (c) 2008, 2009, 2010 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@
 
 #include <assert.h>
 #include "vconn.h"
+#include "openflow/openflow-common.h"
 
 /* Active virtual connection to an OpenFlow device. */
 
@@ -32,8 +33,8 @@ struct vconn {
     struct vconn_class *class;
     int state;
     int error;
-    int min_version;
-    int version;
+    enum ofp_version min_version;
+    enum ofp_version version;
     ovs_be32 remote_ip;
     ovs_be16 remote_port;
     ovs_be32 local_ip;

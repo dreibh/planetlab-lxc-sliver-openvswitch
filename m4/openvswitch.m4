@@ -1,6 +1,6 @@
 # -*- autoconf -*-
 
-# Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira Networks.
+# Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ AC_DEFUN([OVS_CHECK_COVERAGE],
      [AC_HELP_STRING([--enable-coverage], 
                      [Enable gcov coverage tool.])],
      [case "${enableval}" in
-        (lcov|yes) coverage=true ;;
+        (yes) coverage=true ;;
         (no)  coverage=false ;;
         (*) AC_MSG_ERROR([bad value ${enableval} for --enable-coverage]) ;;
       esac],
@@ -131,6 +131,16 @@ AC_DEFUN([OVS_CHECK_LOGDIR],
      [LOGDIR=$withval],
      [LOGDIR='${localstatedir}/log/${PACKAGE}'])
    AC_SUBST([LOGDIR])])
+
+dnl Checks for the directory in which to store the Open vSwitch database.
+AC_DEFUN([OVS_CHECK_DBDIR],
+  [AC_ARG_WITH(
+     [dbdir],
+     AC_HELP_STRING([--with-dbdir=DIR],
+                    [directory used for conf.db [[SYSCONFDIR/PACKAGE]]]),
+     [DBDIR=$withval],
+     [DBDIR='${sysconfdir}/${PACKAGE}'])
+   AC_SUBST([DBDIR])])
 
 dnl Defines HAVE_BACKTRACE if backtrace() is declared in <execinfo.h>
 dnl and exists in libc.

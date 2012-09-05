@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011 Nicira Networks.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@
 #include "openflow/openflow.h"
 #include "poll-loop.h"
 #include "rconn.h"
-#include "shash.h"
+#include "simap.h"
 #include "stream-ssl.h"
 #include "timeval.h"
 #include "unixctl.h"
@@ -49,7 +49,6 @@ VLOG_DEFINE_THIS_MODULE(controller);
 
 struct switch_ {
     struct lswitch *lswitch;
-    struct rconn *rconn;
 };
 
 /* -H, --hub: Learn the ports on which MAC addresses appear? */
@@ -62,7 +61,7 @@ static bool set_up_flows = true;
 /* -N, --normal: Use "NORMAL" action instead of explicit port? */
 static bool action_normal = false;
 
-/* -w, --wildcard: 0 to disable wildcard flow entries, a OFPFW_* bitmask to
+/* -w, --wildcard: 0 to disable wildcard flow entries, an OFPFW10_* bitmask to
  * enable specific wildcards, or UINT32_MAX to use the default wildcards. */
 static uint32_t wildcards = 0;
 
@@ -76,8 +75,8 @@ static bool mute = false;
 /* -q, --queue: default OpenFlow queue, none if UINT32_MAX. */
 static uint32_t default_queue = UINT32_MAX;
 
-/* -Q, --port-queue: map from port name to port number (cast to void *). */
-static struct shash port_queues = SHASH_INITIALIZER(&port_queues);
+/* -Q, --port-queue: map from port name to port number. */
+static struct simap port_queues = SIMAP_INITIALIZER(&port_queues);
 
 /* --with-flows: Flows to send to switch. */
 static struct ofputil_flow_mod *default_flows;
@@ -86,7 +85,6 @@ static size_t n_default_flows;
 /* --unixctl: Name of unixctl socket, or null to use the default. */
 static char *unixctl_path = NULL;
 
-static int do_switching(struct switch_ *);
 static void new_switch(struct switch_ *, struct vconn *);
 static void parse_options(int argc, char *argv[]);
 static void usage(void) NO_RETURN;
@@ -151,8 +149,6 @@ main(int argc, char *argv[])
     daemonize_complete();
 
     while (n_switches > 0 || n_listeners > 0) {
-        int iteration;
-
         /* Accept connections on listening vconns. */
         for (i = 0; i < n_listeners && n_switches < MAX_SWITCHES; ) {
             struct vconn *new_vconn;
@@ -169,32 +165,16 @@ main(int argc, char *argv[])
             }
         }
 
-        /* Do some switching work.  Limit the number of iterations so that
-         * callbacks registered with the poll loop don't starve. */
-        for (iteration = 0; iteration < 50; iteration++) {
-            bool progress = false;
-            for (i = 0; i < n_switches; ) {
-                struct switch_ *this = &switches[i];
-
-                retval = do_switching(this);
-                if (!retval || retval == EAGAIN) {
-                    if (!retval) {
-                        progress = true;
-                    }
-                    i++;
-                } else {
-                    rconn_destroy(this->rconn);
-                    lswitch_destroy(this->lswitch);
-                    switches[i] = switches[--n_switches];
-                }
-            }
-            if (!progress) {
-                break;
-            }
-        }
-        for (i = 0; i < n_switches; i++) {
+        /* Do some switching work.  . */
+        for (i = 0; i < n_switches; ) {
             struct switch_ *this = &switches[i];
             lswitch_run(this->lswitch);
+            if (lswitch_is_alive(this->lswitch)) {
+                i++;
+            } else {
+                lswitch_destroy(this->lswitch);
+                switches[i] = switches[--n_switches];
+            }
         }
 
         unixctl_server_run(unixctl);
@@ -207,8 +187,6 @@ main(int argc, char *argv[])
         }
         for (i = 0; i < n_switches; i++) {
             struct switch_ *sw = &switches[i];
-            rconn_run_wait(sw->rconn);
-            rconn_recv_wait(sw->rconn);
             lswitch_wait(sw->lswitch);
         }
         unixctl_server_wait(unixctl);
@@ -222,9 +200,10 @@ static void
 new_switch(struct switch_ *sw, struct vconn *vconn)
 {
     struct lswitch_config cfg;
+    struct rconn *rconn;
 
-    sw->rconn = rconn_create(60, 0, DSCP_DEFAULT);
-    rconn_connect_unreliably(sw->rconn, vconn, NULL);
+    rconn = rconn_create(60, 0, DSCP_DEFAULT);
+    rconn_connect_unreliably(rconn, vconn, NULL);
 
     cfg.mode = (action_normal ? LSW_NORMAL
                 : learn_macs ? LSW_LEARN
@@ -235,29 +214,8 @@ new_switch(struct switch_ *sw, struct vconn *vconn)
     cfg.n_default_flows = n_default_flows;
     cfg.default_queue = default_queue;
     cfg.port_queues = &port_queues;
-    sw->lswitch = lswitch_create(sw->rconn, &cfg);
-}
-
-static int
-do_switching(struct switch_ *sw)
-{
-    unsigned int packets_sent;
-    struct ofpbuf *msg;
-
-    packets_sent = rconn_packets_sent(sw->rconn);
-
-    msg = rconn_recv(sw->rconn);
-    if (msg) {
-        if (!mute) {
-            lswitch_process_packet(sw->lswitch, sw->rconn, msg);
-        }
-        ofpbuf_delete(msg);
-    }
-    rconn_run(sw->rconn);
-
-    return (!rconn_is_alive(sw->rconn) ? EOF
-            : rconn_packets_sent(sw->rconn) != packets_sent ? 0
-            : EAGAIN);
+    cfg.mute = mute;
+    sw->lswitch = lswitch_create(rconn, &cfg);
 }
 
 static void
@@ -274,8 +232,7 @@ add_port_queue(char *s)
                   "\"<port-name>:<queue-id>\"");
     }
 
-    if (!shash_add_once(&port_queues, port_name,
-                        (void *) (uintptr_t) atoi(queue_id))) {
+    if (!simap_put(&port_queues, port_name, atoi(queue_id))) {
         ovs_fatal(0, "<port-name> arguments for -Q or --port-queue must "
                   "be unique");
     }
@@ -398,7 +355,7 @@ parse_options(int argc, char *argv[])
     }
     free(short_options);
 
-    if (!shash_is_empty(&port_queues) || default_queue != UINT32_MAX) {
+    if (!simap_is_empty(&port_queues) || default_queue != UINT32_MAX) {
         if (action_normal) {
             ovs_error(0, "queue IDs are incompatible with -N or --normal; "
                       "not using OFPP_NORMAL");

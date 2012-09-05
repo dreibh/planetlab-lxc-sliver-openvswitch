@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2012 Nicira Networks.
+ * Copyright (c) 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,6 +32,7 @@ struct ds;
 enum mf_field_id {
     /* Metadata. */
     MFF_TUN_ID,                 /* be64 */
+    MFF_METADATA,               /* be64 */
     MFF_IN_PORT,                /* be16 */
 
 #if FLOW_N_REGS > 0
@@ -58,9 +59,6 @@ enum mf_field_id {
 #if FLOW_N_REGS > 7
     MFF_REG7,                   /* be32 */
 #endif
-#if FLOW_N_REGS > 8
-#error
-#endif
 
     /* L2. */
     MFF_ETH_SRC,                /* mac */
@@ -68,8 +66,10 @@ enum mf_field_id {
     MFF_ETH_TYPE,               /* be16 */
 
     MFF_VLAN_TCI,               /* be16 */
-    MFF_VLAN_VID,               /* be16 */
-    MFF_VLAN_PCP,               /* u8 */
+    MFF_DL_VLAN,                /* be16 (OpenFlow 1.0 compatibility) */
+    MFF_VLAN_VID,               /* be16 (OpenFlow 1.2 compatibility) */
+    MFF_DL_VLAN_PCP,            /* u8 (OpenFlow 1.0 compatibility) */
+    MFF_VLAN_PCP,               /* be16 (OpenFlow 1.2 compatibility) */
 
     /* L3. */
     MFF_IPV4_SRC,               /* be32 */
@@ -112,6 +112,40 @@ enum mf_field_id {
     MFF_N_IDS
 };
 
+/* Use this macro as CASE_MFF_REGS: in a switch statement to choose all of the
+ * MFF_REGx cases. */
+#if FLOW_N_REGS == 1
+# define CASE_MFF_REGS                                          \
+    case MFF_REG0
+#elif FLOW_N_REGS == 2
+# define CASE_MFF_REGS                                          \
+    case MFF_REG0: case MFF_REG1
+#elif FLOW_N_REGS == 3
+# define CASE_MFF_REGS                                          \
+    case MFF_REG0: case MFF_REG1: case MFF_REG2
+#elif FLOW_N_REGS == 4
+# define CASE_MFF_REGS                                          \
+    case MFF_REG0: case MFF_REG1: case MFF_REG2: case MFF_REG3
+#elif FLOW_N_REGS == 5
+# define CASE_MFF_REGS                                          \
+    case MFF_REG0: case MFF_REG1: case MFF_REG2: case MFF_REG3: \
+    case MFF_REG4
+#elif FLOW_N_REGS == 6
+# define CASE_MFF_REGS                                          \
+    case MFF_REG0: case MFF_REG1: case MFF_REG2: case MFF_REG3: \
+    case MFF_REG4: case MFF_REG5
+#elif FLOW_N_REGS == 7
+# define CASE_MFF_REGS                                          \
+    case MFF_REG0: case MFF_REG1: case MFF_REG2: case MFF_REG3: \
+    case MFF_REG4: case MFF_REG5: case MFF_REG6
+#elif FLOW_N_REGS == 8
+# define CASE_MFF_REGS                                          \
+    case MFF_REG0: case MFF_REG1: case MFF_REG2: case MFF_REG3: \
+    case MFF_REG4: case MFF_REG5: case MFF_REG6: case MFF_REG7
+#else
+# error
+#endif
+
 /* Prerequisites for matching a field.
  *
  * A field may only be matched if the correct lower-level protocols are also
@@ -122,6 +156,7 @@ enum mf_prereqs {
 
     /* L2 requirements. */
     MFP_ARP,
+    MFP_VLAN_VID,
     MFP_IPV4,
     MFP_IPV6,
     MFP_IP_ANY,
@@ -144,8 +179,6 @@ enum mf_prereqs {
 enum mf_maskable {
     MFM_NONE,                   /* No sub-field masking. */
     MFM_FULLY,                  /* Every bit is individually maskable. */
-    MFM_CIDR,                   /* Contiguous low-order bits may be masked. */
-    MFM_MCAST                   /* Byte 0, bit 0 is separately maskable. */
 };
 
 /* How to format or parse a field's value. */
@@ -190,21 +223,30 @@ struct mf_field {
     enum mf_prereqs prereqs;
     bool writable;              /* May be written by actions? */
 
-    /* NXM properties.
+    /* NXM and OXM properties.
      *
-     * A few "mf_field"s don't correspond to NXM fields.  Those have 0 and
-     * NULL for the following members, respectively. */
-    uint32_t nxm_header;        /* An NXM_* constant (a few fields have 0). */
-    const char *nxm_name;       /* The "NXM_*" constant's name. */
-
-    /* OXM properties */
-    uint32_t oxm_header;        /* Field id in the OXM basic class,
-				 * an OXM_* constant.
-				 * Ignored if oxm_name is NULL */
-    const char *oxm_name;	/* The OXM_* constant's name,
-				 * NULL if the field is not present
-				 * in the OXM basic class */
-
+     * There are the following possibilities for these members for a given
+     * mf_field:
+     *
+     *   - Neither NXM nor OXM defines such a field: these members will all be
+     *     zero or NULL.
+     *
+     *   - NXM and OXM both define such a field: nxm_header and oxm_header will
+     *     both be nonzero and different, similarly for nxm_name and oxm_name.
+     *
+     *   - Only NXM or only OXM defines such a field: nxm_header and oxm_header
+     *     will both have the same value (either an OXM_* or NXM_* value) and
+     *     similarly for nxm_name and oxm_name.
+     *
+     * Thus, 'nxm_header' is the appropriate header to use when outputting an
+     * NXM formatted match, since it will be an NXM_* constant when possible
+     * for compatibility with OpenFlow implementations that expect that, with
+     * OXM_* constants used for fields that OXM adds.  Conversely, 'oxm_header'
+     * is the header to use when outputting an OXM formatted match. */
+    uint32_t nxm_header;        /* An NXM_* (or OXM_*) constant. */
+    const char *nxm_name;       /* The nxm_header constant's name. */
+    uint32_t oxm_header;        /* An OXM_* (or NXM_*) constant. */
+    const char *oxm_name;	    /* The oxm_header constant's name */
 };
 
 /* The representation of a field's value. */
@@ -264,6 +306,7 @@ void mf_set_value(const struct mf_field *, const union mf_value *value,
                   struct cls_rule *);
 void mf_set_flow_value(const struct mf_field *, const union mf_value *value,
                        struct flow *);
+bool mf_is_zero(const struct mf_field *, const struct flow *);
 
 void mf_get(const struct mf_field *, const struct cls_rule *,
             union mf_value *value, union mf_value *mask);
@@ -278,10 +321,6 @@ void mf_random_value(const struct mf_field *, union mf_value *value);
 /* Subfields. */
 void mf_write_subfield(const struct mf_subfield *, const union mf_subvalue *,
                        struct cls_rule *);
-void mf_set_subfield(const struct mf_subfield *, uint64_t value,
-                     struct cls_rule *);
-void mf_set_subfield_value(const struct mf_subfield *, uint64_t value,
-                           struct flow *);
 
 void mf_read_subfield(const struct mf_subfield *, const struct flow *,
                       union mf_subvalue *);

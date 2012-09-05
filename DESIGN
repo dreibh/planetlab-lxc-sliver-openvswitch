@@ -17,8 +17,14 @@ given controller receives OpenFlow asynchronous messages.  This
 section describes how all of these features interact.
 
 First, a service controller never receives any asynchronous messages
-unless it explicitly configures a miss_send_len greater than zero with
-an OFPT_SET_CONFIG message.
+unless it changes its miss_send_len from the service controller
+default of zero in one of the following ways:
+
+    - Sending an OFPT_SET_CONFIG message with nonzero miss_send_len.
+
+    - Sending any NXT_SET_ASYNC_CONFIG message: as a side effect, this
+      message changes the miss_send_len to
+      OFP_DEFAULT_MISS_SEND_LEN (128) for service controllers.
 
 Second, OFPT_FLOW_REMOVED and NXT_FLOW_REMOVED messages are generated
 only if the flow that was removed had the OFPFF_SEND_FLOW_REM flag
@@ -144,6 +150,206 @@ sends flow_removed message   ---    ---     ---      %       %
     the deleted flow or flows have the OFPFF_SEND_FLOW_REM flag set.
     (Each controller can separately control whether it wants to
     receive the generated messages.)
+
+
+VLAN Matching
+=============
+
+The 802.1Q VLAN header causes more trouble than any other 4 bytes in
+networking.  More specifically, three versions of OpenFlow and Open
+vSwitch have among them four different ways to match the contents and
+presence of the VLAN header.  The following table describes how each
+version works.
+
+       Match        NXM        OF1.0        OF1.1         OF1.2
+       -----  ---------  -----------  -----------  ------------
+         [1]  0000/0000  ????/1,??/?  ????/1,??/?  0000/0000,--
+         [2]  0000/ffff  ffff/0,??/?  ffff/0,??/?  0000/ffff,--
+         [3]  1xxx/1fff  0xxx/0,??/1  0xxx/0,??/1  1xxx/ffff,--
+         [4]  z000/f000  ????/1,0y/0  fffe/0,0y/0  1000/1000,0y
+         [5]  zxxx/ffff  0xxx/0,0y/0  0xxx/0,0y/0  1xxx/ffff,0y
+         [6]  0000/0fff    <none>       <none>        <none>
+         [7]  0000/f000    <none>       <none>        <none>
+         [8]  0000/efff    <none>       <none>        <none>
+         [9]  1001/1001    <none>       <none>     1001/1001,--
+        [10]  3000/3000    <none>       <none>        <none>
+
+Each column is interpreted as follows.
+
+    - Match: See the list below.
+
+    - NXM: xxxx/yyyy means NXM_OF_VLAN_TCI_W with value xxxx and mask
+      yyyy.  A mask of 0000 is equivalent to omitting
+      NXM_OF_VLAN_TCI(_W), a mask of ffff is equivalent to
+      NXM_OF_VLAN_TCI.
+
+    - OF1.0 and OF1.1: wwww/x,yy/z means dl_vlan wwww, OFPFW_DL_VLAN
+      x, dl_vlan_pcp yy, and OFPFW_DL_VLAN_PCP z.  ? means that the
+      given nibble is ignored (and conventionally 0 for wwww or z,
+      conventionally 1 for x or z).  <none> means that the given match
+      is not supported.
+
+    - OF1.2: xxxx/yyyy,zz means OXM_OF_VLAN_VID_W with value xxxx and
+      mask yyyy, and OXM_OF_VLAN_PCP (which is not maskable) with
+      value zz.  A mask of 0000 is equivalent to omitting
+      OXM_OF_VLAN_VID(_W), a mask of ffff is equivalent to
+      OXM_OF_VLAN_VID.  -- means that OXM_OF_VLAN_PCP is omitted.
+      <none> means that the given match is not supported.
+
+The matches are:
+
+ [1] Matches any packet, that is, one without an 802.1Q header or with
+     an 802.1Q header with any TCI value.
+
+ [2] Matches only packets without an 802.1Q header.
+
+     NXM: Any match with (vlan_tci == 0) and (vlan_tci_mask & 0x1000)
+     != 0 is equivalent to the one listed in the table.
+
+     OF1.0: The spec doesn't define behavior if dl_vlan is set to
+     0xffff and OFPFW_DL_VLAN_PCP is not set.
+
+     OF1.1: The spec says explicitly to ignore dl_vlan_pcp when
+     dl_vlan is set to 0xffff.
+
+     OF1.2: The spec doesn't say what should happen if (vlan_vid == 0)
+     and (vlan_vid_mask & 0x1000) != 0 but (vlan_vid_mask != 0x1000),
+     but it would be straightforward to also interpret as [2].
+
+ [3] Matches only packets that have an 802.1Q header with VID xxx (and
+     any PCP).
+
+ [4] Matches only packets that have an 802.1Q header with PCP y (and
+     any VID).
+
+     NXM: z is ((y << 1) | 1).
+
+     OF1.0: The spec isn't very clear, but OVS implements it this way.
+
+     OF1.2: Presumably other masks such that (vlan_vid_mask & 0x1fff)
+     == 0x1000 would also work, but the spec doesn't define their
+     behavior.
+
+ [5] Matches only packets that have an 802.1Q header with VID xxx and
+     PCP y.
+
+     NXM: z is ((y << 1) | 1).
+
+     OF1.2: Presumably other masks such that (vlan_vid_mask & 0x1fff)
+     == 0x1fff would also work.
+
+ [6] Matches packets with no 802.1Q header or with an 802.1Q header
+     with a VID of 0.  Only possible with NXM.
+
+ [7] Matches packets with no 802.1Q header or with an 802.1Q header
+     with a PCP of 0.  Only possible with NXM.
+
+ [8] Matches packets with no 802.1Q header or with an 802.1Q header
+     with both VID and PCP of 0.  Only possible with NXM.
+
+ [9] Matches only packets that have an 802.1Q header with an
+     odd-numbered VID (and any PCP).  Only possible with NXM and
+     OF1.2.  (This is just an example; one can match on any desired
+     VID bit pattern.)
+
+[10] Matches only packets that have an 802.1Q header with an
+     odd-numbered PCP (and any VID).  Only possible with NXM.  (This
+     is just an example; one can match on any desired VID bit
+     pattern.)
+
+Additional notes:
+
+    - OF1.2: The top three bits of OXM_OF_VLAN_VID are fixed to zero,
+      so bits 13, 14, and 15 in the masks listed in the table may be
+      set to arbitrary values, as long as the corresponding value bits
+      are also zero.  The suggested ffff mask for [2], [3], and [5]
+      allows a shorter OXM representation (the mask is omitted) than
+      the minimal 1fff mask.
+
+
+Flow Cookies
+============
+
+OpenFlow 1.0 and later versions have the concept of a "flow cookie",
+which is a 64-bit integer value attached to each flow.  The treatment
+of the flow cookie has varied greatly across OpenFlow versions,
+however.
+
+In OpenFlow 1.0:
+
+        - OFPFC_ADD set the cookie in the flow that it added.
+
+        - OFPFC_MODIFY and OFPFC_MODIFY_STRICT updated the cookie for
+          the flow or flows that it modified.
+
+        - OFPST_FLOW messages included the flow cookie.
+
+        - OFPT_FLOW_REMOVED messages reported the cookie of the flow
+          that was removed.
+
+OpenFlow 1.1 made the following changes:
+
+        - Flow mod operations OFPFC_MODIFY, OFPFC_MODIFY_STRICT,
+          OFPFC_DELETE, and OFPFC_DELETE_STRICT, plus flow stats
+          requests and aggregate stats requests, gained the ability to
+          match on flow cookies with an arbitrary mask.
+
+        - OFPFC_MODIFY and OFPFC_MODIFY_STRICT were changed to add a
+          new flow, in the case of no match, only if the flow table
+          modification operation did not match on the cookie field.
+          (In OpenFlow 1.0, modify operations always added a new flow
+          when there was no match.)
+
+        - OFPFC_MODIFY and OFPFC_MODIFY_STRICT no longer updated flow
+          cookies.
+
+OpenFlow 1.2 made the following changes:
+
+        - OFPC_MODIFY and OFPFC_MODIFY_STRICT were changed to never
+          add a new flow, regardless of whether the flow cookie was
+          used for matching.
+
+Open vSwitch support for OpenFlow 1.0 implements the OpenFlow 1.0
+behavior with the following extensions:
+
+        - An NXM extension field NXM_NX_COOKIE(_W) allows the NXM
+          versions of OFPFC_MODIFY, OFPFC_MODIFY_STRICT, OFPFC_DELETE,
+          and OFPFC_DELETE_STRICT flow_mods, plus flow stats requests
+          and aggregate stats requests, to match on flow cookies with
+          arbitrary masks.  This is much like the equivalent OpenFlow
+          1.1 feature.
+
+        - Like OpenFlow 1.1, OFPC_MODIFY and OFPFC_MODIFY_STRICT add a
+          new flow if there is no match and the mask is zero (or not
+          given).
+
+        - The "cookie" field in OFPT_FLOW_MOD and NXT_FLOW_MOD messages
+          is used as the cookie value for OFPFC_ADD commands, as
+          described in OpenFlow 1.0.  For OFPFC_MODIFY and
+          OFPFC_MODIFY_STRICT commands, the "cookie" field is used as a
+          new cookie for flows that match unless it is UINT64_MAX, in
+          which case the flow's cookie is not updated.
+
+        - NXT_PACKET_IN (the Nicira extended version of
+          OFPT_PACKET_IN) reports the cookie of the rule that
+          generated the packet, or all-1-bits if no rule generated the
+          packet.  (Older versions of OVS used all-0-bits instead of
+          all-1-bits.)
+
+The following table shows the handling of different protocols when
+receiving OFPFC_MODIFY and OFPFC_MODIFY_STRICT messages.  A mask of 0
+indicates either an explicit mask of zero or an implicit one by not
+specifying the NXM_NX_COOKIE(_W) field.
+
+                Match   Update   Add on miss   Add on miss
+                cookie  cookie     mask!=0       mask==0
+                ======  ======   ===========   ===========
+OpenFlow 1.0      no     yes        <always add on miss>
+OpenFlow 1.1     yes      no          no           yes
+OpenFlow 1.2     yes      no          no            no
+NXM              yes     yes*         no           yes
+
+* Updates the flow's cookie unless the "cookie" field is UINT64_MAX.
 
 
 Multiple Table Support
@@ -519,6 +725,39 @@ The following are explicitly *not* supported by in-band control:
      and (e).  If the routes to the remote differ for the two
      switches, we will not know the MAC address of the alternate
      gateway.
+
+
+Action Reproduction
+===================
+
+It seems likely that many controllers, at least at startup, use the
+OpenFlow "flow statistics" request to obtain existing flows, then
+compare the flows' actions against the actions that they expect to
+find.  Before version 1.8.0, Open vSwitch always returned exact,
+byte-for-byte copies of the actions that had been added to the flow
+table.  The current version of Open vSwitch does not always do this in
+some exceptional cases.  This section lists the exceptions that
+controller authors must keep in mind if they compare actual actions
+against desired actions in a bytewise fashion:
+
+        - Open vSwitch zeros padding bytes in action structures,
+          regardless of their values when the flows were added.
+
+        - Open vSwitch "normalizes" the instructions in OpenFlow 1.1
+          (and later) in the following way:
+
+              * OVS sorts the instructions into the following order:
+                Apply-Actions, Clear-Actions, Write-Actions,
+                Write-Metadata, Goto-Table.
+
+              * OVS drops Apply-Actions instructions that have empty
+                action lists.
+
+              * OVS drops Write-Actions instructions that have empty
+                action sets.
+
+Please report other discrepancies, if you notice any, so that we can
+fix or document them.
 
 
 Suggestions

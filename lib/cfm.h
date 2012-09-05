@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2011 Nicira Networks.
+/* Copyright (c) 2010, 2011 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,8 +33,7 @@ struct ofpbuf;
     CFM_FAULT_REASON(LOOPBACK, loopback)   \
     CFM_FAULT_REASON(OVERFLOW, overflow)   \
     CFM_FAULT_REASON(OVERRIDE, override)   \
-    CFM_FAULT_REASON(INTERVAL, interval)   \
-    CFM_FAULT_REASON(SEQUENCE, sequence)
+    CFM_FAULT_REASON(INTERVAL, interval)
 
 enum cfm_fault_bit_index {
 #define CFM_FAULT_REASON(NAME, STR) CFM_FAULT_INDEX_##NAME,
@@ -72,7 +71,7 @@ bool cfm_should_process_flow(const struct cfm *cfm, const struct flow *);
 void cfm_process_heartbeat(struct cfm *, const struct ofpbuf *packet);
 int cfm_get_fault(const struct cfm *);
 int cfm_get_health(const struct cfm *);
-bool cfm_get_opup(const struct cfm *);
+int cfm_get_opup(const struct cfm *);
 void cfm_get_remote_mpids(const struct cfm *, const uint64_t **rmps,
                           size_t *n_rmps);
 const char *cfm_fault_reason_to_str(int fault);

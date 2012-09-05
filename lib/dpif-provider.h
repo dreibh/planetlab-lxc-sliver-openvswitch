@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -110,8 +110,12 @@ struct dpif_class {
     /* Retrieves statistics for 'dpif' into 'stats'. */
     int (*get_stats)(const struct dpif *dpif, struct dpif_dp_stats *stats);
 
-    /* Adds 'netdev' as a new port in 'dpif'.  If successful, sets '*port_no'
-     * to the new port's port number. */
+    /* Adds 'netdev' as a new port in 'dpif'.  If '*port_no' is not
+     * UINT16_MAX, attempts to use that as the port's port number.
+     *
+     * If port is successfully added, sets '*port_no' to the new port's
+     * port number.  Returns EBUSY if caller attempted to choose a port
+     * number, and it was in use. */
     int (*port_add)(struct dpif *dpif, struct netdev *netdev,
                     uint16_t *port_no);
 
@@ -135,6 +139,10 @@ struct dpif_class {
     /* Returns the Netlink PID value to supply in OVS_ACTION_ATTR_USERSPACE
      * actions as the OVS_USERSPACE_ATTR_PID attribute's value, for use in
      * flows whose packets arrived on port 'port_no'.
+     *
+     * A 'port_no' of UINT16_MAX should be treated as a special case.  The
+     * implementation should return a reserved PID, not allocated to any port,
+     * that the client may use for special purposes.
      *
      * The return value only needs to be meaningful when DPIF_UC_ACTION has
      * been enabled in the 'dpif''s listen mask, and it is allowed to change

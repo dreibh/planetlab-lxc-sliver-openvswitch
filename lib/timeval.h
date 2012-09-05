@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,6 +35,21 @@ BUILD_ASSERT_DECL(TYPE_IS_INTEGER(time_t));
 /* We do try to cater to unsigned time_t, but I want to know about it if we
  * ever encounter such a platform. */
 BUILD_ASSERT_DECL(TYPE_IS_SIGNED(time_t));
+
+/* On x86-64 systems, Linux avoids using syscalls for clock_gettime().
+ *
+ * For systems which do invoke a system call we wait at least
+ * TIME_UPDATE_INTERVAL ms between clock_gettime() calls and cache the time for
+ * the interim.
+ *
+ * For systems which do not invoke a system call, we just call clock_gettime()
+ * whenever the time is requested.  As a result we don't start the background
+ * SIGALRM timer unless explicitly needed by time_alarm() */
+#if defined __x86_64__ && defined __linux__
+#define CACHE_TIME 0
+#else
+#define CACHE_TIME 1
+#endif
 
 #define TIME_MAX TYPE_MAXIMUM(time_t)
 #define TIME_MIN TYPE_MINIMUM(time_t)

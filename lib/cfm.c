@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -62,19 +62,19 @@ static const uint8_t eth_addr_ccm_x[6] = {
 #define CCM_RDI_MASK 0x80
 #define CFM_HEALTH_INTERVAL 6
 struct ccm {
-    uint8_t  mdlevel_version; /* MD Level and Version */
-    uint8_t  opcode;
-    uint8_t  flags;
-    uint8_t  tlv_offset;
+    uint8_t mdlevel_version; /* MD Level and Version */
+    uint8_t opcode;
+    uint8_t flags;
+    uint8_t tlv_offset;
     ovs_be32 seq;
     ovs_be16 mpid;
-    uint8_t  maid[CCM_MAID_LEN];
+    uint8_t maid[CCM_MAID_LEN];
 
     /* Defined by ITU-T Y.1731 should be zero */
     ovs_be16 interval_ms_x;      /* Transmission interval in ms. */
     ovs_be64 mpid64;             /* MPID in extended mode. */
     uint8_t opdown;              /* Operationally down. */
-    uint8_t  zero[5];
+    uint8_t zero[5];
 
     /* TLV space. */
     uint8_t end_tlv;
@@ -87,6 +87,7 @@ struct cfm {
 
     uint64_t mpid;
     bool extended;         /* Extended mode. */
+    bool booted;           /* A full fault interval has occured. */
     enum cfm_fault_reason fault;  /* Connectivity fault status. */
     enum cfm_fault_reason recv_fault;  /* Bit mask of faults occuring on
                                           receive. */
@@ -118,7 +119,7 @@ struct cfm {
                                  received. */
     int health_interval;      /* Number of fault_intervals since health was
                                  recomputed. */
-
+    long long int last_tx;    /* Last CCM transmission time. */
 };
 
 /* Remote MPs represent foreign network entities that are configured to have
@@ -132,6 +133,7 @@ struct remote_mp {
     uint32_t seq;        /* Most recently received sequence number. */
     uint8_t num_health_ccm; /* Number of received ccm frames every
                                CFM_HEALTH_INTERVAL * 'fault_interval'. */
+    long long int last_rx; /* Last CCM reception time. */
 
 };
 
@@ -159,21 +161,19 @@ cfm_fault_reason_to_str(int reason) {
 }
 
 static void
-ds_put_cfm_fault(struct ds *ds, int old_fault, int new_fault)
+ds_put_cfm_fault(struct ds *ds, int fault)
 {
     int i;
 
     for (i = 0; i < CFM_FAULT_N_REASONS; i++) {
         int reason = 1 << i;
 
-        if ((old_fault | new_fault) & reason) {
-            ds_put_format(ds, " %s%s",
-                          (!(old_fault & reason) ? "+"
-                           : !(new_fault & reason) ? "-"
-                           : ""),
-                          cfm_fault_reason_to_str(reason));
+        if (fault & reason) {
+            ds_put_format(ds, "%s ", cfm_fault_reason_to_str(reason));
         }
     }
+
+    ds_chomp(ds, ' ');
 }
 
 static void
@@ -299,6 +299,7 @@ cfm_create(const char *name)
     cfm->remote_opup = true;
     cfm->fault_override = -1;
     cfm->health = -1;
+    cfm->last_tx = 0;
     return cfm;
 }
 
@@ -375,8 +376,9 @@ cfm_run(struct cfm *cfm)
         HMAP_FOR_EACH_SAFE (rmp, rmp_next, node, &cfm->remote_mps) {
 
             if (!rmp->recv) {
-                VLOG_DBG("%s: no CCM from RMP %"PRIu64" in the last %lldms",
-                         cfm->name, rmp->mpid, interval);
+                VLOG_INFO("%s: Received no CCM from RMP %"PRIu64" in the last"
+                          " %lldms", cfm->name, rmp->mpid,
+                          time_msec() - rmp->last_rx);
                 hmap_remove(&cfm->remote_mps, &rmp->node);
                 free(rmp);
             } else {
@@ -394,16 +396,21 @@ cfm_run(struct cfm *cfm)
             cfm->fault |= CFM_FAULT_RECV;
         }
 
-        if (old_cfm_fault != cfm->fault) {
+        if (old_cfm_fault != cfm->fault && !VLOG_DROP_INFO(&rl)) {
             struct ds ds = DS_EMPTY_INITIALIZER;
 
-            ds_put_cfm_fault(&ds, old_cfm_fault, cfm->fault);
-            VLOG_INFO_RL(&rl, "%s: CFM fault status changed:%s", cfm->name,
-                         ds_cstr_ro(&ds));
+            ds_put_cstr(&ds, "from [");
+            ds_put_cfm_fault(&ds, old_cfm_fault);
+            ds_put_cstr(&ds, "] to [");
+            ds_put_cfm_fault(&ds, cfm->fault);
+            ds_put_char(&ds, ']');
+            VLOG_INFO("%s: CFM faults changed %s.", cfm->name, ds_cstr(&ds));
             ds_destroy(&ds);
         }
 
+        cfm->booted = true;
         timer_set_duration(&cfm->fault_timer, interval);
+        VLOG_DBG("%s: new fault interval", cfm->name);
     }
 }
 
@@ -460,11 +467,23 @@ cfm_compose_ccm(struct cfm *cfm, struct ofpbuf *packet,
     if (cfm->ccm_interval == 0) {
         assert(cfm->extended);
         ccm->interval_ms_x = htons(cfm->ccm_interval_ms);
+    } else {
+        ccm->interval_ms_x = htons(0);
     }
 
-    if (hmap_is_empty(&cfm->remote_mps)) {
+    if (cfm->booted && hmap_is_empty(&cfm->remote_mps)) {
         ccm->flags |= CCM_RDI_MASK;
     }
+
+    if (cfm->last_tx) {
+        long long int delay = time_msec() - cfm->last_tx;
+        if (delay > (cfm->ccm_interval_ms * 3 / 2)) {
+            VLOG_WARN("%s: long delay of %lldms (expected %dms) sending CCM"
+                      " seq %"PRIu32, cfm->name, delay, cfm->ccm_interval_ms,
+                      cfm->seq);
+        }
+    }
+    cfm->last_tx = time_msec();
 }
 
 void
@@ -606,7 +625,7 @@ cfm_process_heartbeat(struct cfm *cfm, const struct ofpbuf *p)
         if (ccm_rdi) {
             cfm_fault |= CFM_FAULT_RDI;
             VLOG_DBG("%s: RDI bit flagged from RMP %"PRIu64, cfm->name,
-                     rmp->mpid);
+                     ccm_mpid);
         }
 
         VLOG_DBG("%s: received CCM (seq %"PRIu32") (mpid %"PRIu64")"
@@ -621,7 +640,6 @@ cfm_process_heartbeat(struct cfm *cfm, const struct ofpbuf *p)
             }
 
             if (rmp->seq && ccm_seq != (rmp->seq + 1)) {
-                cfm_fault |= CFM_FAULT_SEQUENCE;
                 VLOG_WARN_RL(&rl, "%s: (mpid %"PRIu64") detected sequence"
                              " numbers which indicate possible connectivity"
                              " problems (previous %"PRIu32") (current %"PRIu32
@@ -636,6 +654,7 @@ cfm_process_heartbeat(struct cfm *cfm, const struct ofpbuf *p)
             cfm->recv_fault |= cfm_fault;
             rmp->seq = ccm_seq;
             rmp->opup = !ccm_opdown;
+            rmp->last_rx = time_msec();
         }
     }
 }
@@ -665,12 +684,17 @@ cfm_get_health(const struct cfm *cfm)
 
 /* Gets the operational state of 'cfm'.  'cfm' is considered operationally down
  * if it has received a CCM with the operationally down bit set from any of its
- * remote maintenance points. Returns true if 'cfm' is operationally up. False
- * otherwise. */
-bool
+ * remote maintenance points. Returns 1 if 'cfm' is operationally up, 0 if
+ * 'cfm' is operationally down, or -1 if 'cfm' has no operational state
+ * (because it isn't in extended mode). */
+int
 cfm_get_opup(const struct cfm *cfm)
 {
-    return cfm->remote_opup;
+    if (cfm->extended) {
+        return cfm->remote_opup;
+    } else {
+        return -1;
+    }
 }
 
 /* Populates 'rmps' with an array of remote maintenance points reachable by
@@ -710,8 +734,8 @@ cfm_print_details(struct ds *ds, const struct cfm *cfm)
 
     fault = cfm_get_fault(cfm);
     if (fault) {
-        ds_put_cstr(ds, "\tfault:");
-        ds_put_cfm_fault(ds, fault, fault);
+        ds_put_cstr(ds, "\tfault: ");
+        ds_put_cfm_fault(ds, fault);
         ds_put_cstr(ds, "\n");
     }
 

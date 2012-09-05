@@ -1,4 +1,4 @@
-/* Copyright (c) 2009, 2010, 2011 Nicira Networks
+/* Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,6 +32,7 @@
 #include "jsonrpc-server.h"
 #include "leak-checker.h"
 #include "list.h"
+#include "memory.h"
 #include "ovsdb.h"
 #include "ovsdb-data.h"
 #include "ovsdb-types.h"
@@ -39,6 +40,7 @@
 #include "poll-loop.h"
 #include "process.h"
 #include "row.h"
+#include "simap.h"
 #include "stream-ssl.h"
 #include "stream.h"
 #include "stress.h"
@@ -135,6 +137,13 @@ main(int argc, char *argv[])
 
     daemonize_complete();
 
+    if (!run_command) {
+        /* ovsdb-server is usually a long-running process, in which case it
+         * makes plenty of sense to log the version, but --run makes
+         * ovsdb-server more like a command-line tool, so skip it.  */
+        VLOG_INFO("%s (Open vSwitch) %s", program_name, VERSION);
+    }
+
     unixctl_command_register("exit", "", 0, 0, ovsdb_server_exit, &exiting);
     unixctl_command_register("ovsdb-server/compact", "", 0, 0,
                              ovsdb_server_compact, file);
@@ -143,6 +152,17 @@ main(int argc, char *argv[])
 
     exiting = false;
     while (!exiting) {
+        memory_run();
+        if (memory_should_report()) {
+            struct simap usage;
+
+            simap_init(&usage);
+            ovsdb_jsonrpc_server_get_memory_usage(jsonrpc, &usage);
+            ovsdb_get_memory_usage(db, &usage);
+            memory_report(&usage);
+            simap_destroy(&usage);
+        }
+
         reconfigure_from_db(jsonrpc, db, &remotes);
         ovsdb_jsonrpc_server_run(jsonrpc);
         unixctl_server_run(unixctl);
@@ -157,6 +177,7 @@ main(int argc, char *argv[])
             update_remote_status(jsonrpc, &remotes, db);
         }
 
+        memory_wait();
         ovsdb_jsonrpc_server_wait(jsonrpc);
         unixctl_server_wait(unixctl);
         ovsdb_trigger_wait(db, time_msec());
@@ -329,8 +350,8 @@ read_map_string_column(const struct ovsdb_row *row, const char *column_name,
     union ovsdb_atom *atom_key = NULL, *atom_value = NULL;
     size_t i;
 
-    datum = get_datum((struct ovsdb_row *) row, column_name, OVSDB_TYPE_STRING,
-                      OVSDB_TYPE_STRING, UINT_MAX);
+    datum = get_datum(CONST_CAST(struct ovsdb_row *, row), column_name,
+                      OVSDB_TYPE_STRING, OVSDB_TYPE_STRING, UINT_MAX);
 
     if (!datum) {
         return NULL;
@@ -353,8 +374,8 @@ read_column(const struct ovsdb_row *row, const char *column_name,
 {
     const struct ovsdb_datum *datum;
 
-    datum = get_datum((struct ovsdb_row *) row, column_name, type, OVSDB_TYPE_VOID,
-                      1);
+    datum = get_datum(CONST_CAST(struct ovsdb_row *, row), column_name, type,
+                      OVSDB_TYPE_VOID, 1);
     return datum && datum->n ? datum->keys : NULL;
 }
 
@@ -787,7 +808,7 @@ parse_options(int argc, char *argv[], char **file_namep,
 
     switch (argc) {
     case 0:
-        *file_namep = xasprintf("%s/openvswitch/conf.db", ovs_sysconfdir());
+        *file_namep = xasprintf("%s/conf.db", ovs_dbdir());
         break;
 
     case 1:

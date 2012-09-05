@@ -1,4 +1,4 @@
-# Copyright (c) 2011, 2012 Nicira Networks
+# Copyright (c) 2011, 2012 Nicira, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -342,6 +342,12 @@ class TestArena(xmlrpc.XMLRPC):
         Returns driver version
         """
         return util.get_driver(iface)
+
+    def xmlrpc_get_interface_from_routing_decision(self, ip):
+        """
+        Returns driver version
+        """
+        return util.get_interface_from_routing_decision(ip)
 
 
 def start_rpc_server(port):

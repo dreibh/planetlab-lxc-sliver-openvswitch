@@ -409,7 +409,16 @@
           any defined controllers forever.</dd>
         </dl>
         </p>
-        <p>If this value is unset, the default is implementation-specific.</p>
+        <p>
+          The default is <code>standalone</code> if the value is unset, but
+          future versions of Open vSwitch may change the default.
+        </p>
+        <p>
+          The <code>standalone</code> mode can create forwarding loops on a
+          bridge that has more than one uplink port unless STP is enabled.  To
+          avoid loops on such a bridge, configure <code>secure</code> mode or
+          enable STP (see <ref column="stp_enable"/>).
+        </p>
         <p>When more than one controller is configured,
         <ref column="fail_mode"/> is considered only when none of the
         configured controllers can be contacted.</p>
@@ -547,6 +556,46 @@
         and if Open vSwitch node does not run STP, then this option
         should be enabled.  Default is disabled, set to
         <code>true</code> to enable.
+
+        The following destination MAC addresss will not be forwarded when this
+        option is enabled.
+        <dl>
+          <dt><code>01:80:c2:00:00:00</code></dt>
+          <dd>IEEE 802.1D Spanning Tree Protocol (STP).</dd>
+
+          <dt><code>01:80:c2:00:00:01</code></dt>
+          <dd>IEEE Pause frame.</dd>
+
+          <dt><code>01:80:c2:00:00:0<var>x</var></code></dt>
+          <dd>Other reserved protocols.</dd>
+
+          <dt><code>00:e0:2b:00:00:00</code></dt>
+          <dd>Extreme Discovery Protocol (EDP).</dd>
+
+          <dt>
+	    <code>00:e0:2b:00:00:04</code> and <code>00:e0:2b:00:00:06</code>
+	  </dt>
+          <dd>Ethernet Automatic Protection Switching (EAPS).</dd>
+
+          <dt><code>01:00:0c:cc:cc:cc</code></dt>
+          <dd>
+            Cisco Discovery Protocol (CDP), VLAN Trunking Protocol (VTP),
+            Dynamic Trunking Protocol (DTP), Port Aggregation Protocol (PAgP),
+            and others.
+          </dd>
+
+          <dt><code>01:00:0c:cc:cc:cd</code></dt>
+          <dd>Cisco Shared Spanning Tree Protocol PVSTP+.</dd>
+
+          <dt><code>01:00:0c:cd:cd:cd</code></dt>
+          <dd>Cisco STP Uplink Fast.</dd>
+
+          <dt><code>01:00:0c:00:00:00</code></dt>
+          <dd>Cisco Inter Switch Link.</dd>
+
+          <dt><code>01:00:0c:cc:cc:c<var>x</var></code></dt>
+          <dd>Cisco CFM.</dd>
+        </dl>
       </column>
 
       <column name="other_config" key="mac-aging-time"
@@ -753,8 +802,13 @@
 
     <group title="Bonding Configuration">
       <p>A port that has more than one interface is a ``bonded port.'' Bonding
-      allows for load balancing and fail-over.  Some kinds of bonding will
-      work with any kind of upstream switch:</p>
+      allows for load balancing and fail-over.</p>
+
+      <p>
+        The following types of bonding will work with any kind of upstream
+        switch.  On the upstream switch, do not configure the interfaces as a
+        bond:
+      </p>
 
       <dl>
         <dt><code>balance-slb</code></dt>
@@ -766,7 +820,8 @@
         <dt><code>active-backup</code></dt>
         <dd>
           Assigns all flows to one slave, failing over to a backup slave when
-          the active slave is disabled.
+          the active slave is disabled.  This is the only bonding mode in which
+          interfaces may be plugged into different upstream switches.
         </dd>
       </dl>
 
@@ -785,6 +840,7 @@
 
         <dt><code>stable</code></dt>
         <dd>
+          <p>Deprecated and slated for removal in February 2013.</p>
           <p>Attempts to always assign a given flow to the same slave
           consistently.  In an effort to maintain stability, no load
           balancing is done.  Uses a similar hashing strategy to
@@ -841,7 +897,7 @@
 
         <column name="bond_updelay">
           <p>
-            The number of milliseconds for which carrier must stay up on an
+            The number of milliseconds for which the link must stay up on an
             interface before the interface is considered to be up.  Specify
             <code>0</code> to enable the interface immediately.
           </p>
@@ -854,7 +910,7 @@
         </column>
 
         <column name="bond_downdelay">
-          The number of milliseconds for which carrier must stay down on an
+          The number of milliseconds for which the link must stay down on an
           interface before the interface is considered to be down.  Specify
           <code>0</code> to disable the interface immediately.
         </column>
@@ -907,12 +963,10 @@
         </column>
       </group>
 
-      <group title="SLB Configuration">
+      <group title="Rebalancing Configuration">
         <p>
           These settings control behavior when a bond is in
-          <code>balance-slb</code> mode, regardless of whether the bond was
-          intentionally configured in SLB mode or it fell back to SLB mode
-          because LACP negotiation failed.
+          <code>balance-slb</code> or <code>balance-tcp</code> mode.
         </p>
 
         <column name="other_config" key="bond-rebalance-interval"
@@ -921,7 +975,7 @@
           successive attempts to rebalance the bond, that is, to move flows
           from one interface on the bond to another in an attempt to keep usage
           of each interface roughly equal.  If zero, load balancing is disabled
-          on the bond (carrier status changes still cause flows to move).  If
+          on the bond (link failure still cause flows to move).  If
           less than 1000ms, the rebalance interval will be 1000ms.
         </column>
       </group>
@@ -1161,7 +1215,8 @@
           </dd>
 
           <dt><code>null</code></dt>
-          <dd>An ignored interface.</dd>
+          <dd>An ignored interface. Deprecated and slated for removal in
+              February 2013.</dd>
         </dl>
       </column>
     </group>
@@ -1258,7 +1313,8 @@
 
       <column name="options" key="tos">
         Optional.  The value of the ToS bits to be set on the encapsulating
-        packet.  It may also be the word <code>inherit</code>, in which case
+        packet.  ToS is interpreted as DSCP and ECN bits, ECN part must be
+        zero.  It may also be the word <code>inherit</code>, in which case
         the ToS will be copied from the inner packet if it is IPv4 or IPv6
         (otherwise it will be 0).  The ECN fields are always inherited.
         Default is 0.
@@ -1714,9 +1770,11 @@
         frame having an invalid interval.
       </column>
 
-      <column name="cfm_fault_status" key="sequence">
-        Indicates a CFM fault was triggered because the CFM module received
-        a CCM frame with a sequence number that it was not expecting.
+      <column name="cfm_remote_opstate">
+        <p>When in extended mode, indicates the operational state of the
+          remote endpoint as either <code>up</code> or <code>down</code>.  See
+          <ref column="other_config" key="cfm_opstate"/>.
+        </p>
       </column>
 
       <column name="cfm_health">
@@ -1750,9 +1808,21 @@
 
       <column name="other_config" key="cfm_interval"
               type='{"type": "integer"}'>
-        The interval, in milliseconds, between transmissions of CFM heartbeats.
-        Three missed heartbeat receptions indicate a connectivity fault.
-        Defaults to 1000.
+        <p>
+          The interval, in milliseconds, between transmissions of CFM
+          heartbeats.  Three missed heartbeat receptions indicate a
+          connectivity fault.
+        </p>
+
+        <p>
+          In standard operation only intervals of 3, 10, 100, 1,000, 10,000,
+          60,000, or 600,000 ms are supported.  Other values will be rounded
+          down to the nearest value on the list.  Extended mode (see <ref
+          column="other_config" key="cfm_extended"/>) supports any interval up
+          to 65,535 ms.  In either mode, the default is 1000 ms.
+        </p>
+
+        <p>We do not recommend using intervals less than 100 ms.</p>
       </column>
 
       <column name="other_config" key="cfm_extended"
@@ -2062,7 +2132,7 @@
       <p>
         The eviction process only considers flows that have an idle timeout or
         a hard timeout.  That is, eviction never deletes permanent flows.
-        (Permanent flows do count against <ref column="flow_limit"/>.
+        (Permanent flows do count against <ref column="flow_limit"/>.)
       </p>
 
       <p>
@@ -2293,36 +2363,12 @@
         sent out an implicit VLAN port, the frame will not be tagged.  This
         type of mirroring is sometimes called RSPAN.</p>
         <p>
-          The following destination MAC addresses will not be mirrored to a
-          VLAN to avoid confusing switches that interpret the protocols that
-          they represent:
+          See the documentation for
+          <ref column="other_config" key="forward-bpdu"/> in the
+          <ref table="Interface"/> table for a list of destination MAC
+          addresses which will not be mirrored to a VLAN to avoid confusing
+          switches that interpret the protocols that they represent.
         </p>
-        <dl>
-          <dt><code>01:80:c2:00:00:00</code></dt>
-          <dd>IEEE 802.1D Spanning Tree Protocol (STP).</dd>
-
-          <dt><code>01:80:c2:00:00:01</code></dt>
-          <dd>IEEE Pause frame.</dd>
-
-          <dt><code>01:80:c2:00:00:0<var>x</var></code></dt>
-          <dd>Other reserved protocols.</dd>
-
-          <dt><code>01:00:0c:cc:cc:cc</code></dt>
-          <dd>
-            Cisco Discovery Protocol (CDP), VLAN Trunking Protocol (VTP),
-            Dynamic Trunking Protocol (DTP), Port Aggregation Protocol (PAgP),
-            and others.
-          </dd>
-
-          <dt><code>01:00:0c:cc:cc:cd</code></dt>
-          <dd>Cisco Shared Spanning Tree Protocol PVSTP+.</dd>
-
-          <dt><code>01:00:0c:cd:cd:cd</code></dt>
-          <dd>Cisco STP Uplink Fast.</dd>
-
-          <dt><code>01:00:0c:00:00:00</code></dt>
-          <dd>Cisco Inter Switch Link.</dd>
-        </dl>
         <p><em>Please note:</em> Mirroring to a VLAN can disrupt a network that
         contains unmanaged switches.  Consider an unmanaged physical switch
         with two ports: port 1, connected to an end host, and port 2,
@@ -2713,10 +2759,9 @@
         Service (QoS) on IP networks.
 
         The DSCP value specified here is used when establishing the connection
-        between the controller and the Open vSwitch.  The connection must be
-        reset for the new DSCP values to take effect.  If no value is
-        specified, a default value of 48 is chosen.  Valid DSCP values must be
-        in the range 0 to 63.
+        between the controller and the Open vSwitch.  If no value is specified,
+        a default value of 48 is chosen.  Valid DSCP values must be in the
+        range 0 to 63.
       </column>
     </group>
 
@@ -2960,10 +3005,9 @@
         Service (QoS) on IP networks.
 
         The DSCP value specified here is used when establishing the connection
-        between the manager and the Open vSwitch.  The connection must be
-        reset for the new DSCP values to take effect.  If no value is
-        specified, a default value of 48 is chosen.  Valid DSCP values must be
-        in the range 0 to 63.
+        between the manager and the Open vSwitch.  If no value is specified, a
+        default value of 48 is chosen.  Valid DSCP values must be in the range
+        0 to 63.
       </column>
     </group>
 

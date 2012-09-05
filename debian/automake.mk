@@ -12,6 +12,7 @@ EXTRA_DIST += \
 	debian/openvswitch-brcompat.postinst \
 	debian/openvswitch-brcompat.postrm \
 	debian/openvswitch-common.dirs \
+	debian/openvswitch-common.docs \
 	debian/openvswitch-common.install \
 	debian/openvswitch-common.manpages \
 	debian/openvswitch-controller.README.Debian \
@@ -21,6 +22,7 @@ EXTRA_DIST += \
 	debian/openvswitch-controller.install \
 	debian/openvswitch-controller.manpages \
 	debian/openvswitch-controller.postinst \
+	debian/openvswitch-controller.postrm \
 	debian/openvswitch-datapath-module-_KVERS_.postinst.modules.in \
 	debian/openvswitch-datapath-dkms.postinst \
 	debian/openvswitch-datapath-dkms.prerm \
@@ -43,6 +45,7 @@ EXTRA_DIST += \
 	debian/openvswitch-switch.postinst \
 	debian/openvswitch-switch.postrm \
 	debian/openvswitch-switch.template \
+	debian/openvswitch-switch.links \
 	debian/openvswitch-test.dirs \
 	debian/openvswitch-test.install \
 	debian/openvswitch-test.manpages \
@@ -53,6 +56,7 @@ EXTRA_DIST += \
 	debian/python-openvswitch.install \
 	debian/rules \
 	debian/rules.modules \
+	debian/ifupdown.sh \
 	debian/source/format
 
 check-debian-changelog-version:

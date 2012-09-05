@@ -1,7 +1,6 @@
 AT_BANNER([daemon unit tests - C])
 
 AT_SETUP([daemon])
-AT_SKIP_IF([test "$CHECK_LCOV" = true]) # lcov wrapper make pids differ
 OVSDB_INIT([db])
 AT_CAPTURE_FILE([pid])
 AT_CAPTURE_FILE([expected])
@@ -20,7 +19,6 @@ AT_CHECK([test ! -e pid])
 AT_CLEANUP
 
 AT_SETUP([daemon --monitor])
-AT_SKIP_IF([test "$CHECK_LCOV" = true]) # lcov wrapper make pids differ
 OVSDB_INIT([db])
 AT_CAPTURE_FILE([pid])
 AT_CAPTURE_FILE([parent])
@@ -69,13 +67,12 @@ OVS_WAIT_WHILE([kill -0 `cat parent` || kill -0 `cat newpid` || test -e pid],
 AT_CLEANUP
 
 AT_SETUP([daemon --detach])
-AT_SKIP_IF([test "$CHECK_LCOV" = true]) # lcov wrapper make pids differ
 AT_CAPTURE_FILE([pid])
 OVSDB_INIT([db])
 # Start the daemon and make sure that the pidfile exists immediately.
 # We don't wait for the pidfile to get created because the daemon is
 # supposed to do so before the parent exits.
-AT_CHECK([ovsdb-server --detach --pidfile="`pwd`"/pid --remote=punix:socket --unixctl="`pwd`"/unixctl db], [0])
+AT_CHECK([ovsdb-server --detach --no-chdir --pidfile="`pwd`"/pid --remote=punix:socket --unixctl="`pwd`"/unixctl db], [0])
 AT_CHECK([test -s pid])
 AT_CHECK([kill -0 `cat pid`])
 # Kill the daemon and make sure that the pidfile gets deleted.
@@ -86,7 +83,6 @@ AT_CHECK([test ! -e pid])
 AT_CLEANUP
 
 AT_SETUP([daemon --detach --monitor])
-AT_SKIP_IF([test "$CHECK_LCOV" = true]) # lcov wrapper make pids differ
 m4_define([CHECK], 
   [AT_CHECK([$1], [$2], [$3], [$4], [kill `cat daemon monitor`])])
 OVSDB_INIT([db])
@@ -99,7 +95,7 @@ AT_CAPTURE_FILE([init])
 # Start the daemon and make sure that the pidfile exists immediately.
 # We don't wait for the pidfile to get created because the daemon is
 # supposed to do so before the parent exits.
-AT_CHECK([ovsdb-server --detach --pidfile="`pwd`"/daemon --monitor --remote=punix:socket --unixctl="`pwd`"/unixctl db], [0])
+AT_CHECK([ovsdb-server --detach --no-chdir --pidfile="`pwd`"/daemon --monitor --remote=punix:socket --unixctl="`pwd`"/unixctl db], [0])
 AT_CHECK([test -s daemon])
 # Check that the pidfile names a running process,
 # and that the parent process of that process is a running process,
@@ -138,7 +134,7 @@ AT_CLEANUP
 AT_SETUP([daemon --detach startup errors])
 AT_CAPTURE_FILE([pid])
 OVSDB_INIT([db])
-AT_CHECK([ovsdb-server --detach --pidfile="`pwd`"/pid --unixctl="`pwd`"/nonexistent/unixctl db], [1], [], [stderr])
+AT_CHECK([ovsdb-server --detach --no-chdir --pidfile="`pwd`"/pid --unixctl="`pwd`"/nonexistent/unixctl db], [1], [], [stderr])
 AT_CHECK([grep 'ovsdb-server: could not initialize control socket' stderr],
   [0], [ignore], [])
 AT_CHECK([test ! -s pid])
@@ -147,54 +143,8 @@ AT_CLEANUP
 AT_SETUP([daemon --detach --monitor startup errors])
 AT_CAPTURE_FILE([pid])
 OVSDB_INIT([db])
-AT_CHECK([ovsdb-server --detach --pidfile="`pwd`"/pid --monitor --unixctl="`pwd`"/nonexistent/unixctl db], [1], [], [stderr])
+AT_CHECK([ovsdb-server --detach --no-chdir --pidfile="`pwd`"/pid --monitor --unixctl="`pwd`"/nonexistent/unixctl db], [1], [], [stderr])
 AT_CHECK([grep 'ovsdb-server: could not initialize control socket' stderr],
   [0], [ignore], [])
 AT_CHECK([test ! -s pid])
-AT_CLEANUP
-
-# xxx This test hangs frequently, which often prevents builds from
-# xxx completing.   Skip this test until we have time to debug it.
-AT_SETUP([daemon --detach closes standard fds])
-AT_SKIP_IF([:])
-AT_CAPTURE_FILE([pid])
-AT_CAPTURE_FILE([status])
-AT_CAPTURE_FILE([stderr])
-OVSDB_INIT([db])
-AT_CHECK([(yes 2>stderr; echo $? > status) | ovsdb-server --detach --pidfile="`pwd`"/pid --unixctl="`pwd`"/unixctl db], [0], [], [])
-AT_CHECK([kill `cat pid`])
-AT_CHECK([test -s status])
-if grep '[[bB]]roken pipe' stderr >/dev/null 2>&1; then
-  # Something in the environment caused SIGPIPE to be ignored, but
-  # 'yes' at least told us that it got EPIPE.  Good enough; we know
-  # that stdout was closed.
-  :
-else
-  # Otherwise make sure that 'yes' died from SIGPIPE.
-  AT_CHECK([kill -l `cat status`], [0], [PIPE
-])
-fi
-AT_CLEANUP
-
-# xxx This test hangs frequently, which often prevents builds from
-# xxx completing.   Skip this test until we have time to debug it.
-AT_SETUP([daemon --detach --monitor closes standard fds])
-AT_SKIP_IF([:])
-AT_CAPTURE_FILE([pid])
-AT_CAPTURE_FILE([status])
-AT_CAPTURE_FILE([stderr])
-OVSDB_INIT([db])
-AT_CHECK([(yes 2>stderr; echo $? > status) | ovsdb-server --detach --monitor --pidfile="`pwd`"/pid --unixctl="`pwd`"/unixctl db], [0], [], [])
-AT_CHECK([kill `cat pid`])
-AT_CHECK([test -s status])
-if grep '[[bB]]roken pipe' stderr >/dev/null 2>&1; then
-  # Something in the environment caused SIGPIPE to be ignored, but
-  # 'yes' at least told us that it got EPIPE.  Good enough; we know
-  # that stdout was closed.
-  :
-else
-  # Otherwise make sure that 'yes' died from SIGPIPE.
-  AT_CHECK([kill -l `cat status`], [0], [PIPE
-])
-fi
 AT_CLEANUP

@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2011 The Board of Trustees of The Leland Stanford
+/* Copyright (c) 2008, 2011, 2012 The Board of Trustees of The Leland Stanford
  * Junior University
  *
  * We are making the OpenFlow specification and associated documentation
@@ -32,7 +32,7 @@
  */
 
 /*
- * Copyright (c) 2008, 2009, 2010, 2011 Nicira Networks.
+ * Copyright (c) 2008, 2009, 2010, 2011 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -71,9 +71,11 @@
 /* The most significant bit being set in the version field indicates an
  * experimental OpenFlow version.
  */
-#define OFP10_VERSION   0x01
-#define OFP11_VERSION   0x02
-#define OFP12_VERSION   0x03
+enum ofp_version {
+    OFP10_VERSION = 0x01,
+    OFP11_VERSION = 0x02,
+    OFP12_VERSION = 0x03,
+};
 
 #define OFP_MAX_TABLE_NAME_LEN 32
 #define OFP_MAX_PORT_NAME_LEN  16
@@ -82,28 +84,6 @@
 #define OFP_SSL_PORT  6633
 
 #define OFP_ETH_ALEN 6          /* Bytes in an Ethernet address. */
-
-/* Common OpenFlow message types. */
-enum ofp_type {
-    /* Immutable messages. */
-    OFPT_HELLO,               /* Symmetric message */
-    OFPT_ERROR,               /* Symmetric message */
-    OFPT_ECHO_REQUEST,        /* Symmetric message */
-    OFPT_ECHO_REPLY,          /* Symmetric message */
-    OFPT_VENDOR,              /* Symmetric message */
-
-    /* Switch configuration messages. */
-    OFPT_FEATURES_REQUEST,    /* Controller/switch message */
-    OFPT_FEATURES_REPLY,      /* Controller/switch message */
-    OFPT_GET_CONFIG_REQUEST,  /* Controller/switch message */
-    OFPT_GET_CONFIG_REPLY,    /* Controller/switch message */
-    OFPT_SET_CONFIG,          /* Controller/switch message */
-
-    /* Asynchronous messages. */
-    OFPT_PACKET_IN,           /* Async message */
-    OFPT_FLOW_REMOVED,        /* Async message */
-    OFPT_PORT_STATUS,         /* Async message */
-};
 
 /* Header on all OpenFlow packets. */
 struct ofp_header {
@@ -179,7 +159,6 @@ OFP_ASSERT(sizeof(struct ofp_queue_prop_min_rate) == 16);
 
 /* Switch features. */
 struct ofp_switch_features {
-    struct ofp_header header;
     ovs_be64 datapath_id;   /* Datapath unique ID.  The lower 48-bits are for
                                a MAC address, while the upper 16-bits are
                                implementer-defined. */
@@ -196,7 +175,7 @@ struct ofp_switch_features {
     /* Followed by an array of struct ofp10_phy_port or struct ofp11_port
      * structures.  The number is inferred from header.length. */
 };
-OFP_ASSERT(sizeof(struct ofp_switch_features) == 32);
+OFP_ASSERT(sizeof(struct ofp_switch_features) == 24);
 
 /* Common capabilities supported by the datapath (struct ofp_switch_features,
  * member capabilities). */
@@ -218,12 +197,80 @@ enum ofp_packet_in_reason {
     OFPR_N_REASONS
 };
 
+enum ofp_flow_mod_command {
+    OFPFC_ADD,              /* New flow. */
+    OFPFC_MODIFY,           /* Modify all matching flows. */
+    OFPFC_MODIFY_STRICT,    /* Modify entry strictly matching wildcards */
+    OFPFC_DELETE,           /* Delete all matching flows. */
+    OFPFC_DELETE_STRICT     /* Strictly match wildcards and priority. */
+};
+
+enum ofp_flow_mod_flags {
+    OFPFF_SEND_FLOW_REM = 1 << 0,  /* Send flow removed message when flow
+                                    * expires or is deleted. */
+    OFPFF_CHECK_OVERLAP = 1 << 1,  /* Check for overlapping entries first. */
+};
+
+/* Action structure for OFPAT10_SET_VLAN_VID and OFPAT11_SET_VLAN_VID. */
+struct ofp_action_vlan_vid {
+    ovs_be16 type;                  /* Type. */
+    ovs_be16 len;                   /* Length is 8. */
+    ovs_be16 vlan_vid;              /* VLAN id. */
+    uint8_t pad[2];
+};
+OFP_ASSERT(sizeof(struct ofp_action_vlan_vid) == 8);
+
+/* Action structure for OFPAT10_SET_VLAN_PCP and OFPAT11_SET_VLAN_PCP. */
+struct ofp_action_vlan_pcp {
+    ovs_be16 type;                  /* Type. */
+    ovs_be16 len;                   /* Length is 8. */
+    uint8_t vlan_pcp;               /* VLAN priority. */
+    uint8_t pad[3];
+};
+OFP_ASSERT(sizeof(struct ofp_action_vlan_pcp) == 8);
+
+/* Action structure for OFPAT10_SET_DL_SRC/DST and OFPAT11_SET_DL_SRC/DST. */
+struct ofp_action_dl_addr {
+    ovs_be16 type;                  /* Type. */
+    ovs_be16 len;                   /* Length is 16. */
+    uint8_t dl_addr[OFP_ETH_ALEN];  /* Ethernet address. */
+    uint8_t pad[6];
+};
+OFP_ASSERT(sizeof(struct ofp_action_dl_addr) == 16);
+
+/* Action structure for OFPAT10_SET_NW_SRC/DST and OFPAT11_SET_NW_SRC/DST. */
+struct ofp_action_nw_addr {
+    ovs_be16 type;                  /* Type. */
+    ovs_be16 len;                   /* Length is 8. */
+    ovs_be32 nw_addr;               /* IP address. */
+};
+OFP_ASSERT(sizeof(struct ofp_action_nw_addr) == 8);
+
+/* Action structure for OFPAT10_SET_NW_TOS and OFPAT11_SET_NW_TOS. */
+struct ofp_action_nw_tos {
+    ovs_be16 type;                  /* Type.. */
+    ovs_be16 len;                   /* Length is 8. */
+    uint8_t nw_tos;                 /* DSCP in high 6 bits, rest ignored. */
+    uint8_t pad[3];
+};
+OFP_ASSERT(sizeof(struct ofp_action_nw_tos) == 8);
+
+/* Action structure for OFPAT10_SET_TP_SRC/DST and OFPAT11_SET_TP_SRC/DST. */
+struct ofp_action_tp_port {
+    ovs_be16 type;                  /* Type. */
+    ovs_be16 len;                   /* Length is 8. */
+    ovs_be16 tp_port;               /* TCP/UDP port. */
+    uint8_t pad[2];
+};
+OFP_ASSERT(sizeof(struct ofp_action_tp_port) == 8);
+
 /* Why was this flow removed? */
 enum ofp_flow_removed_reason {
     OFPRR_IDLE_TIMEOUT,         /* Flow idle time exceeded idle_timeout. */
     OFPRR_HARD_TIMEOUT,         /* Time exceeded hard_timeout. */
     OFPRR_DELETE,               /* Evicted by a DELETE flow mod. */
-    OFPRR_GROUP_DELETE          /* Group was removed. */
+    OFPRR_GROUP_DELETE,         /* Group was removed. */
+    OFPRR_EVICTION,             /* Switch eviction to free resources. */
 };
 
 /* What changed about the physical port */
@@ -235,12 +282,34 @@ enum ofp_port_reason {
 
 /* A physical port has changed in the datapath */
 struct ofp_port_status {
-    struct ofp_header header;
     uint8_t reason;          /* One of OFPPR_*. */
     uint8_t pad[7];          /* Align to 64-bits. */
     /* Followed by struct ofp10_phy_port or struct ofp11_port.  */
 };
-OFP_ASSERT(sizeof(struct ofp_port_status) == 16);
+OFP_ASSERT(sizeof(struct ofp_port_status) == 8);
+
+#define DESC_STR_LEN   256
+#define SERIAL_NUM_LEN 32
+/* Body of reply to OFPST_DESC request.  Each entry is a NULL-terminated ASCII
+ * string. */
+struct ofp_desc_stats {
+    char mfr_desc[DESC_STR_LEN];       /* Manufacturer description. */
+    char hw_desc[DESC_STR_LEN];        /* Hardware description. */
+    char sw_desc[DESC_STR_LEN];        /* Software description. */
+    char serial_num[SERIAL_NUM_LEN];   /* Serial number. */
+    char dp_desc[DESC_STR_LEN];        /* Human readable description of
+                                          the datapath. */
+};
+OFP_ASSERT(sizeof(struct ofp_desc_stats) == 1056);
+
+/* Reply to OFPST_AGGREGATE request. */
+struct ofp_aggregate_stats_reply {
+    ovs_32aligned_be64 packet_count; /* Number of packets in flows. */
+    ovs_32aligned_be64 byte_count;   /* Number of bytes in flows. */
+    ovs_be32 flow_count;      /* Number of flows. */
+    uint8_t pad[4];           /* Align to 64 bits. */
+};
+OFP_ASSERT(sizeof(struct ofp_aggregate_stats_reply) == 24);
 
 /* The match type indicates the match structure (set of fields that compose the
  * match) in use. The match type is placed in the type field at the beginning
@@ -253,6 +322,16 @@ enum ofp_match_type {
     OFPMT_STANDARD = 0,         /* The match fields defined in the ofp11_match
                                    structure apply */
     OFPMT_OXM = 1,              /* OpenFlow Extensible Match */
+};
+
+/* Group numbering. Groups can use any number up to OFPG_MAX. */
+enum ofp_group {
+    /* Last usable group number. */
+    OFPG_MAX        = 0xffffff00,
+
+    /* Fake groups. */
+    OFPG_ALL        = 0xfffffffc,  /* All groups, for group delete commands. */
+    OFPG_ANY        = 0xffffffff   /* Wildcard, for flow stats requests. */
 };
 
 #endif /* openflow/openflow-common.h */

@@ -14,6 +14,7 @@ TESTSUITE_AT = \
 	tests/check-structs.at \
 	tests/daemon.at \
 	tests/daemon-py.at \
+	tests/ofp-actions.at \
 	tests/ofp-print.at \
 	tests/ofp-errors.at \
 	tests/ovs-ofctl.at \
@@ -74,7 +75,7 @@ check-local: tests/atconfig tests/atlocal $(TESTSUITE)
 COVERAGE = coverage
 COVERAGE_FILE='$(abs_srcdir)/.coverage'
 check-pycov: all tests/atconfig tests/atlocal $(TESTSUITE) clean-pycov
-	COVERAGE_FILE=$(COVERAGE_FILE) PYTHON='$(COVERAGE) run -p' $(SHELL) '$(TESTSUITE)' -C tests AUTOTEST_PATH=$(AUTOTEST_PATH) $(TESTSUITEFLAGS)
+	PYTHONDONTWRITEBYTECODE=yes COVERAGE_FILE=$(COVERAGE_FILE) PYTHON='$(COVERAGE) run -p' $(SHELL) '$(TESTSUITE)' -C tests AUTOTEST_PATH=$(AUTOTEST_PATH) $(TESTSUITEFLAGS)
 	@cd $(srcdir) && $(COVERAGE) combine && COVERAGE_FILE=$(COVERAGE_FILE) $(COVERAGE) annotate
 	@echo
 	@echo '----------------------------------------------------------------------'
@@ -82,64 +83,6 @@ check-pycov: all tests/atconfig tests/atlocal $(TESTSUITE) clean-pycov
 	@echo '----------------------------------------------------------------------'
 	@echo
 	@COVERAGE_FILE=$(COVERAGE_FILE) $(COVERAGE) report
-
-# lcov support
-
-lcov_wrappers = \
-	tests/lcov/ovs-appctl \
-	tests/lcov/ovs-ofctl \
-	tests/lcov/ovs-vsctl \
-	tests/lcov/ovs-vswitchd \
-	tests/lcov/ovsdb-client \
-	tests/lcov/ovsdb-server \
-	tests/lcov/ovsdb-tool \
-	tests/lcov/test-aes128 \
-	tests/lcov/test-bundle \
-	tests/lcov/test-byte-order \
-	tests/lcov/test-classifier \
-	tests/lcov/test-csum \
-	tests/lcov/test-file_name \
-	tests/lcov/test-flows \
-	tests/lcov/test-hash \
-	tests/lcov/test-heap \
-	tests/lcov/test-hmap \
-	tests/lcov/test-json \
-	tests/lcov/test-jsonrpc \
-	tests/lcov/test-list \
-	tests/lcov/test-lockfile \
-	tests/lcov/test-multipath \
-	tests/lcov/test-odp \
-	tests/lcov/test-ovsdb \
-	tests/lcov/test-packets \
-	tests/lcov/test-random \
-	tests/lcov/test-reconnect \
-	tests/lcov/test-sha1 \
-	tests/lcov/test-stp \
-	tests/lcov/test-timeval \
-	tests/lcov/test-type-props \
-	tests/lcov/test-unix-socket \
-	tests/lcov/test-uuid \
-	tests/lcov/test-vconn
-
-$(lcov_wrappers): tests/lcov-wrapper.in
-	@test -d tests/lcov || mkdir tests/lcov
-	sed -e 's,[@]abs_top_builddir[@],$(abs_top_builddir),' \
-	    -e 's,[@]wrap_program[@],$@,' \
-		$(top_srcdir)/tests/lcov-wrapper.in > $@.tmp
-	chmod +x $@.tmp
-	mv $@.tmp $@
-CLEANFILES += $(lcov_wrappers)
-EXTRA_DIST += tests/lcov-wrapper.in
-
-LCOV = lcov -b $(abs_top_builddir) -d $(abs_top_builddir) -q
-check-lcov: all tests/atconfig tests/atlocal $(TESTSUITE) $(lcov_wrappers)
-	rm -fr tests/coverage.html tests/coverage.info
-	$(LCOV) -c -i -o - > tests/coverage.info
-	$(SHELL) '$(TESTSUITE)' -C tests CHECK_LCOV=true DISABLE_LCOV=false AUTOTEST_PATH='tests/lcov:$(AUTOTEST_PATH)' $(TESTSUITEFLAGS); \
-		rc=$$?; \
-		echo "Producing coverage.html..."; \
-		cd tests && genhtml -q -o coverage.html coverage.info; \
-		exit $$rc
 
 # valgrind support
 
@@ -192,7 +135,8 @@ VALGRIND = valgrind --log-file=valgrind.%p --leak-check=full \
 	--suppressions=$(abs_top_srcdir)/tests/glibc.supp \
 	--suppressions=$(abs_top_srcdir)/tests/openssl.supp --num-callers=20
 EXTRA_DIST += tests/glibc.supp tests/openssl.supp
-check-valgrind: all tests/atconfig tests/atlocal $(TESTSUITE) $(valgrind_wrappers)
+check-valgrind: all tests/atconfig tests/atlocal $(TESTSUITE) \
+                $(valgrind_wrappers) $(check_DATA)
 	$(SHELL) '$(TESTSUITE)' -C tests CHECK_VALGRIND=true VALGRIND='$(VALGRIND)' AUTOTEST_PATH='tests/valgrind:$(AUTOTEST_PATH)' -d $(TESTSUITEFLAGS)
 	@echo
 	@echo '----------------------------------------------------------------------'

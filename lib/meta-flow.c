@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2012 Nicira Networks.
+ * Copyright (c) 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,7 +54,16 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         MFP_NONE,
         true,
         NXM_NX_TUN_ID, "NXM_NX_TUN_ID",
-        0, NULL,
+        NXM_NX_TUN_ID, "NXM_NX_TUN_ID",
+    }, {
+        MFF_METADATA, "metadata", NULL,
+        MF_FIELD_SIZES(be64),
+        MFM_FULLY, 0,
+        MFS_HEXADECIMAL,
+        MFP_NONE,
+        true,
+        OXM_OF_METADATA, "OXM_OF_METADATA",
+        OXM_OF_METADATA, "OXM_OF_METADATA",
     }, {
         MFF_IN_PORT, "in_port", NULL,
         MF_FIELD_SIZES(be16),
@@ -74,9 +83,8 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         MFS_HEXADECIMAL,                        \
         MFP_NONE,                               \
         true,                                   \
-        NXM_NX_REG(IDX),                        \
-        "NXM_NX_REG" #IDX,                      \
-        0, NULL,                                \
+        NXM_NX_REG(IDX), "NXM_NX_REG" #IDX,     \
+        NXM_NX_REG(IDX), "NXM_NX_REG" #IDX,     \
     }
 #if FLOW_N_REGS > 0
     REGISTER(0),
@@ -113,7 +121,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     {
         MFF_ETH_SRC, "eth_src", "dl_src",
         MF_FIELD_SIZES(mac),
-        MFM_NONE, FWW_DL_SRC,
+        MFM_FULLY, 0,
         MFS_ETHERNET,
         MFP_NONE,
         true,
@@ -122,7 +130,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     }, {
         MFF_ETH_DST, "eth_dst", "dl_dst",
         MF_FIELD_SIZES(mac),
-        MFM_MCAST, 0,
+        MFM_FULLY, 0,
         MFS_ETHERNET,
         MFP_NONE,
         true,
@@ -147,24 +155,42 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         MFP_NONE,
         true,
         NXM_OF_VLAN_TCI, "NXM_OF_VLAN_TCI",
-        0, NULL,
+        NXM_OF_VLAN_TCI, "NXM_OF_VLAN_TCI",
     }, {
-        MFF_VLAN_VID, "dl_vlan", NULL,
+        MFF_DL_VLAN, "dl_vlan", NULL,
         sizeof(ovs_be16), 12,
         MFM_NONE, 0,
         MFS_DECIMAL,
         MFP_NONE,
         true,
         0, NULL,
+        0, NULL,
+    }, {
+        MFF_VLAN_VID, "vlan_vid", NULL,
+        sizeof(ovs_be16), 12,
+        MFM_FULLY, 0,
+        MFS_DECIMAL,
+        MFP_NONE,
+        true,
+        OXM_OF_VLAN_VID, "OXM_OF_VLAN_VID",
         OXM_OF_VLAN_VID, "OXM_OF_VLAN_VID",
     }, {
-        MFF_VLAN_PCP, "dl_vlan_pcp", NULL,
+        MFF_DL_VLAN_PCP, "dl_vlan_pcp", NULL,
         1, 3,
         MFM_NONE, 0,
         MFS_DECIMAL,
         MFP_NONE,
         true,
         0, NULL,
+        0, NULL,
+    }, {
+        MFF_VLAN_PCP, "vlan_pcp", NULL,
+        1, 3,
+        MFM_NONE, 0,
+        MFS_DECIMAL,
+        MFP_VLAN_VID,
+        true,
+        OXM_OF_VLAN_PCP, "OXM_OF_VLAN_PCP",
         OXM_OF_VLAN_PCP, "OXM_OF_VLAN_PCP",
     },
 
@@ -175,7 +201,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     {
         MFF_IPV4_SRC, "ip_src", "nw_src",
         MF_FIELD_SIZES(be32),
-        MFM_CIDR, 0,
+        MFM_FULLY, 0,
         MFS_IPV4,
         MFP_IPV4,
         true,
@@ -184,7 +210,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     }, {
         MFF_IPV4_DST, "ip_dst", "nw_dst",
         MF_FIELD_SIZES(be32),
-        MFM_CIDR, 0,
+        MFM_FULLY, 0,
         MFS_IPV4,
         MFP_IPV4,
         true,
@@ -195,7 +221,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     {
         MFF_IPV6_SRC, "ipv6_src", NULL,
         MF_FIELD_SIZES(ipv6),
-        MFM_CIDR, 0,
+        MFM_FULLY, 0,
         MFS_IPV6,
         MFP_IPV6,
         true,
@@ -204,7 +230,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     }, {
         MFF_IPV6_DST, "ipv6_dst", NULL,
         MF_FIELD_SIZES(ipv6),
-        MFM_CIDR, 0,
+        MFM_FULLY, 0,
         MFS_IPV6,
         MFP_IPV6,
         true,
@@ -214,7 +240,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     {
         MFF_IPV6_LABEL, "ipv6_label", NULL,
         4, 20,
-        MFM_NONE, FWW_IPV6_LABEL,
+        MFM_FULLY, 0,
         MFS_HEXADECIMAL,
         MFP_IPV6,
         false,
@@ -257,7 +283,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         MFP_IP_ANY,
         true,
         NXM_NX_IP_TTL, "NXM_NX_IP_TTL",
-        0, NULL,
+        NXM_NX_IP_TTL, "NXM_NX_IP_TTL",
     }, {
         MFF_IP_FRAG, "ip_frag", NULL,
         1, 2,
@@ -266,7 +292,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         MFP_IP_ANY,
         false,
         NXM_NX_IP_FRAG, "NXM_NX_IP_FRAG",
-        0, NULL,
+        NXM_NX_IP_FRAG, "NXM_NX_IP_FRAG",
     },
 
     {
@@ -281,7 +307,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     }, {
         MFF_ARP_SPA, "arp_spa", NULL,
         MF_FIELD_SIZES(be32),
-        MFM_CIDR, 0,
+        MFM_FULLY, 0,
         MFS_IPV4,
         MFP_ARP,
         false,
@@ -290,7 +316,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     }, {
         MFF_ARP_TPA, "arp_tpa", NULL,
         MF_FIELD_SIZES(be32),
-        MFM_CIDR, 0,
+        MFM_FULLY, 0,
         MFS_IPV4,
         MFP_ARP,
         false,
@@ -299,7 +325,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     }, {
         MFF_ARP_SHA, "arp_sha", NULL,
         MF_FIELD_SIZES(mac),
-        MFM_NONE, FWW_ARP_SHA,
+        MFM_FULLY, 0,
         MFS_ETHERNET,
         MFP_ARP,
         false,
@@ -308,7 +334,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     }, {
         MFF_ARP_THA, "arp_tha", NULL,
         MF_FIELD_SIZES(mac),
-        MFM_NONE, FWW_ARP_THA,
+        MFM_FULLY, 0,
         MFS_ETHERNET,
         MFP_ARP,
         false,
@@ -407,7 +433,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     {
         MFF_ND_TARGET, "nd_target", NULL,
         MF_FIELD_SIZES(ipv6),
-        MFM_CIDR, 0,
+        MFM_FULLY, 0,
         MFS_IPV6,
         MFP_ND,
         false,
@@ -416,7 +442,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     }, {
         MFF_ND_SLL, "nd_sll", NULL,
         MF_FIELD_SIZES(mac),
-        MFM_NONE, FWW_ARP_SHA,
+        MFM_FULLY, 0,
         MFS_ETHERNET,
         MFP_ND_SOLICIT,
         false,
@@ -425,7 +451,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     }, {
         MFF_ND_TLL, "nd_tll", NULL,
         MF_FIELD_SIZES(mac),
-        MFM_NONE, FWW_ARP_THA,
+        MFM_FULLY, 0,
         MFS_ETHERNET,
         MFP_ND_ADVERT,
         false,
@@ -434,17 +460,21 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     }
 };
 
+/* Maps an NXM or OXM header value to an mf_field. */
 struct nxm_field {
-    struct hmap_node hmap_node;
-    uint32_t nxm_header;
+    struct hmap_node hmap_node; /* In 'all_fields' hmap. */
+    uint32_t header;            /* NXM or OXM header value. */
     const struct mf_field *mf;
 };
 
-static struct hmap all_nxm_fields = HMAP_INITIALIZER(&all_nxm_fields);
+/* Contains 'struct nxm_field's. */
+static struct hmap all_fields = HMAP_INITIALIZER(&all_fields);
 
 /* Rate limit for parse errors.  These always indicate a bug in an OpenFlow
  * controller and so there's not much point in showing a lot of them. */
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+
+const struct mf_field *mf_from_nxm_header__(uint32_t header);
 
 /* Returns the field with the given 'id'. */
 const struct mf_field *
@@ -476,14 +506,26 @@ mf_from_name(const char *name)
 }
 
 static void
-add_nxm_field(uint32_t nxm_header, const struct mf_field *mf)
+add_nxm_field(uint32_t header, const struct mf_field *mf)
 {
     struct nxm_field *f;
 
     f = xmalloc(sizeof *f);
-    hmap_insert(&all_nxm_fields, &f->hmap_node, hash_int(nxm_header, 0));
-    f->nxm_header = nxm_header;
+    hmap_insert(&all_fields, &f->hmap_node, hash_int(header, 0));
+    f->header = header;
     f->mf = mf;
+}
+
+static void
+nxm_init_add_field(const struct mf_field *mf, uint32_t header)
+{
+    if (header) {
+        assert(!mf_from_nxm_header__(header));
+        add_nxm_field(header, mf);
+        if (mf->maskable != MFM_NONE) {
+            add_nxm_field(NXM_MAKE_WILD_HEADER(header), mf);
+        }
+    }
 }
 
 static void
@@ -492,40 +534,29 @@ nxm_init(void)
     const struct mf_field *mf;
 
     for (mf = mf_fields; mf < &mf_fields[MFF_N_IDS]; mf++) {
-        if (mf->nxm_header) {
-            add_nxm_field(mf->nxm_header, mf);
-            if (mf->maskable != MFM_NONE) {
-                add_nxm_field(NXM_MAKE_WILD_HEADER(mf->nxm_header), mf);
-            }
+        nxm_init_add_field(mf, mf->nxm_header);
+        if (mf->oxm_header != mf->nxm_header) {
+            nxm_init_add_field(mf, mf->oxm_header);
         }
     }
-
-#ifndef NDEBUG
-    /* Verify that the header values are unique. */
-    for (mf = mf_fields; mf < &mf_fields[MFF_N_IDS]; mf++) {
-        if (mf->nxm_header) {
-            assert(mf_from_nxm_header(mf->nxm_header) == mf);
-            if (mf->maskable != MFM_NONE) {
-                assert(mf_from_nxm_header(NXM_MAKE_WILD_HEADER(mf->nxm_header))
-                       == mf);
-            }
-        }
-    }
-#endif
 }
 
 const struct mf_field *
 mf_from_nxm_header(uint32_t header)
 {
-    const struct nxm_field *f;
-
-    if (hmap_is_empty(&all_nxm_fields)) {
+    if (hmap_is_empty(&all_fields)) {
         nxm_init();
     }
+    return mf_from_nxm_header__(header);
+}
 
-    HMAP_FOR_EACH_IN_BUCKET (f, hmap_node, hash_int(header, 0),
-                             &all_nxm_fields) {
-        if (f->nxm_header == header) {
+const struct mf_field *
+mf_from_nxm_header__(uint32_t header)
+{
+    const struct nxm_field *f;
+
+    HMAP_FOR_EACH_IN_BUCKET (f, hmap_node, hash_int(header, 0), &all_fields) {
+        if (f->header == header) {
             return f->mf;
         }
     }
@@ -543,61 +574,43 @@ mf_is_all_wild(const struct mf_field *mf, const struct flow_wildcards *wc)
 {
     switch (mf->id) {
     case MFF_IN_PORT:
-    case MFF_ETH_SRC:
     case MFF_ETH_TYPE:
     case MFF_IP_PROTO:
     case MFF_IP_DSCP:
     case MFF_IP_ECN:
     case MFF_IP_TTL:
-    case MFF_IPV6_LABEL:
     case MFF_ARP_OP:
-    case MFF_ARP_SHA:
-    case MFF_ARP_THA:
-    case MFF_ND_SLL:
-    case MFF_ND_TLL:
         assert(mf->fww_bit != 0);
         return (wc->wildcards & mf->fww_bit) != 0;
 
     case MFF_TUN_ID:
         return !wc->tun_id_mask;
+    case MFF_METADATA:
+        return !wc->metadata_mask;
 
-#if FLOW_N_REGS > 0
-    case MFF_REG0:
-#endif
-#if FLOW_N_REGS > 1
-    case MFF_REG1:
-#endif
-#if FLOW_N_REGS > 2
-    case MFF_REG2:
-#endif
-#if FLOW_N_REGS > 3
-    case MFF_REG3:
-#endif
-#if FLOW_N_REGS > 4
-    case MFF_REG4:
-#endif
-#if FLOW_N_REGS > 5
-    case MFF_REG5:
-#endif
-#if FLOW_N_REGS > 6
-    case MFF_REG6:
-#endif
-#if FLOW_N_REGS > 7
-    case MFF_REG7:
-#endif
-#if FLOW_N_REGS > 8
-#error
-#endif
+    CASE_MFF_REGS:
         return !wc->reg_masks[mf->id - MFF_REG0];
 
+    case MFF_ETH_SRC:
+        return eth_addr_is_zero(wc->dl_src_mask);
     case MFF_ETH_DST:
-        return ((wc->wildcards & (FWW_ETH_MCAST | FWW_DL_DST))
-                == (FWW_ETH_MCAST | FWW_DL_DST));
+        return eth_addr_is_zero(wc->dl_dst_mask);
+
+    case MFF_ARP_SHA:
+    case MFF_ND_SLL:
+        return eth_addr_is_zero(wc->arp_sha_mask);
+
+    case MFF_ARP_THA:
+    case MFF_ND_TLL:
+        return eth_addr_is_zero(wc->arp_tha_mask);
 
     case MFF_VLAN_TCI:
         return !wc->vlan_tci_mask;
-    case MFF_VLAN_VID:
+    case MFF_DL_VLAN:
         return !(wc->vlan_tci_mask & htons(VLAN_VID_MASK));
+    case MFF_VLAN_VID:
+        return !(wc->vlan_tci_mask & htons(VLAN_VID_MASK | VLAN_CFI));
+    case MFF_DL_VLAN_PCP:
     case MFF_VLAN_PCP:
         return !(wc->vlan_tci_mask & htons(VLAN_PCP_MASK));
 
@@ -610,6 +623,9 @@ mf_is_all_wild(const struct mf_field *mf, const struct flow_wildcards *wc)
         return ipv6_mask_is_any(&wc->ipv6_src_mask);
     case MFF_IPV6_DST:
         return ipv6_mask_is_any(&wc->ipv6_dst_mask);
+
+    case MFF_IPV6_LABEL:
+        return !wc->ipv6_label_mask;
 
     case MFF_ND_TARGET:
         return ipv6_mask_is_any(&wc->nd_target_mask);
@@ -651,18 +667,12 @@ mf_get_mask(const struct mf_field *mf, const struct flow_wildcards *wc,
 {
     switch (mf->id) {
     case MFF_IN_PORT:
-    case MFF_ETH_SRC:
     case MFF_ETH_TYPE:
     case MFF_IP_PROTO:
     case MFF_IP_DSCP:
     case MFF_IP_ECN:
     case MFF_IP_TTL:
-    case MFF_IPV6_LABEL:
     case MFF_ARP_OP:
-    case MFF_ARP_SHA:
-    case MFF_ARP_THA:
-    case MFF_ND_SLL:
-    case MFF_ND_TLL:
         assert(mf->fww_bit != 0);
         memset(mask, wc->wildcards & mf->fww_bit ? 0x00 : 0xff, mf->n_bytes);
         break;
@@ -670,48 +680,32 @@ mf_get_mask(const struct mf_field *mf, const struct flow_wildcards *wc,
     case MFF_TUN_ID:
         mask->be64 = wc->tun_id_mask;
         break;
+    case MFF_METADATA:
+        mask->be64 = wc->metadata_mask;
+        break;
 
-#if FLOW_N_REGS > 0
-    case MFF_REG0:
-#endif
-#if FLOW_N_REGS > 1
-    case MFF_REG1:
-#endif
-#if FLOW_N_REGS > 2
-    case MFF_REG2:
-#endif
-#if FLOW_N_REGS > 3
-    case MFF_REG3:
-#endif
-#if FLOW_N_REGS > 4
-    case MFF_REG4:
-#endif
-#if FLOW_N_REGS > 5
-    case MFF_REG5:
-#endif
-#if FLOW_N_REGS > 6
-    case MFF_REG6:
-#endif
-#if FLOW_N_REGS > 7
-    case MFF_REG7:
-#endif
-#if FLOW_N_REGS > 8
-#error
-#endif
+    CASE_MFF_REGS:
         mask->be32 = htonl(wc->reg_masks[mf->id - MFF_REG0]);
         break;
 
     case MFF_ETH_DST:
-        memcpy(mask->mac, flow_wildcards_to_dl_dst_mask(wc->wildcards),
-               ETH_ADDR_LEN);
+        memcpy(mask->mac, wc->dl_dst_mask, ETH_ADDR_LEN);
+        break;
+
+    case MFF_ETH_SRC:
+        memcpy(mask->mac, wc->dl_src_mask, ETH_ADDR_LEN);
         break;
 
     case MFF_VLAN_TCI:
         mask->be16 = wc->vlan_tci_mask;
         break;
-    case MFF_VLAN_VID:
+    case MFF_DL_VLAN:
         mask->be16 = wc->vlan_tci_mask & htons(VLAN_VID_MASK);
         break;
+    case MFF_VLAN_VID:
+        mask->be16 = wc->vlan_tci_mask & htons(VLAN_VID_MASK | VLAN_CFI);
+        break;
+    case MFF_DL_VLAN_PCP:
     case MFF_VLAN_PCP:
         mask->u8 = vlan_tci_to_pcp(wc->vlan_tci_mask);
         break;
@@ -729,6 +723,9 @@ mf_get_mask(const struct mf_field *mf, const struct flow_wildcards *wc,
     case MFF_IPV6_DST:
         mask->ipv6 = wc->ipv6_dst_mask;
         break;
+    case MFF_IPV6_LABEL:
+        mask->be32 = wc->ipv6_label_mask;
+        break;
 
     case MFF_ND_TARGET:
         mask->ipv6 = wc->nd_target_mask;
@@ -743,6 +740,14 @@ mf_get_mask(const struct mf_field *mf, const struct flow_wildcards *wc,
         break;
     case MFF_ARP_TPA:
         mask->be32 = wc->nw_dst_mask;
+        break;
+    case MFF_ARP_SHA:
+    case MFF_ND_SLL:
+        memcpy(mask->mac, wc->arp_sha_mask, ETH_ADDR_LEN);
+        break;
+    case MFF_ARP_THA:
+    case MFF_ND_TLL:
+        memcpy(mask->mac, wc->arp_tha_mask, ETH_ADDR_LEN);
         break;
 
     case MFF_TCP_SRC:
@@ -781,14 +786,6 @@ mf_is_mask_valid(const struct mf_field *mf, const union mf_value *mask)
 
     case MFM_FULLY:
         return true;
-
-    case MFM_CIDR:
-        return (mf->n_bytes == 4
-                ? ip_is_cidr(mask->be32)
-                : ipv6_is_cidr(&mask->ipv6));
-
-    case MFM_MCAST:
-        return flow_wildcards_is_dl_dst_mask_valid(mask->mac);
     }
 
     NOT_REACHED();
@@ -829,6 +826,8 @@ mf_are_prereqs_ok(const struct mf_field *mf, const struct flow *flow)
         return flow->dl_type == htons(ETH_TYPE_IP);
     case MFP_IPV6:
         return flow->dl_type == htons(ETH_TYPE_IPV6);
+    case MFP_VLAN_VID:
+        return (flow->vlan_tci & htons(VLAN_CFI)) != 0;
     case MFP_IP_ANY:
         return is_ip_any(flow);
 
@@ -874,34 +873,9 @@ mf_is_value_valid(const struct mf_field *mf, const union mf_value *value)
 {
     switch (mf->id) {
     case MFF_TUN_ID:
+    case MFF_METADATA:
     case MFF_IN_PORT:
-#if FLOW_N_REGS > 0
-    case MFF_REG0:
-#endif
-#if FLOW_N_REGS > 1
-    case MFF_REG1:
-#endif
-#if FLOW_N_REGS > 2
-    case MFF_REG2:
-#endif
-#if FLOW_N_REGS > 3
-    case MFF_REG3:
-#endif
-#if FLOW_N_REGS > 4
-    case MFF_REG4:
-#endif
-#if FLOW_N_REGS > 5
-    case MFF_REG5:
-#endif
-#if FLOW_N_REGS > 6
-    case MFF_REG6:
-#endif
-#if FLOW_N_REGS > 7
-    case MFF_REG7:
-#endif
-#if FLOW_N_REGS > 8
-#error
-#endif
+    CASE_MFF_REGS:
     case MFF_ETH_SRC:
     case MFF_ETH_DST:
     case MFF_ETH_TYPE:
@@ -939,11 +913,14 @@ mf_is_value_valid(const struct mf_field *mf, const union mf_value *value)
     case MFF_ARP_OP:
         return !(value->be16 & htons(0xff00));
 
-    case MFF_VLAN_VID:
+    case MFF_DL_VLAN:
         return !(value->be16 & htons(VLAN_CFI | VLAN_PCP_MASK));
+    case MFF_VLAN_VID:
+        return !(value->be16 & htons(VLAN_PCP_MASK));
 
+    case MFF_DL_VLAN_PCP:
     case MFF_VLAN_PCP:
-        return !(value->u8 & ~7);
+        return !(value->u8 & ~(VLAN_PCP_MASK >> VLAN_PCP_SHIFT));
 
     case MFF_IPV6_LABEL:
         return !(value->be32 & ~htonl(IPV6_LABEL_MASK));
@@ -964,38 +941,15 @@ mf_get_value(const struct mf_field *mf, const struct flow *flow,
     case MFF_TUN_ID:
         value->be64 = flow->tun_id;
         break;
+    case MFF_METADATA:
+        value->be64 = flow->metadata;
+        break;
 
     case MFF_IN_PORT:
         value->be16 = htons(flow->in_port);
         break;
 
-#if FLOW_N_REGS > 0
-    case MFF_REG0:
-#endif
-#if FLOW_N_REGS > 1
-    case MFF_REG1:
-#endif
-#if FLOW_N_REGS > 2
-    case MFF_REG2:
-#endif
-#if FLOW_N_REGS > 3
-    case MFF_REG3:
-#endif
-#if FLOW_N_REGS > 4
-    case MFF_REG4:
-#endif
-#if FLOW_N_REGS > 5
-    case MFF_REG5:
-#endif
-#if FLOW_N_REGS > 6
-    case MFF_REG6:
-#endif
-#if FLOW_N_REGS > 7
-    case MFF_REG7:
-#endif
-#if FLOW_N_REGS > 8
-#error
-#endif
+    CASE_MFF_REGS:
         value->be32 = htonl(flow->regs[mf->id - MFF_REG0]);
         break;
 
@@ -1015,10 +969,14 @@ mf_get_value(const struct mf_field *mf, const struct flow *flow,
         value->be16 = flow->vlan_tci;
         break;
 
-    case MFF_VLAN_VID:
+    case MFF_DL_VLAN:
         value->be16 = flow->vlan_tci & htons(VLAN_VID_MASK);
         break;
+    case MFF_VLAN_VID:
+        value->be16 = flow->vlan_tci & htons(VLAN_VID_MASK | VLAN_CFI);
+        break;
 
+    case MFF_DL_VLAN_PCP:
     case MFF_VLAN_PCP:
         value->u8 = vlan_tci_to_pcp(flow->vlan_tci);
         break;
@@ -1086,17 +1044,11 @@ mf_get_value(const struct mf_field *mf, const struct flow *flow,
         break;
 
     case MFF_TCP_SRC:
-        value->be16 = flow->tp_src;
-        break;
-
-    case MFF_TCP_DST:
-        value->be16 = flow->tp_dst;
-        break;
-
     case MFF_UDP_SRC:
         value->be16 = flow->tp_src;
         break;
 
+    case MFF_TCP_DST:
     case MFF_UDP_DST:
         value->be16 = flow->tp_dst;
         break;
@@ -1132,42 +1084,17 @@ mf_set_value(const struct mf_field *mf,
     case MFF_TUN_ID:
         cls_rule_set_tun_id(rule, value->be64);
         break;
+    case MFF_METADATA:
+        cls_rule_set_metadata(rule, value->be64);
+        break;
 
     case MFF_IN_PORT:
         cls_rule_set_in_port(rule, ntohs(value->be16));
         break;
 
-#if FLOW_N_REGS > 0
-    case MFF_REG0:
-#endif
-#if FLOW_N_REGS > 1
-    case MFF_REG1:
-#endif
-#if FLOW_N_REGS > 2
-    case MFF_REG2:
-#endif
-#if FLOW_N_REGS > 3
-    case MFF_REG3:
-#endif
-#if FLOW_N_REGS > 4
-    case MFF_REG4:
-#endif
-#if FLOW_N_REGS > 5
-    case MFF_REG5:
-#endif
-#if FLOW_N_REGS > 6
-    case MFF_REG6:
-#endif
-#if FLOW_N_REGS > 7
-    case MFF_REG7:
-#endif
-#if FLOW_N_REGS > 8
-#error
-#endif
-#if FLOW_N_REGS > 0
+    CASE_MFF_REGS:
         cls_rule_set_reg(rule, mf->id - MFF_REG0, ntohl(value->be32));
         break;
-#endif
 
     case MFF_ETH_SRC:
         cls_rule_set_dl_src(rule, value->mac);
@@ -1185,10 +1112,14 @@ mf_set_value(const struct mf_field *mf,
         cls_rule_set_dl_tci(rule, value->be16);
         break;
 
-    case MFF_VLAN_VID:
+    case MFF_DL_VLAN:
         cls_rule_set_dl_vlan(rule, value->be16);
         break;
+    case MFF_VLAN_VID:
+        cls_rule_set_vlan_vid(rule, value->be16);
+        break;
 
+    case MFF_DL_VLAN_PCP:
     case MFF_VLAN_PCP:
         cls_rule_set_dl_vlan_pcp(rule, value->u8);
         break;
@@ -1256,17 +1187,11 @@ mf_set_value(const struct mf_field *mf,
         break;
 
     case MFF_TCP_SRC:
-        cls_rule_set_tp_src(rule, value->be16);
-        break;
-
-    case MFF_TCP_DST:
-        cls_rule_set_tp_dst(rule, value->be16);
-        break;
-
     case MFF_UDP_SRC:
         cls_rule_set_tp_src(rule, value->be16);
         break;
 
+    case MFF_TCP_DST:
     case MFF_UDP_DST:
         cls_rule_set_tp_dst(rule, value->be16);
         break;
@@ -1302,42 +1227,17 @@ mf_set_flow_value(const struct mf_field *mf,
     case MFF_TUN_ID:
         flow->tun_id = value->be64;
         break;
+    case MFF_METADATA:
+        flow->metadata = value->be64;
+        break;
 
     case MFF_IN_PORT:
         flow->in_port = ntohs(value->be16);
         break;
 
-#if FLOW_N_REGS > 0
-    case MFF_REG0:
-#endif
-#if FLOW_N_REGS > 1
-    case MFF_REG1:
-#endif
-#if FLOW_N_REGS > 2
-    case MFF_REG2:
-#endif
-#if FLOW_N_REGS > 3
-    case MFF_REG3:
-#endif
-#if FLOW_N_REGS > 4
-    case MFF_REG4:
-#endif
-#if FLOW_N_REGS > 5
-    case MFF_REG5:
-#endif
-#if FLOW_N_REGS > 6
-    case MFF_REG6:
-#endif
-#if FLOW_N_REGS > 7
-    case MFF_REG7:
-#endif
-#if FLOW_N_REGS > 8
-#error
-#endif
-#if FLOW_N_REGS > 0
+    CASE_MFF_REGS:
         flow->regs[mf->id - MFF_REG0] = ntohl(value->be32);
         break;
-#endif
 
     case MFF_ETH_SRC:
         memcpy(flow->dl_src, value->mac, ETH_ADDR_LEN);
@@ -1355,10 +1255,14 @@ mf_set_flow_value(const struct mf_field *mf,
         flow->vlan_tci = value->be16;
         break;
 
+    case MFF_DL_VLAN:
+        flow_set_dl_vlan(flow, value->be16);
+        break;
     case MFF_VLAN_VID:
         flow_set_vlan_vid(flow, value->be16);
         break;
 
+    case MFF_DL_VLAN_PCP:
     case MFF_VLAN_PCP:
         flow_set_vlan_pcp(flow, value->u8);
         break;
@@ -1457,6 +1361,19 @@ mf_set_flow_value(const struct mf_field *mf,
     }
 }
 
+/* Returns true if 'mf' has a zero value in 'flow', false if it is nonzero.
+ *
+ * The caller is responsible for ensuring that 'flow' meets 'mf''s
+ * prerequisites. */
+bool
+mf_is_zero(const struct mf_field *mf, const struct flow *flow)
+{
+    union mf_value value;
+
+    mf_get_value(mf, flow, &value);
+    return is_all_zeros((const uint8_t *) &value, mf->n_bytes);
+}
+
 /* Makes 'rule' wildcard field 'mf'.
  *
  * The caller is responsible for ensuring that 'rule' meets 'mf''s
@@ -1468,64 +1385,26 @@ mf_set_wild(const struct mf_field *mf, struct cls_rule *rule)
     case MFF_TUN_ID:
         cls_rule_set_tun_id_masked(rule, htonll(0), htonll(0));
         break;
+    case MFF_METADATA:
+        cls_rule_set_metadata_masked(rule, htonll(0), htonll(0));
 
     case MFF_IN_PORT:
         rule->wc.wildcards |= FWW_IN_PORT;
         rule->flow.in_port = 0;
         break;
 
-#if FLOW_N_REGS > 0
-    case MFF_REG0:
-        cls_rule_set_reg_masked(rule, 0, 0, 0);
+    CASE_MFF_REGS:
+        cls_rule_set_reg_masked(rule, mf->id - MFF_REG0, 0, 0);
         break;
-#endif
-#if FLOW_N_REGS > 1
-    case MFF_REG1:
-        cls_rule_set_reg_masked(rule, 1, 0, 0);
-        break;
-#endif
-#if FLOW_N_REGS > 2
-    case MFF_REG2:
-        cls_rule_set_reg_masked(rule, 2, 0, 0);
-        break;
-#endif
-#if FLOW_N_REGS > 3
-    case MFF_REG3:
-        cls_rule_set_reg_masked(rule, 3, 0, 0);
-        break;
-#endif
-#if FLOW_N_REGS > 4
-    case MFF_REG4:
-        cls_rule_set_reg_masked(rule, 4, 0, 0);
-        break;
-#endif
-#if FLOW_N_REGS > 5
-    case MFF_REG5:
-        cls_rule_set_reg_masked(rule, 5, 0, 0);
-        break;
-#endif
-#if FLOW_N_REGS > 6
-    case MFF_REG6:
-        cls_rule_set_reg_masked(rule, 6, 0, 0);
-        break;
-#endif
-#if FLOW_N_REGS > 7
-    case MFF_REG7:
-        cls_rule_set_reg_masked(rule, 7, 0, 0);
-        break;
-#endif
-#if FLOW_N_REGS > 8
-#error
-#endif
 
     case MFF_ETH_SRC:
-        rule->wc.wildcards |= FWW_DL_SRC;
-        memset(rule->flow.dl_src, 0, sizeof rule->flow.dl_src);
+        memset(rule->flow.dl_src, 0, ETH_ADDR_LEN);
+        memset(rule->wc.dl_src_mask, 0, ETH_ADDR_LEN);
         break;
 
     case MFF_ETH_DST:
-        rule->wc.wildcards |= FWW_DL_DST | FWW_ETH_MCAST;
-        memset(rule->flow.dl_dst, 0, sizeof rule->flow.dl_dst);
+        memset(rule->flow.dl_dst, 0, ETH_ADDR_LEN);
+        memset(rule->wc.dl_dst_mask, 0, ETH_ADDR_LEN);
         break;
 
     case MFF_ETH_TYPE:
@@ -1537,10 +1416,12 @@ mf_set_wild(const struct mf_field *mf, struct cls_rule *rule)
         cls_rule_set_dl_tci_masked(rule, htons(0), htons(0));
         break;
 
+    case MFF_DL_VLAN:
     case MFF_VLAN_VID:
         cls_rule_set_any_vid(rule);
         break;
 
+    case MFF_DL_VLAN_PCP:
     case MFF_VLAN_PCP:
         cls_rule_set_any_pcp(rule);
         break;
@@ -1566,7 +1447,7 @@ mf_set_wild(const struct mf_field *mf, struct cls_rule *rule)
         break;
 
     case MFF_IPV6_LABEL:
-        rule->wc.wildcards |= FWW_IPV6_LABEL;
+        rule->wc.ipv6_label_mask = 0;
         rule->flow.ipv6_label = 0;
         break;
 
@@ -1602,14 +1483,14 @@ mf_set_wild(const struct mf_field *mf, struct cls_rule *rule)
 
     case MFF_ARP_SHA:
     case MFF_ND_SLL:
-        rule->wc.wildcards |= FWW_ARP_SHA;
-        memset(rule->flow.arp_sha, 0, sizeof rule->flow.arp_sha);
+        memset(rule->flow.arp_sha, 0, ETH_ADDR_LEN);
+        memset(rule->wc.arp_sha_mask, 0, ETH_ADDR_LEN);
         break;
 
     case MFF_ARP_THA:
     case MFF_ND_TLL:
-        rule->wc.wildcards |= FWW_ARP_THA;
-        memset(rule->flow.arp_tha, 0, sizeof rule->flow.arp_tha);
+        memset(rule->flow.arp_tha, 0, ETH_ADDR_LEN);
+        memset(rule->wc.arp_tha_mask, 0, ETH_ADDR_LEN);
         break;
 
     case MFF_TCP_SRC:
@@ -1665,69 +1546,57 @@ mf_set(const struct mf_field *mf,
 
     switch (mf->id) {
     case MFF_IN_PORT:
-    case MFF_ETH_SRC:
     case MFF_ETH_TYPE:
-    case MFF_VLAN_VID:
+    case MFF_DL_VLAN:
+    case MFF_DL_VLAN_PCP:
     case MFF_VLAN_PCP:
-    case MFF_IPV6_LABEL:
     case MFF_IP_PROTO:
     case MFF_IP_TTL:
     case MFF_IP_DSCP:
     case MFF_IP_ECN:
     case MFF_ARP_OP:
-    case MFF_ARP_SHA:
-    case MFF_ARP_THA:
     case MFF_ICMPV4_TYPE:
     case MFF_ICMPV4_CODE:
     case MFF_ICMPV6_TYPE:
     case MFF_ICMPV6_CODE:
-    case MFF_ND_SLL:
-    case MFF_ND_TLL:
         NOT_REACHED();
 
     case MFF_TUN_ID:
         cls_rule_set_tun_id_masked(rule, value->be64, mask->be64);
         break;
+    case MFF_METADATA:
+        cls_rule_set_metadata_masked(rule, value->be64, mask->be64);
+        break;
 
-#if FLOW_N_REGS > 0
-    case MFF_REG0:
-#endif
-#if FLOW_N_REGS > 1
-    case MFF_REG1:
-#endif
-#if FLOW_N_REGS > 2
-    case MFF_REG2:
-#endif
-#if FLOW_N_REGS > 3
-    case MFF_REG3:
-#endif
-#if FLOW_N_REGS > 4
-    case MFF_REG4:
-#endif
-#if FLOW_N_REGS > 5
-    case MFF_REG5:
-#endif
-#if FLOW_N_REGS > 6
-    case MFF_REG6:
-#endif
-#if FLOW_N_REGS > 7
-    case MFF_REG7:
-#endif
-#if FLOW_N_REGS > 8
-#error
-#endif
+    CASE_MFF_REGS:
         cls_rule_set_reg_masked(rule, mf->id - MFF_REG0,
                                 ntohl(value->be32), ntohl(mask->be32));
         break;
 
     case MFF_ETH_DST:
-        if (flow_wildcards_is_dl_dst_mask_valid(mask->mac)) {
-            cls_rule_set_dl_dst_masked(rule, value->mac, mask->mac);
-        }
+        cls_rule_set_dl_dst_masked(rule, value->mac, mask->mac);
+        break;
+
+    case MFF_ETH_SRC:
+        cls_rule_set_dl_src_masked(rule, value->mac, mask->mac);
+        break;
+
+    case MFF_ARP_SHA:
+    case MFF_ND_SLL:
+        cls_rule_set_arp_sha_masked(rule, value->mac, mask->mac);
+        break;
+
+    case MFF_ARP_THA:
+    case MFF_ND_TLL:
+        cls_rule_set_arp_tha_masked(rule, value->mac, mask->mac);
         break;
 
     case MFF_VLAN_TCI:
         cls_rule_set_dl_tci_masked(rule, value->be16, mask->be16);
+        break;
+
+    case MFF_VLAN_VID:
+        cls_rule_set_vlan_vid_masked(rule, value->be16, mask->be16);
         break;
 
     case MFF_IPV4_SRC:
@@ -1744,6 +1613,14 @@ mf_set(const struct mf_field *mf,
 
     case MFF_IPV6_DST:
         cls_rule_set_ipv6_dst_masked(rule, &value->ipv6, &mask->ipv6);
+        break;
+
+    case MFF_IPV6_LABEL:
+        if ((mask->be32 & htonl(IPV6_LABEL_MASK)) == htonl(IPV6_LABEL_MASK)) {
+            mf_set_value(mf, value, rule);
+        } else {
+            cls_rule_set_ipv6_label_masked(rule, value->be32, mask->be32);
+        }
         break;
 
     case MFF_ND_TARGET:
@@ -1845,34 +1722,9 @@ mf_random_value(const struct mf_field *mf, union mf_value *value)
 
     switch (mf->id) {
     case MFF_TUN_ID:
+    case MFF_METADATA:
     case MFF_IN_PORT:
-#if FLOW_N_REGS > 0
-    case MFF_REG0:
-#endif
-#if FLOW_N_REGS > 1
-    case MFF_REG1:
-#endif
-#if FLOW_N_REGS > 2
-    case MFF_REG2:
-#endif
-#if FLOW_N_REGS > 3
-    case MFF_REG3:
-#endif
-#if FLOW_N_REGS > 4
-    case MFF_REG4:
-#endif
-#if FLOW_N_REGS > 5
-    case MFF_REG5:
-#endif
-#if FLOW_N_REGS > 6
-    case MFF_REG6:
-#endif
-#if FLOW_N_REGS > 7
-    case MFF_REG7:
-#endif
-#if FLOW_N_REGS > 8
-#error
-#endif
+    CASE_MFF_REGS:
     case MFF_ETH_SRC:
     case MFF_ETH_DST:
     case MFF_ETH_TYPE:
@@ -1920,10 +1772,14 @@ mf_random_value(const struct mf_field *mf, union mf_value *value)
         value->be16 &= htons(0xff);
         break;
 
-    case MFF_VLAN_VID:
+    case MFF_DL_VLAN:
         value->be16 &= htons(VLAN_VID_MASK);
         break;
+    case MFF_VLAN_VID:
+        value->be16 &= htons(VLAN_VID_MASK | VLAN_CFI);
+        break;
 
+    case MFF_DL_VLAN_PCP:
     case MFF_VLAN_PCP:
         value->u8 &= 0x07;
         break;
@@ -2047,12 +1903,14 @@ mf_from_ipv6_string(const struct mf_field *mf, const char *s,
 
     netmask = strtok_r(NULL, "/", &save_ptr);
     if (netmask) {
-        int prefix = atoi(netmask);
-        if (prefix <= 0 || prefix > 128) {
-            free(str);
-            return xasprintf("%s: prefix bits not between 1 and 128", s);
-        } else {
-            *mask = ipv6_create_mask(prefix);
+        if (inet_pton(AF_INET6, netmask, mask) != 1) {
+            int prefix = atoi(netmask);
+            if (prefix <= 0 || prefix > 128) {
+                free(str);
+                return xasprintf("%s: prefix bits not between 1 and 128", s);
+            } else {
+                *mask = ipv6_create_mask(prefix);
+            }
         }
     } else {
         *mask = in6addr_exact;
@@ -2260,10 +2118,7 @@ mf_format(const struct mf_field *mf,
         break;
 
     case MFS_ETHERNET:
-        ds_put_format(s, ETH_ADDR_FMT, ETH_ADDR_ARGS(value->mac));
-        if (mask) {
-            ds_put_format(s, "/"ETH_ADDR_FMT, ETH_ADDR_ARGS(mask->mac));
-        }
+        eth_format_masked(value->mac, mask->mac, s);
         break;
 
     case MFS_IPV4:
@@ -2286,13 +2141,7 @@ mf_format(const struct mf_field *mf,
 
 /* Makes subfield 'sf' within 'rule' exactly match the 'sf->n_bits'
  * least-significant bits in 'x'.
- *
- * See mf_set_subfield() for an example.
- *
- * The difference between this function and mf_set_subfield() is that the
- * latter function can only handle subfields up to 64 bits wide, whereas this
- * one handles the general case.  On the other hand, mf_set_subfield() is
- * arguably easier to use. */
+ */
 void
 mf_write_subfield(const struct mf_subfield *sf, const union mf_subvalue *x,
                   struct cls_rule *rule)
@@ -2304,80 +2153,6 @@ mf_write_subfield(const struct mf_subfield *sf, const union mf_subvalue *x,
     bitwise_copy(x, sizeof *x, 0, &value, field->n_bytes, sf->ofs, sf->n_bits);
     bitwise_one (                 &mask,  field->n_bytes, sf->ofs, sf->n_bits);
     mf_set(field, &value, &mask, rule);
-}
-
-/* Makes subfield 'sf' within 'rule' exactly match the 'sf->n_bits'
- * least-significant bits of 'x'.
- *
- * Example: suppose that 'sf->field' is originally the following 2-byte field
- * in 'rule':
- *
- *     value == 0xe00a == 2#1110000000001010
- *      mask == 0xfc3f == 2#1111110000111111
- *
- * The call mf_set_subfield(sf, 0x55, 8, 7, rule), where sf->ofs == 8 and
- * sf->n_bits == 7 would have the following effect (note that 0x55 is
- * 2#1010101):
- *
- *     value == 0xd50a == 2#1101010100001010
- *      mask == 0xff3f == 2#1111111100111111
- *                           ^^^^^^^ affected bits
- *
- * The caller is responsible for ensuring that the result will be a valid
- * wildcard pattern for 'sf->field'.  The caller is responsible for ensuring
- * that 'rule' meets 'sf->field''s prerequisites. */
-void
-mf_set_subfield(const struct mf_subfield *sf, uint64_t x,
-                struct cls_rule *rule)
-{
-    const struct mf_field *field = sf->field;
-    unsigned int n_bits = sf->n_bits;
-    unsigned int ofs = sf->ofs;
-
-    if (ofs == 0 && field->n_bytes * 8 == n_bits) {
-        union mf_value value;
-        int i;
-
-        for (i = field->n_bytes - 1; i >= 0; i--) {
-            ((uint8_t *) &value)[i] = x;
-            x >>= 8;
-        }
-        mf_set_value(field, &value, rule);
-    } else {
-        union mf_value value, mask;
-        uint8_t *vp = (uint8_t *) &value;
-        uint8_t *mp = (uint8_t *) &mask;
-
-        mf_get(field, rule, &value, &mask);
-        bitwise_put(x,          vp, field->n_bytes, ofs, n_bits);
-        bitwise_put(UINT64_MAX, mp, field->n_bytes, ofs, n_bits);
-        mf_set(field, &value, &mask, rule);
-    }
-}
-
-/* Similar to mf_set_subfield() but modifies only a flow, not a cls_rule. */
-void
-mf_set_subfield_value(const struct mf_subfield *sf, uint64_t x,
-                      struct flow *flow)
-{
-    const struct mf_field *field = sf->field;
-    unsigned int n_bits = sf->n_bits;
-    unsigned int ofs = sf->ofs;
-    union mf_value value;
-
-    if (ofs == 0 && field->n_bytes * 8 == n_bits) {
-        int i;
-
-        for (i = field->n_bytes - 1; i >= 0; i--) {
-            ((uint8_t *) &value)[i] = x;
-            x >>= 8;
-        }
-        mf_set_flow_value(field, &value, flow);
-    } else {
-        mf_get_value(field, flow, &value);
-        bitwise_put(x, &value, field->n_bytes, ofs, n_bits);
-        mf_set_flow_value(field, &value, flow);
-    }
 }
 
 /* Initializes 'x' to the value of 'sf' within 'flow'.  'sf' must be valid for
@@ -2450,6 +2225,11 @@ mf_parse_subfield_name(const char *name, int name_len, bool *wild)
         if (mf->nxm_name
             && !strncmp(mf->nxm_name, name, name_len)
             && mf->nxm_name[name_len] == '\0') {
+            return mf;
+        }
+        if (mf->oxm_name
+            && !strncmp(mf->oxm_name, name, name_len)
+            && mf->oxm_name[name_len] == '\0') {
             return mf;
         }
     }

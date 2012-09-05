@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira Networks.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,6 +52,8 @@ int nl_sock_join_mcgroup(struct nl_sock *, unsigned int multicast_group);
 int nl_sock_leave_mcgroup(struct nl_sock *, unsigned int multicast_group);
 
 int nl_sock_send(struct nl_sock *, const struct ofpbuf *, bool wait);
+int nl_sock_send_seq(struct nl_sock *, const struct ofpbuf *,
+                     uint32_t nlmsg_seq, bool wait);
 int nl_sock_recv(struct nl_sock *, struct ofpbuf *, bool wait);
 int nl_sock_transact(struct nl_sock *, const struct ofpbuf *request,
                      struct ofpbuf **replyp);
