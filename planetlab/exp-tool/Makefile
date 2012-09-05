@@ -76,17 +76,17 @@ cache/host.%:
 
 cache/db.%:
 	@echo "Starting db server on $(call display,$*)"
-	@$(SSH) $(HOST_$*) sudo start_ovsdb-server > $@ \
+	@$(SSH) $(HOST_$*) sudo sliver-ovs start-db > $@ \
 	 || { rm $@; exit 1; }
 
 cache/switchd.%: cache/db.%
 	@echo "Starting vswitchd on $(call display,$*)"
-	@$(SSH) $(HOST_$*) sudo start_vswitchd > $@ \
+	@$(SSH) $(HOST_$*) sudo sliver-ovs start-switch > $@ \
 	 || { rm $@; exit 1; }
 
 cache/bridge.%: cache/switchd.%
 	@echo "Creating bridge on $(call display,$*)"
-	@$(SSH) $(HOST_$*) sudo create_bridge $(IP_$*) > $@ \
+	@$(SSH) $(HOST_$*) sudo sliver-ovs create-bridge $(IP_$*) > $@ \
 	 || { rm $@; exit 1; }
 
 cache/sshcheck.%: FORCE
@@ -105,7 +105,7 @@ U/%: del-iface.%@1 del-iface.%@2
 del-bridge.%: cache/db.%
 	@echo "Deleting bridge on $(call display,$*)"
 	@if [ -f cache/bridge.$* ]; then \
-		$(SSH) $(HOST_$*) sudo del_bridge $$(cat cache/bridge.$*);\
+		$(SSH) $(HOST_$*) sudo sliver-ovs del-bridge $$(cat cache/bridge.$*);\
 	 fi
 	@rm -f cache/bridge.$* \
 	      cache/iface.$*-*@1 cache/iface.*-$*@2 \
@@ -154,7 +154,7 @@ distclean:
 del-iface.%: cache/db.$$(call get,%)
 	@echo "Removing interface for link $(call proj1,$*) from $(call get,$*)"
 	@$(SSH) $(HOST_$(call get,$*)) \
-		sudo del_port L$(call proj1,$*)
+		sudo sliver-ovs del-port L$(call proj1,$*)
 	@rm -f cache/iface.$* cache/link.$* cache/link.$(call opp,$*)
 
 
@@ -162,7 +162,7 @@ del-iface.%: cache/db.$$(call get,%)
 cache/iface.%: cache/bridge.$$(call get,%)
 	@echo "Creating interface for link $(call proj1,$*) on $(call get,$*)"
 	@$(SSH) $(HOST_$(call get,$*)) \
-		sudo create_port $$(cat $^) L$(call proj1,$*) > $@ \
+		sudo sliver-ovs create-port $$(cat $^) L$(call proj1,$*) > $@ \
 	 || { rm $@; exit 1; }
 
 cache/link.%: cache/host.$$(call rget,$$*) cache/iface.% cache/iface.$$(call opp,$$*)
