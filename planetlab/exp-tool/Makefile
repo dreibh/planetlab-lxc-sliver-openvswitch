@@ -39,6 +39,8 @@ endif
 SSH_OPTIONS ?= $(SSH_KEY_OPTION) -l $(SLICE) -t
 SSH = ssh $(SSH_OPTIONS)
 
+SUDO ?= sudo -S
+
 ALL_NODE_IDS=$(shell (cut -d- -f1 < links; cut -d- -f2 < links) | sort -u)
 
 ####################
@@ -69,8 +71,8 @@ sshchecks: $(foreach id,$(ALL_NODE_IDS),cache/sshcheck.$(id))
 dbs: $(foreach id,$(ALL_NODE_IDS),cache/db.$(id))
 .PHONY: dbs
 
-switchds: $(foreach id,$(ALL_NODE_IDS),cache/switchd.$(id))
-.PHONY: switchds
+switchs: $(foreach id,$(ALL_NODE_IDS),cache/switch.$(id))
+.PHONY: switchs
 
 ### node-oriented targets
 cache/host.%:
@@ -79,17 +81,17 @@ cache/host.%:
 
 cache/db.%:
 	@echo "Starting db server on $(call display,$*)"
-	@$(SSH) $(HOST_$*) sudo sliver-ovs start-db > $@ \
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-db > $@ \
 	 || { rm $@; exit 1; }
 
-cache/switchd.%: cache/db.%
+cache/switch.%: cache/db.%
 	@echo "Starting vswitchd on $(call display,$*)"
-	@$(SSH) $(HOST_$*) sudo sliver-ovs start-switch > $@ \
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-switch > $@ \
 	 || { rm $@; exit 1; }
 
-cache/bridge.%: cache/switchd.%
+cache/bridge.%: cache/switch.%
 	@echo "Creating bridge on $(call display,$*)"
-	@$(SSH) $(HOST_$*) sudo sliver-ovs create-bridge $(IP_$*) > $@ \
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(IP_$*) > $@ \
 	 || { rm $@; exit 1; }
 
 cache/sshcheck.%: FORCE
@@ -108,36 +110,36 @@ U/%: del-iface.%@1 del-iface.%@2
 del-bridge.%: cache/db.%
 	@echo "Deleting bridge on $(call display,$*)"
 	@if [ -f cache/bridge.$* ]; then \
-		$(SSH) $(HOST_$*) sudo sliver-ovs del-bridge $$(cat cache/bridge.$*);\
+		$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-bridge $$(cat cache/bridge.$*);\
 	 fi
 	@rm -f cache/bridge.$* \
 	      cache/iface.$*$(SEP)*@1 cache/iface.*$(SEP)$*@2 \
 	      cache/link.$*$(SEP)*@?  cache/link.*$(SEP)$*@?  \
 	      L/$*$(SEP)*	      L/*$(SEP)$*
 
-del-switchd.%: del-bridge.%
-	@echo "Shutting down switchd on $(call display,$*)"
-	@if [ -f cache/switchd.$* ]; then \
-		$(SSH) $(HOST_$*) sudo ovs-appctl exit;\
+del-switch.%: del-bridge.%
+	@echo "Shutting down switch on $(call display,$*)"
+	@if [ -f cache/switch.$* ]; then \
+		$(SSH) $(HOST_$*) $(SUDO) ovs-appctl exit;\
 	 fi
-	@rm -f cache/switchd.$*
+	@rm -f cache/switch.$*
 
 del-db.%:
 	@echo "Shutting down db on $(call display,$*)"
 	@if [ -f cache/db.$* ]; then \
-		$(SSH) $(HOST_$*) sudo ovs-appctl --target=$(VARRUN)/ovsdb-server.$$(cat cache/db.$*).ctl exit;\
+		$(SSH) $(HOST_$*) $(SUDO) ovs-appctl --target=$(VARRUN)/ovsdb-server.$$(cat cache/db.$*).ctl exit;\
 	 fi
 	@rm -f cache/db.$*
 
 del-links: $(addprefix U/,$(notdir $(wildcard L/*)))
 
-del-switchds: $(addprefix del-,$(notdir $(wildcard cache/switchd.*)))
+del-switchs: $(addprefix del-,$(notdir $(wildcard cache/switch.*)))
 
 del-dbs: $(addprefix del-,$(notdir $(wildcard cache/db.*)))
 
 shutdown: del-switches del-dbs
 
-.PHONY: del-links del-switchds del-dbs shutdown
+.PHONY: del-links del-switchs del-dbs shutdown
 
 ####################
 graph.dot:
@@ -157,7 +159,7 @@ distclean:
 del-iface.%: cache/db.$$(call get,%)
 	@echo "Removing interface for link $(call proj1,$*) from $(call get,$*)"
 	@$(SSH) $(HOST_$(call get,$*)) \
-		sudo sliver-ovs del-port L$(call proj1,$*)
+		$(SUDO) sliver-ovs del-port L$(call proj1,$*)
 	@rm -f cache/iface.$* cache/link.$* cache/link.$(call opp,$*)
 
 
@@ -165,13 +167,13 @@ del-iface.%: cache/db.$$(call get,%)
 cache/iface.%: cache/bridge.$$(call get,%)
 	@echo "Creating interface for link $(call proj1,$*) on $(call get,$*)"
 	@$(SSH) $(HOST_$(call get,$*)) \
-		sudo sliver-ovs create-port $$(cat $^) L$(call proj1,$*) > $@ \
+		$(SUDO) sliver-ovs create-port $$(cat $^) L$(call proj1,$*) > $@ \
 	 || { rm $@; exit 1; }
 
 cache/link.%: cache/host.$$(call rget,$$*) cache/iface.% cache/iface.$$(call opp,$$*)
 	@echo "Setting port number of link $(call proj1,$*) on $(call get,$*)"
 	@$(SSH) $(HOST_$(call get,$*)) \
-		sudo ovs-vsctl set interface L$(call proj1,$*) \
+		$(SUDO) ovs-vsctl set interface L$(call proj1,$*) \
 			options:remote_ip=$$(cat cache/host.$(call rget,$*)) \
 			options:remote_port=$$(cat cache/iface.$(call opp,$*)) \
 	 && touch $@
