@@ -1,14 +1,16 @@
 include conf.mk
 
+
 # proj1(x@y) = x
 proj1=$(word 1,$(subst @, ,$(1)))
 
 # proj2(x@y) = y
 proj2=$(word 2,$(subst @, ,$(1)))
 
+SEP?=-
 # get(x-y@1) = x
 # get(x-y@2) = y
-get=$(word $(call proj2,$(1)),$(subst -, ,$(call proj1,$(1))))
+get=$(word $(call proj2,$(1)),$(subst $(SEP), ,$(call proj1,$(1))))
 
 # flip(1) = 2
 # flip(2) = 1
@@ -109,9 +111,9 @@ del-bridge.%: cache/db.%
 		$(SSH) $(HOST_$*) sudo sliver-ovs del-bridge $$(cat cache/bridge.$*);\
 	 fi
 	@rm -f cache/bridge.$* \
-	      cache/iface.$*-*@1 cache/iface.*-$*@2 \
-	      cache/link.$*-*@?  cache/link.*-$*@?  \
-	      L/$*-*		 L/*-$*
+	      cache/iface.$*$(SEP)*@1 cache/iface.*$(SEP)$*@2 \
+	      cache/link.$*$(SEP)*@?  cache/link.*$(SEP)$*@?  \
+	      L/$*$(SEP)*	      L/*$(SEP)$*
 
 del-switchd.%: del-bridge.%
 	@echo "Shutting down switchd on $(call display,$*)"
@@ -139,7 +141,7 @@ shutdown: del-switches del-dbs
 
 ####################
 graph.dot:
-	( echo "digraph $(SLICE) {"; ls L | sed 's/-/->/;s/$$/;/'; echo "}" ) > $@
+	( echo "digraph $(SLICE) {"; ls L | sed 's/$(SEP)/->/;s/$$/;/'; echo "}" ) > $@
 graph.ps: graph.dot
 	dot -Tps < $^ > $@	
 
