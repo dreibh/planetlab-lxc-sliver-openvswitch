@@ -75,28 +75,26 @@ switchs: $(foreach id,$(ALL_NODE_IDS),cache/switch.$(id))
 .PHONY: switchs
 
 ### node-oriented targets
+# check ssh connectivity
+cache/sshcheck.%: FORCE
+	@if $(SSH) $(HOST_$*) hostname 2> /dev/null; then echo "ssh on" $(call display,$*) "OK" ; \
+	 else echo "ssh on" $(call display,$*) "KO !!!"; fi
+
 cache/host.%:
 	@echo "IP lookup for $(call display,$*)"
 	@host $(HOST_$*) | sed -n 's/^.*has address *//p' > $@
 
 cache/db.%:
-	@echo "Starting db server on $(call display,$*)"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-db > $@ \
-	 || { rm $@; exit 1; }
+	@echo "Starting db server on $(call display,$*) - logs in $@.log"
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-db &> $@.log && touch $@
 
 cache/switch.%: cache/db.%
-	@echo "Starting vswitchd on $(call display,$*)"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-switch > $@ \
-	 || { rm $@; exit 1; }
+	@echo "Starting vswitchd on $(call display,$*) - logs in $@.log"
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-switch &> $@.log && touch $@
 
 cache/bridge.%: cache/switch.%
-	@echo "Creating bridge on $(call display,$*)"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(IP_$*) > $@ \
-	 || { rm $@; exit 1; }
-
-cache/sshcheck.%: FORCE
-	@if $(SSH) $(HOST_$*) hostname 2> /dev/null; then echo "ssh on" $(call display,$*) "OK" ; \
-	 else echo "ssh on" $(call display,$*) "KO !!!"; fi
+	@echo "Creating bridge on $(call display,$*) - logs in $@.log"
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(IP_$*) > $@.log && touch $@
 
 ### link-oriented targets
 L/%: cache/link.%@1 cache/link.%@2
