@@ -23,6 +23,7 @@ opp=$(call proj1,$(1))@$(call flip,$(call proj2,$(1)))
 rget=$(call get,$(call opp,$(1)))
 
 solve=$(HOST_$(1))
+solve_ip=$(IP_$(1))
 # can be redefined in conf.mk if that's not the expected behaviour
 display?=host $(1) aka $(call solve,$(1))
 
