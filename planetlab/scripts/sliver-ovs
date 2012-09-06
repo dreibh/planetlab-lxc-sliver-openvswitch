@@ -110,6 +110,16 @@ function status () {
     [ -n "$pids" ] && ps $pids
 }
 
+function start () {
+    start_db
+    start_switch
+}
+
+function stop () {
+    stop_switch
+    stop_db
+}
+
 #################### create functions
 function create_bridge () {
     
@@ -196,7 +206,9 @@ function del_port () {
 }
 
 ####################
-SUPPORTED_SUBCOMMANDS="start_db stop_db start_switch stop_switch status create_bridge create_port del_bridge del_port"
+SUPPORTED_SUBCOMMANDS="start stop status 
+start_db stop_db start_switch stop_switch
+create_bridge create_port del_bridge del_port"
 
 function main () {
 	message="Usage: $COMMAND <subcommand> ...
