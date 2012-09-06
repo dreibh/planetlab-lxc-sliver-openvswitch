@@ -7,8 +7,10 @@ sbin_PROGRAMS += planetlab/vsysc/vsysc
 #	planetlab/scripts/showgraph
 dist_sbin_SCRIPTS += planetlab/scripts/sliver-ovs 
 
+planetlab_pltap_ovs_pltap_ovs_SOURCES =
 planetlab_pltap_ovs_pltap_ovs_SOURCES += planetlab/pltap-ovs/pltap-ovs.c
 planetlab_pltap_ovs_pltap_ovs_SOURCES += planetlab/pltap-ovs/tunalloc.c
 planetlab_pltap_ovs_pltap_ovs_SOURCES += planetlab/pltap-ovs/tunalloc.h
 
+planetlab_vsysc_vsysc_SOURCES =
 planetlab_vsysc_vsysc_SOURCES += planetlab/vsysc/vsysc.c
