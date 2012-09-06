@@ -37,7 +37,77 @@ function wait_server () {
     cat "$pid_file"
 }
 
+######################################## startup
+RUN_DIR=/var/run/openvswitch
+DB_CONF_FILE=/usr/etc/openvswitch/conf.db
+DB_SCHEMA=/usr/share/openvswitch/vswitch.ovsschema
+DB_PID_FILE=/var/run/openvswitch/ovsdb-server.pid
+DB_LOG=/var/log/ovs-db.log
+##
+DB_SOCKET=/var/run/openvswitch/db.sock
+##
+SWITCH_PID_FILE=/var/run/openvswitch/ovs-vswitchd.pid
+SWITCH_LOG=/var/log/ovs-switch.log
 
+function start_db () {
+
+    [[ -n "$@" ]] && error "Usage: $COMMAND start-db"
+
+    ## init conf
+    conf_dir=$(dirname $DB_CONF_FILE)
+    [ -d $conf_dir ] || mkdir -p $conf_dir
+    [ -f $DB_CONF_FILE ] || ovsdb-tool create $DB_CONF_FILE $DB_SCHEMA
+
+    ## init run
+    [ -d $RUN_DIR ] || mkdir -p $RUN_DIR
+
+    ## check 
+    [ -f $DB_CONF_FILE ] || { echo "Could not initialize $DB_CONF_FILE - exiting" ; exit 1 ; }
+    [ -d $RUN_DIR ] || { echo "Could not initialize $RUN_DIR - exiting" ; exit 1 ; }
+
+    ## run the stuff
+    if [ ! -f "$DB_PID_FILE" ]; then
+	ovsdb-server --remote=punix:$DB_SOCKET \
+	    --remote=db:Open_vSwitch,manager_options \
+	    --private-key=db:SSL,private_key \
+	    --certificate=db:SSL,certificate \
+	    --bootstrap-ca-cert=db:SSL,ca_cert \
+	    --pidfile=$DB_PID_FILE \
+	    --log-file=$DB_LOG \
+	    --detach >& /dev/null
+    else
+	echo 'ovsdb-server appears to be running already, *not* starting'
+    fi
+    wait_server $DB_PID_FILE ovsdb-server
+}
+
+function stop_db () { pkill ovsdb-server; }
+
+
+function start_switch () {
+
+    [[ -n "$@" ]] && error "Usage: $COMMAND start-switch"
+
+    if [ ! -f "$SWITCH_PID_FILE" ] ; then
+	ovs-vswitchd \
+	    --pidfile=$SWITCH_PID_FILE \
+	    --log-file=$SWITCH_LOG \
+	    --detach \
+	    unix:$DB_SOCKET >& /dev/null
+    else
+	echo 'ovs-vswitchd appears to be running already, *not* starting'
+    fi
+    wait_server $SWITCH_PID_FILE ovs-vswitchd
+}
+
+function stop_switch () { pkill ovs-vswitchd ; }
+
+function status () {
+    pids=$(pgrep '^ovs')
+    [ -n "$pids" ] && ps $pids
+}
+
+#################### create functions
 function create_bridge () {
     
     [[ -z "$@" ]] && error "Usage: ${COMMAND} create-bridge <IP/PREFIX>"
@@ -94,7 +164,7 @@ function create_port () {
     return 0
 }
 
-
+#################### del functions
 function del_bridge () {
     
     [[ -z "$@" ]] && error "Usage: ${COMMAND} del-bridge <bridge name>"
@@ -122,68 +192,20 @@ function del_port () {
     return 0
 }
 
-
-CONF_FILE=/usr/etc/openvswitch/conf.db
-RUN_DIR=/var/run/openvswitch
-DB_PID_FILE=/var/run/openvswitch/ovsdb-server.pid
-
-function start_db () {
-
-    [[ -n "$@" ]] && error "Usage: $COMMAND start-db"
-
-    ## init conf
-    conf_dir=$(dirname $CONF_FILE)
-    [ -d $conf_dir ] || mkdir -p $conf_dir
-    [ -f $CONF_FILE ] || ovsdb-tool create $CONF_FILE /usr/share/openvswitch/vswitch.ovsschema
-
-    ## init run
-    [ -d $RUN_DIR ] || mkdir -p $RUN_DIR
-
-    ## check 
-    [ -f $CONF_FILE ] || { echo "Could not initialize $CONF_FILE - exiting" ; exit 1 ; }
-    [ -d $RUN_DIR ] || { echo "Could not initialize $RUN_DIR - exiting" ; exit 1 ; }
-
-    ## run the stuff
-    if [ ! -f "$DB_PID_FILE" ]; then
-	ovsdb-server --remote=punix:/var/run/openvswitch/db.sock \
-	    --remote=db:Open_vSwitch,manager_options \
-	    --private-key=db:SSL,private_key \
-	    --certificate=db:SSL,certificate \
-	    --bootstrap-ca-cert=db:SSL,ca_cert \
-	    --pidfile=$DB_PID_FILE --detach
-    else
-	echo 'ovsdb-server appears to be running already, *not* starting'
-    fi
-    wait_server $DB_PID_FILE ovsdb-server
-}
-
-SWITCH_PID_FILE=/usr/var/run/openvswitch/ovs-vswitchd.pid
-
-function start_switch () {
-
-    [[ -n "$@" ]] && error "Usage: $COMMAND start-switch"
-
-    if [ ! -f "$SWITCH_PID_FILE" ] ; then
-	ovs-vswitchd --pidfile=$SWITCH_PID_FILE --detach --log-file >/dev/null
-    else
-	echo 'ovs-vswitchd appears to be running already, *not* starting'
-    fi
-    wait_server $SWITCH_PID_FILE ovs-vswitchd
-}
-
-SUBCOMMANDS="create_bridge create_port del_bridge del_port start_db start_switch"
+####################
+SUPPORTED_SUBCOMMANDS="start_db stop_db start_switch stop_switch status create_bridge create_port del_bridge del_port"
 
 function main () {
 	message="Usage: $COMMAND <subcommand> ...
 Supported subcommands are (dash or underscore is the same):
-$SUBCOMMANDS"
+$SUPPORTED_SUBCOMMANDS"
 	[[ -z "$@" ]] && error "$message"
 
 	subcommand=$1; shift
 	# support dashes instead of underscores
 	subcommand=$(echo $subcommand | sed -e s,-,_,)
         found=""
-        for supported in $SUBCOMMANDS; do [ "$subcommand" = "$supported" ] && found=yes; done
+        for supported in $SUPPORTED_SUBCOMMANDS; do [ "$subcommand" = "$supported" ] && found=yes; done
 
 	[ -z "$found" ] && error $message
 
