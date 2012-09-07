@@ -9,10 +9,10 @@ HOST_END1=vnode10.pl.sophia.inria.fr
 # f14-64
 HOST_END2=vnode07.pl.sophia.inria.fr
 
-IP_SENDER=10.0.100.1
-IP_MUX=10.0.100.2
-IP_END1=10.0.100.3
-IP_END2=10.0.100.4
+IP_SENDER=10.0.100.1/24
+IP_MUX=10.0.100.2/24
+IP_END1=10.0.100.3/24
+IP_END2=10.0.100.4/24
 
 # the ssh key to use; optional
 SSH_KEY=key_user.rsa
