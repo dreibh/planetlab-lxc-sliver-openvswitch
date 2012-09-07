@@ -40,14 +40,32 @@ function tapname () {
     
 function wait_server () {
     pid_file=$1; shift
-    server_name="$@"; shift
+    server_name=$1; shift
+    timeout=$1; shift
+
+    expire=$(($(date +%s) + $timeout))
 
     ## wait for it to be up - xxx todo - could use a timeout of some kind
     while [ ! -f "$pid_file" ]; do
-	echo "Waiting for $server_name to start..." >&2
+	echo "Waiting for $server_name to start... $(($expire - $(date +%s)))s left" >&2
 	sleep 1;
+	[ $(date +%s) -ge $expire ] && return 1
     done
     cat "$pid_file"
+}
+
+function wait_device () {
+    tapname=$1; shift
+    timeout=$1; shift
+
+    expire=$(($(date +%s) + $timeout))
+
+    while ! ip link show up | egrep -q "^[0-9]+: +$tapname:"; do
+	echo "Waiting for $tapname to come UP...$(($expire - $(date +%s)))s left" >&2
+	sleep 1
+	[ $(date +%s) -ge $expire ] && return 1
+    done
+    return 0
 }
 
 ######################################## startup
@@ -80,7 +98,7 @@ function start_db () {
     else
 	echo 'ovsdb-server appears to be running already, *not* starting'
     fi
-    wait_server $DB_PID_FILE ovsdb-server
+    wait_server $DB_PID_FILE ovsdb-server 30
 }
 
 function stop_db () { pkill ovsdb-server; }
@@ -100,7 +118,7 @@ function start_switch () {
     else
 	echo 'ovs-vswitchd appears to be running already, *not* starting'
     fi
-    wait_server $SWITCH_PID_FILE ovs-vswitchd
+    wait_server $SWITCH_PID_FILE ovs-vswitchd 30
 }
 
 function stop_switch () { pkill ovs-vswitchd ; }
@@ -153,11 +171,8 @@ function create_bridge () {
 	$IP
 	$PREFIX
 EOF
-    while ! ip link show up | egrep -q "^[0-9]+: +$TAPNAME:"; do
-	echo "Waiting for $TAPNAME to come UP..." >&2
-	sleep 1
-    done
-    ovs-vsctl --db=$DB_SOCKET add-br $TAPNAME -- set bridge $TAPNAME datapath_type=planetlab
+    wait_device $TAPNAME 60 && \
+	ovs-vsctl --db=$DB_SOCKET add-br $TAPNAME -- set bridge $TAPNAME datapath_type=planetlab
     echo $TAPNAME
     return 0
 }
