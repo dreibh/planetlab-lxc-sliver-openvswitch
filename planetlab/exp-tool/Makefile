@@ -74,11 +74,25 @@ dbs: $(foreach id,$(ALL_NODE_IDS),cache/db.$(id))
 switchs: $(foreach id,$(ALL_NODE_IDS),cache/switch.$(id))
 .PHONY: switchs
 
+start: dbs switchs
+.PHONY: start
+
+stop:$(foreach id,$(ALL_NODE_IDS),cache/stop.$(id))
+.PHONY: stop
+
+status:$(foreach id,$(ALL_NODE_IDS),cache/status.$(id))
+.PHONY: status
+
 ### node-oriented targets
 # check ssh connectivity
 cache/sshcheck.%: FORCE
 	@if $(SSH) $(HOST_$*) hostname 2> /dev/null; then echo "ssh on" $(call display,$*) "OK" ; \
 	 else echo "ssh on" $(call display,$*) "KO !!!"; fi
+
+# should probably replace sshcheck
+cache/status.%: FORCE
+	@echo "=== DB and SWITCH processes on $(call display,$*)"
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs status
 
 cache/host.%:
 	@echo "IP lookup for $(call display,$*)"
@@ -95,6 +109,11 @@ cache/switch.%: cache/db.%
 cache/bridge.%: cache/switch.%
 	@echo "Creating bridge on $(call display,$*) - logs in $@.log"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(IP_$*) > $@.log && touch $@
+
+# xxx this probably needs a more thorough cleanup in cache/
+cache/stop.%: del-bridge.%
+	@echo "Stopping switch & db on $(call display,$*)"
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop && rm cache/switch.% cache/db.%
 
 ### link-oriented targets
 L/%: cache/link.%@1 cache/link.%@2
