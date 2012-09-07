@@ -7,7 +7,7 @@ COMMAND=$0
 
 #################### global vars
 RUN_DIR=/var/run/openvswitch
-DB_CONF_FILE=/usr/etc/openvswitch/conf.db
+DB_CONF_FILE=/etc/openvswitch/conf.db
 DB_SCHEMA=/usr/share/openvswitch/vswitch.ovsschema
 DB_PID_FILE=/var/run/openvswitch/db.pid
 DB_LOG=/var/log/ovs-db.log
@@ -137,7 +137,7 @@ function create_bridge () {
     # check whether the address is already assigned
     TAPNAME=$(tapname $IP)
     if [ ! -z "$TAPNAME" ]; then
-	if ovs-vsctl br-exists "$TAPNAME"; then
+	if ovs-vsctl --db=$DB_SOCKET br-exists "$TAPNAME"; then
 	    echo $TAPNAME
 	    exit 0
 	fi
@@ -157,7 +157,7 @@ EOF
 	echo "Waiting for $TAPNAME to come UP..." >&2
 	sleep 1
     done
-    ovs-vsctl add-br $TAPNAME -- set bridge $TAPNAME datapath_type=planetlab
+    ovs-vsctl --db=$DB_SOCKET add-br $TAPNAME -- set bridge $TAPNAME datapath_type=planetlab
     echo $TAPNAME
     return 0
 }
@@ -170,8 +170,8 @@ function create_port () {
     [[ -n "$@" ]] || error "$COMMAND create-port <bridge> <port>"
 
     set -e
-    if ! ovs-vsctl list-ports "$bridge" | grep -q "^$port\$"; then
-	ovs-vsctl add-port "$bridge" "$port" -- set interface "$port" type=tunnel
+    if ! ovs-vsctl --db=$DB_SOCKET list-ports "$bridge" | grep -q "^$port\$"; then
+	ovs-vsctl --db=$DB_SOCKET add-port "$bridge" "$port" -- set interface "$port" type=tunnel
     fi
     ovs-appctl --target=$SWITCH_SOCKET netdev-tunnel/get-port "$port"
     return 0
@@ -187,8 +187,8 @@ function del_bridge () {
     W=
     is_switch_running || W="--no-wait"
 
-    if ovs-vsctl br-exists "$bridge_name"; then
-	ovs-vsctl $W del-br $bridge_name
+    if ovs-vsctl --db=$DB_SOCKET br-exists "$bridge_name"; then
+	ovs-vsctl --db=$DB_SOCKET $W del-br $bridge_name
     fi
     return 0
 }
@@ -199,8 +199,8 @@ function del_port () {
     [[ -n "$@" ]] && error "Usage: ${COMMAND} del-port <port>"
 
     set -e
-    if ovs-vsctl port-to-br "$1" >/dev/null 2>&1; then
-	ovs-vsctl del-port "$1"
+    if ovs-vsctl --db=$DB_SOCKET port-to-br "$1" >/dev/null 2>&1; then
+	ovs-vsctl --db=$DB_SOCKET del-port "$1"
     fi
     return 0
 }
