@@ -111,7 +111,7 @@ cache/switch.%: cache/db.%
 
 cache/bridge.%: cache/switch.%
 	@echo "Creating bridge on $(call display,$*) - logs in $@.log"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(IP_$*) &> $@.log && touch $@
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(IP_$*) > $@ 2> $@.log || { rm $@; exit 1; }
 
 # xxx this probably needs a more thorough cleanup in cache/
 cache/stop.%: del-bridge.%
