@@ -36,7 +36,8 @@ else
 SSH_KEY_OPTION ?= -i $(SSH_KEY)
 endif
 
-SSH_OPTIONS ?= $(SSH_KEY_OPTION) -l $(SLICE) -t
+#SSH_OPTIONS ?= $(SSH_KEY_OPTION) -l $(SLICE) -t
+SSH_OPTIONS ?= $(SSH_KEY_OPTION) -l $(SLICE)
 SSH = ssh $(SSH_OPTIONS)
 
 SUDO ?= sudo -S
@@ -63,7 +64,9 @@ showslice: ++SLICE FORCE
 
 shownodes:
 	@$(foreach id,$(ALL_NODE_IDS),echo $(id)=$(call display,$(id));)
-.PHONY: shownodes
+showips:
+	@$(foreach id,$(ALL_NODE_IDS),echo $(id)=$(call display,$(id)) has ip/network set to $(IP_$(id));)
+.PHONY: shownodes showips
 
 sshchecks: $(foreach id,$(ALL_NODE_IDS),cache/sshcheck.$(id))
 .PHONY: sshchecks
@@ -108,7 +111,7 @@ cache/switch.%: cache/db.%
 
 cache/bridge.%: cache/switch.%
 	@echo "Creating bridge on $(call display,$*) - logs in $@.log"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(IP_$*) > $@.log && touch $@
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(IP_$*) &> $@.log && touch $@
 
 # xxx this probably needs a more thorough cleanup in cache/
 cache/stop.%: del-bridge.%
@@ -194,6 +197,26 @@ cache/link.%: cache/host.$$(call rget,$$*) cache/iface.% cache/iface.$$(call opp
 			options:remote_ip=$$(cat cache/host.$(call rget,$*)) \
 			options:remote_port=$$(cat cache/iface.$(call opp,$*)) \
 	 && touch $@
+
+####################
+# 'virtual' targets in that there's no real file attached
+define node_shortcuts
+sshcheck.$(1): cache/sshcheck.$(1) FORCE
+db.$(1): cache/db.$(1) FORCE
+switch.$(1): cache/switch.$(1) FORCE
+start.$(1): cache/start.$(1) FORCE
+stop.$(1): cache/stop.$(1) FORCE
+status.$(1): cache/status.$(1) FORCE
+bridge.$(1): cache/bridge.$(1) FORCE
+# switch already depends on db, but well
+cache/start.$(1): cache/db.$(1) cache/switch.$(1) FORCE
+endef
+
+$(foreach id,$(ALL_NODE_IDS), $(eval $(call node_shortcuts,$(id))))
+
+#define link_shortcuts
+#
+#endef
 
 #################### convenience, for debugging only
 # make +foo : prints the value of $(foo)
