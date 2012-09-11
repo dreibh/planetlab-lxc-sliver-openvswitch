@@ -247,9 +247,9 @@ function del_bridge () {
 }
 
 function del_port () {
-    [[ -z "$@" ]] && error "Usage: ${COMMAND} del-port <port>"
-    bridge_name=$1; shift
-    [[ -n "$@" ]] && error "Usage: ${COMMAND} del-port <port>"
+    [[ -z "$@" ]] && error "Usage: ${COMMAND} del-port <bridge> <port>"
+    port=$1; shift
+    [[ -n "$@" ]] && error "Usage: ${COMMAND} del-port <bridge> <port>"
 
     W=
     if ! is_switch_running; then
@@ -260,8 +260,8 @@ function del_port () {
     fi
 
     set -e
-    if ovs-vsctl --db=unix:$DB_SOCKET port-to-br "$1" >/dev/null 2>&1; then
-	ovs-vsctl --db=unix:$DB_SOCKET $W del-port "$1"
+    if ovs-vsctl --db=unix:$DB_SOCKET port-to-br "$port" >/dev/null 2>&1; then
+	ovs-vsctl --db=unix:$DB_SOCKET $W del-port "$port"
     fi
     return 0
 }
