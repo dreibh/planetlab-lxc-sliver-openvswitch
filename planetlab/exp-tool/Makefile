@@ -1,29 +1,40 @@
-include conf.mk
+# see README
+# conf.mk is expected to define
+# HOST_<id> and IP_<id> for all nodes involved, as well as 
+# LINKS as a list of <node_id>-<node_id> elements
 
+# run make CONF=anotherconfig.mk if you need several configs
 
-# proj1(x@y) = x
-proj1=$(word 1,$(subst @, ,$(1)))
+CONF ?= conf.mk
+include $(CONF)
 
-# proj2(x@y) = y
-proj2=$(word 2,$(subst @, ,$(1)))
-
+# if undefined in the conf file, use single dash
 SEP?=-
-# get(x-y@1) = x
-# get(x-y@2) = y
-get=$(word $(call proj2,$(1)),$(subst $(SEP), ,$(call proj1,$(1))))
 
+### helper functions
 # flip(1) = 2
 # flip(2) = 1
 flip=$(if $(findstring 1,$(1)),2,1)
-
+# cutsep (x-y)-> x y
+cutsep=$(subst $(SEP), ,$(1))
+# leftnode (x-y) -> x
+leftnode=$(word 1,$(call cutsep,$(1)))
+# rightnode (x-y) -> y
+rightnode=$(word 2,$(call cutsep,$(1)))
+# linkpart(x@y) = x
+linkpart=$(word 1,$(subst @, ,$(1)))
+# endpart(x@y) = y
+endpart=$(word 2,$(subst @, ,$(1)))
+# get(x-y@1) = x
+# get(x-y@2) = y
+get=$(word $(call endpart,$(1)),$(call cutsep,$(call linkpart,$(1))))
 # opp(x-y@1) = x-y@2
 # opp(x-y@2) = x-y@1
-opp=$(call proj1,$(1))@$(call flip,$(call proj2,$(1)))
-
+opp=$(call linkpart,$(1))@$(call flip,$(call endpart,$(1)))
 # rget(x-y@1) = y
 # rget(x-y@2) = x
 rget=$(call get,$(call opp,$(1)))
-
+###
 solve=$(HOST_$(1))
 solve_ip=$(IP_$(1))
 # can be redefined in conf.mk if that's not the expected behaviour
@@ -36,13 +47,13 @@ else
 SSH_KEY_OPTION ?= -i $(SSH_KEY)
 endif
 
-#SSH_OPTIONS ?= $(SSH_KEY_OPTION) -l $(SLICE) -t
 SSH_OPTIONS ?= $(SSH_KEY_OPTION) -l $(SLICE)
 SSH = ssh $(SSH_OPTIONS)
 
 SUDO ?= sudo -S
 
-ALL_NODE_IDS=$(shell (cut -d- -f1 < links; cut -d- -f2 < links) | sort -u)
+ALL_NODE_IDS=$(sort $(foreach link,$(LINKS),$(call leftnode,$(link))) $(foreach link,$(LINKS),$(call rightnode,$(link))))
+ALL_LINK_IDS=$(addsuffix @1,$(LINKS)) $(addsuffix @2,$(LINKS))
 
 ####################
 all+init: init all
@@ -56,7 +67,8 @@ FORCE:
 
 .SECONDARY:
 
-all: $(addprefix L/,$(shell cat links))
+LINKTARGETS=$(addprefix L/,$(LINKS))
+all: $(LINKTARGETS)
 .PHONY: all
 
 # could also do make ++SLICE
@@ -66,15 +78,19 @@ shownodes:
 	@$(foreach id,$(ALL_NODE_IDS),echo $(id)=$(call display,$(id));)
 showips:
 	@$(foreach id,$(ALL_NODE_IDS),echo $(id)=$(call display,$(id)) has ip/network set to $(IP_$(id));)
-.PHONY: shownodes showips
+showlinks:
+	@$(foreach link,$(LINKS), echo $(call display,$(call leftnode,$(link))) '====>' $(call display,$(call rightnode,$(link)));)
+.PHONY: shownodes showips showlinks
 
 sshchecks: $(foreach id,$(ALL_NODE_IDS),cache/sshcheck.$(id))
 .PHONY: sshchecks
 
-dbs: $(foreach id,$(ALL_NODE_IDS),cache/db.$(id))
+DBS=$(foreach id,$(ALL_NODE_IDS),cache/db.$(id))
+dbs: $(DBS)
 .PHONY: dbs
 
-switchs: $(foreach id,$(ALL_NODE_IDS),cache/switch.$(id))
+SWITCHS=$(foreach id,$(ALL_NODE_IDS),cache/switch.$(id))
+switchs: $(SWITCHS)
 .PHONY: switchs
 
 start: dbs switchs
@@ -85,6 +101,10 @@ stop:$(foreach id,$(ALL_NODE_IDS),cache/stop.$(id))
 
 status:$(foreach id,$(ALL_NODE_IDS),cache/status.$(id))
 .PHONY: status
+
+BRIDGES=$(foreach id,$(ALL_NODE_IDS),cache/bridge.$(id))
+bridges: $(BRIDGES)
+.PHONY: bridges
 
 ### node-oriented targets
 # check ssh connectivity
@@ -112,6 +132,7 @@ cache/switch.%: cache/db.%
 cache/bridge.%: cache/switch.%
 	@echo "Creating bridge on $(call display,$*) - logs in $@.log"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(IP_$*) > $@ 2> $@.log || { rm $@; exit 1; }
+	@echo Created bridge $$(cat $@) on $(HOST_$*)
 
 # xxx this probably needs a more thorough cleanup in cache/
 cache/stop.%: del-bridge.%
@@ -119,6 +140,7 @@ cache/stop.%: del-bridge.%
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop && rm cache/switch.% cache/db.%
 
 ### link-oriented targets
+# L/<nodeid>-<node_id>
 L/%: cache/link.%@1 cache/link.%@2
 	@touch $@
 	@echo "Created link $*"
@@ -161,42 +183,50 @@ shutdown: del-switches del-dbs
 
 .PHONY: del-links del-switchs del-dbs shutdown
 
+.SECONDEXPANSION:
+
+del-iface.%: cache/db.$$(call get,%)
+	@echo "Removing interface for link $(call linkpart,$*) from $(call get,$*)"
+	@$(SSH) $(HOST_$(call get,$*)) \
+		$(SUDO) sliver-ovs del-port L$(call linkpart,$*)
+	@rm -f cache/iface.$* cache/link.$* cache/link.$(call opp,$*)
+
+
+### '%' here is leftid-rightid@{1,2}
+# we retrieve % as $(*F)
+#linkid=$(call linkpart,%)
+#nodeid=$(call get,%)
+#bridgefile=cache/bridge.$(nodeid)
+cache/iface.%: cache/bridge.$$(call get,%)
+	@echo "Creating interface for link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $@.log"
+	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs create-port $$(cat cache/bridge.$(call get,$(*F))) L$(call linkpart,$(*F)) > $@ 2> $@.log || { rm $@; exit 1; }
+	echo cache/bridge.$(call get,$(*F))
+	echo cache/host.$(call get,$(*F)) cache/iface.$(*F) cache/iface.$(call opp,$(*F))
+
+
+# linkid=$(call linkpart,%)
+# nodeid=$(call get,%)
+# iface1=cache/iface.%
+# iface2=cache/iface.$(call opp,%)
+cache/link.%: cache/host.$$(call get,%) cache/iface.% cache/iface.$$(call opp,%)
+	@echo "Setting port number of link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $@.log"
+	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) ovs-vsctl set interface L$(call linkpart,$(*F)) \
+			options:remote_ip=$$(cat cache/host.$(call get,$(*F))) \
+			options:remote_port=$$(cat cache/iface.$(call opp,$(*F))) 2> $@.log \
+	 && touch $@
+
+####################
+CLEANTARGETS=$(addprefix del-,$(notdir $(wildcard cache/bridge.*)))
+clean: $(CLEANTARGETS)
+distclean:
+	rm -rf L U cache
+.PHONY: clean distclean
+
 ####################
 graph.dot:
 	( echo "digraph $(SLICE) {"; ls L | sed 's/$(SEP)/->/;s/$$/;/'; echo "}" ) > $@
 graph.ps: graph.dot
 	dot -Tps < $^ > $@	
-
-####################
-clean: $(addprefix del-,$(notdir $(wildcard cache/bridge.*)))
-distclean:
-	rm -rf L U cache
-
-.PHONY: clean distclean
-
-.SECONDEXPANSION:
-
-del-iface.%: cache/db.$$(call get,%)
-	@echo "Removing interface for link $(call proj1,$*) from $(call get,$*)"
-	@$(SSH) $(HOST_$(call get,$*)) \
-		$(SUDO) sliver-ovs del-port L$(call proj1,$*)
-	@rm -f cache/iface.$* cache/link.$* cache/link.$(call opp,$*)
-
-
-
-cache/iface.%: cache/bridge.$$(call get,%)
-	@echo "Creating interface for link $(call proj1,$*) on $(call get,$*)"
-	@$(SSH) $(HOST_$(call get,$*)) \
-		$(SUDO) sliver-ovs create-port $$(cat $^) L$(call proj1,$*) > $@ \
-	 || { rm $@; exit 1; }
-
-cache/link.%: cache/host.$$(call rget,$$*) cache/iface.% cache/iface.$$(call opp,$$*)
-	@echo "Setting port number of link $(call proj1,$*) on $(call get,$*)"
-	@$(SSH) $(HOST_$(call get,$*)) \
-		$(SUDO) ovs-vsctl set interface L$(call proj1,$*) \
-			options:remote_ip=$$(cat cache/host.$(call rget,$*)) \
-			options:remote_port=$$(cat cache/iface.$(call opp,$*)) \
-	 && touch $@
 
 ####################
 # 'virtual' targets in that there's no real file attached
@@ -208,15 +238,19 @@ start.$(1): cache/start.$(1) FORCE
 stop.$(1): cache/stop.$(1) FORCE
 status.$(1): cache/status.$(1) FORCE
 bridge.$(1): cache/bridge.$(1) FORCE
+host.$(1): cache/host.$(1) FORCE
 # switch already depends on db, but well
 cache/start.$(1): cache/db.$(1) cache/switch.$(1) FORCE
 endef
 
 $(foreach id,$(ALL_NODE_IDS), $(eval $(call node_shortcuts,$(id))))
 
-#define link_shortcuts
-#
-#endef
+define link_shortcuts
+iface.%: cache/iface.%
+link.%: cache/link.%
+endef
+
+$(foreach id,$(ALL_LINK_IDS), $(eval $(call link_shortcuts,$(id))))
 
 #################### convenience, for debugging only
 # make +foo : prints the value of $(foo)
