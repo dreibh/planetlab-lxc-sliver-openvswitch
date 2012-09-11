@@ -189,6 +189,7 @@ function create_bridge () {
 
     # we're clear
     TAPNAME=$(pltap-ovs)
+    trap kill_pltap_ovs EXIT
     # xxx wouldn't that be safer if left-aligned ?
     vsysc vif_up << EOF
 	$TAPNAME
