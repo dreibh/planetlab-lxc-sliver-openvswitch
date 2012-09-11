@@ -161,25 +161,21 @@ del-bridge.%: cache/db.%
 
 del-switch.%: del-bridge.%
 	@echo "Shutting down switch on $(call display,$*)"
-	@if [ -f cache/switch.$* ]; then \
-		$(SSH) $(HOST_$*) $(SUDO) ovs-appctl exit;\
-	 fi
+	@[ -f cache/switch.$* ] && $(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-switch
 	@rm -f cache/switch.$*
 
 del-db.%:
 	@echo "Shutting down db on $(call display,$*)"
-	@if [ -f cache/db.$* ]; then \
-		$(SSH) $(HOST_$*) $(SUDO) ovs-appctl --target=$(VARRUN)/ovsdb-server.$$(cat cache/db.$*).ctl exit;\
-	 fi
+	@[ -f cache/db.$* ] && $(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-db
 	@rm -f cache/db.$*
 
-del-links: $(addprefix U/,$(notdir $(wildcard L/*)))
+del-links: $(addprefix U/,$(notdir $(filter-out %.log,$(wildcard L/*))))
 
-del-switchs: $(addprefix del-,$(notdir $(wildcard cache/switch.*)))
+del-switchs: $(addprefix del-,$(notdir $(filter-out %.log,$(wildcard cache/switch.*))))
 
-del-dbs: $(addprefix del-,$(notdir $(wildcard cache/db.*)))
+del-dbs: $(addprefix del-,$(notdir $(filter-out %.log,$(wildcard cache/db.*))))
 
-shutdown: del-switches del-dbs
+shutdown: del-switchs del-dbs
 
 .PHONY: del-links del-switchs del-dbs shutdown
 
@@ -216,7 +212,7 @@ cache/link.%: cache/host.$$(call get,%) cache/iface.% cache/iface.$$(call opp,%)
 	 && touch $@
 
 ####################
-CLEANTARGETS=$(addprefix del-,$(notdir $(wildcard cache/bridge.*)))
+CLEANTARGETS=$(addprefix del-,$(notdir $(filter-out %.log,$(wildcard cache/bridge.*))))
 clean: $(CLEANTARGETS)
 distclean:
 	rm -rf L U cache
