@@ -11,7 +11,7 @@ DB_CONF_FILE=/etc/openvswitch/conf.db
 DB_SCHEMA=/usr/share/openvswitch/vswitch.ovsschema
 DB_PID_FILE=/var/run/openvswitch/db.pid
 DB_LOG=/var/log/ovs-db.log
-DB_CTRL_SOCKET=/var/run/openvswitch/db-ctrl.sock
+DB_CTL_PATTERN='ovsdb-server.*.ctl'
 ##
 DB_SOCKET=/var/run/openvswitch/db.sock
 ##
@@ -115,15 +115,8 @@ function start_db () {
 	echo 'ovsdb-server appears to be running already, *not* starting'
     fi
     wait_server $DB_PID_FILE ovsdb-server 30
+    echo $DB_PID_FILE
 }
-
-function stop_db () { 
-    get_params "" "$@"
-
-    pkill ovsdb-server
-}
- 
-
 
 function start_switch () {
     get_params "" "$@"
@@ -144,10 +137,17 @@ function start_switch () {
     wait_server $SWITCH_PID_FILE ovs-vswitchd 30
 }
 
-function stop_switch () {
-    get_params "" "$@"
+# first dumb stab just read "pkill ovsdb-server" and "pkill ovs-vswitchd"
+# quick and dirty : we locate the control file through a search in /var/run
+# caller should be requested to remember and provide this pid instead
+function stop_db () { 
+    controlfile=$(ls $RUN_DIR/$DB_CTL_PATTERN)
+    [ -f $controlfile ] && ovs-appctl --target=$controlfile exit 
+}
 
-    pkill ovs-vswitchd ; }
+function stop_switch () { 
+    ovs-appctl --target=$SWITCH_SOCKET exit || :
+}
 
 function status () {
     pids=$(pgrep '^ovs')

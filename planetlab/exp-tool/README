@@ -90,14 +90,11 @@ HOST_3=planetlab2.ics.forth.gr
 IP_3=10.0.9.3/24
 HOST_4=planetlab2.urv.cat
 IP_4=10.0.9.4/24
-----------
 
-And a 'links' file containing the following lines:
-
-----------
-1-2
-2-3
-2-4
+LINKS :=
+LINKS += 1-2
+LINKS += 2-3
+LINKS += 2-4
 ----------
 
 NOTE. In this example we have chosen to use numbers (1,2,3,4) as ids
@@ -140,10 +137,12 @@ of the topology by typing:
 
 $ make graph.ps
 
+#### BEG WARNING xxx this feature is broken now that LINKS are defined in the same conf.mk file
 Or we can save the current state in the 'links' file (so that we can
 recreate it later):
 
 $ ls L > links
+#### END WARNING xxx this feature is broken now that LINKS are defined in the same conf.mk file
 
 
 * Command reference
