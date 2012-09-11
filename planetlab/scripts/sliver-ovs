@@ -179,10 +179,11 @@ EOF
 
 function create_port () {
 
+    [[ -z "$@" ]] && error "$COMMAND create-port <bridge> <port>"
     bridge=$1; shift
-    [[ -z "$@" ]] || error "$COMMAND create-port <bridge> <port>"
+    [[ -z "$@" ]] && error "$COMMAND create-port <bridge> <port>"
     port=$1; shift
-    [[ -n "$@" ]] || error "$COMMAND create-port <bridge> <port>"
+    [[ -n "$@" ]] && error "$COMMAND create-port <bridge> <port>"
 
     set -e
     if ! ovs-vsctl --db=unix:$DB_SOCKET list-ports "$bridge" | grep -q "^$port\$"; then
