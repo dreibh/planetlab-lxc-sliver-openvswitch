@@ -30,6 +30,17 @@ function error {
     exit 1
 }
 
+function get_params {
+    params=$1; shift
+    err_msg="$COMMAND $SUBCOMMAND $(echo $params | perl -pe 's/\S+/<$&>/g')"
+    for p in $(echo $params); do
+        [[ -z "$@" ]] && error "$err_msg"
+        pname=$(echo -n $p|perl -pe 's/\W/_/g')
+        eval $pname="$1"; shift
+    done
+    [[ -n "$@" ]] && error "$err_msg"
+}
+
 function is_switch_running {
     ovs-appctl --target=$SWITCH_SOCKET version >& /dev/null
 }
@@ -75,8 +86,7 @@ function wait_device () {
 
 ######################################## startup
 function start_db () {
-
-    [[ -n "$@" ]] && error "Usage: $COMMAND start-db"
+    get_params "" "$@"
 
     ## init conf
     conf_dir=$(dirname $DB_CONF_FILE)
@@ -107,12 +117,16 @@ function start_db () {
     wait_server $DB_PID_FILE ovsdb-server 30
 }
 
-function stop_db () { pkill ovsdb-server; }
+function stop_db () { 
+    get_params "" "$@"
+
+    pkill ovsdb-server
+}
+ 
 
 
 function start_switch () {
-
-    [[ -n "$@" ]] && error "Usage: $COMMAND start-switch"
+    get_params "" "$@"
 
     # ensure ovsdb-server is running
     is_db_running || { echo "ovsdb-server not running" >&2 ; exit 1 ; }
@@ -130,7 +144,10 @@ function start_switch () {
     wait_server $SWITCH_PID_FILE ovs-vswitchd 30
 }
 
-function stop_switch () { pkill ovs-vswitchd ; }
+function stop_switch () {
+    get_params "" "$@"
+
+    pkill ovs-vswitchd ; }
 
 function status () {
     pids=$(pgrep '^ovs')
@@ -150,12 +167,10 @@ function stop () {
 #################### create functions
 function create_bridge () {
     
-    [[ -z "$@" ]] && error "Usage: ${COMMAND} create-bridge <IP/PREFIX>"
-    ip_prefix=$1; shift
-    [[ -n "$@" ]] && error "Usage: ${COMMAND} create-bridge <IP/PREFIX>"
+    get_params "IP/PREFIX" "$@"
 
-    IP=${ip_prefix%/*}
-    PREFIX=${ip_prefix#*/}
+    IP=${IP_PREFIX%/*}
+    PREFIX=${IP_PREFIX#*/}
 
     set -e
     # ensure ovs-vswitchd is running
@@ -188,11 +203,7 @@ EOF
 
 function create_port () {
 
-    [[ -z "$@" ]] && error "$COMMAND create-port <bridge> <port>"
-    bridge=$1; shift
-    [[ -z "$@" ]] && error "$COMMAND create-port <bridge> <port>"
-    port=$1; shift
-    [[ -n "$@" ]] && error "$COMMAND create-port <bridge> <port>"
+    get_params "bridge port" "$@"
 
     # ensure ovs-vswitchd is running
     is_switch_running || { echo "ovs-vswitchd not running" >&2 ; exit 1 ; }
@@ -207,30 +218,22 @@ function create_port () {
 
 function set_remote_endpoint () {
 
-    [[ -z "$@" ]] && error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
-    port=$1; shift
-    [[ -z "$@" ]] && error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
-    remote_ip=$1; shift
-    [[ -z "$@" ]] && error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
-    remote_port=$1; shift
-    [[ -n "$@" ]] && error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
+    get_params "local_port remote_ip remote_UDP_port" "$@"
 
     # ensure ovs-vswitchd is running
     is_switch_running || { echo "ovs-vswitchd not running" >&2 ; exit 1 ; }
 
     set -e
-    ovs-vsctl --db=unix:$DB_SOCKET set interface "$port" \
+    ovs-vsctl --db=unix:$DB_SOCKET set interface $local_port \
         options:remote_ip=$remote_ip \
-	options:remote_port=$remote_port
+	options:remote_port=$remote_UDP_port
     return 0
 }
 
 #################### del functions
 function del_bridge () {
     
-    [[ -z "$@" ]] && error "Usage: ${COMMAND} del-bridge <bridge name>"
-    bridge_name=$1; shift
-    [[ -n "$@" ]] && error "Usage: ${COMMAND} del-bridge <bridge name>"
+    get_params "bridge_name" "$@"
 
     W=
     if ! is_switch_running; then
@@ -247,9 +250,8 @@ function del_bridge () {
 }
 
 function del_port () {
-    [[ -z "$@" ]] && error "Usage: ${COMMAND} del-port <bridge> <port>"
-    port=$1; shift
-    [[ -n "$@" ]] && error "Usage: ${COMMAND} del-port <bridge> <port>"
+    
+    get_params "port" "$@"
 
     W=
     if ! is_switch_running; then
@@ -278,15 +280,15 @@ Supported subcommands are (dash or underscore is the same):
 $SUPPORTED_SUBCOMMANDS"
 	[[ -z "$@" ]] && error "$message"
 
-	subcommand=$1; shift
+	SUBCOMMAND=$1; shift
 	# support dashes instead of underscores
-	subcommand=$(echo $subcommand | sed -e s,-,_,g)
+	SUBCOMMAND=$(echo $SUBCOMMAND | sed -e s,-,_,g)
         found=""
-        for supported in $SUPPORTED_SUBCOMMANDS; do [ "$subcommand" = "$supported" ] && found=yes; done
+        for supported in $SUPPORTED_SUBCOMMANDS; do [ "$SUBCOMMAND" = "$supported" ] && found=yes; done
 
 	[ -z "$found" ] && error $message
 
-	$subcommand "$@"
+	$SUBCOMMAND "$@"
 }
 
 main "$@"
