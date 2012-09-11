@@ -268,11 +268,20 @@ function del_port () {
     return 0
 }
 
+function show () {
+
+    get_params "" "$@"
+
+    is_db_running || { echo "ovsdb-server not running" >&2; exit 1; }
+
+    ovs-vsctl --db=unix:$DB_SOCKET show
+}
+
 ####################
 SUPPORTED_SUBCOMMANDS="start stop status 
 start_db stop_db start_switch stop_switch
 create_bridge create_port del_bridge del_port
-set_remote_endpoint"
+show set_remote_endpoint"
 
 function main () {
 	message="Usage: $COMMAND <subcommand> ...
