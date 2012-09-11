@@ -140,14 +140,14 @@ del-bridge.%: cache/db.%
 del-switch.%: del-bridge.%
 	@echo "Shutting down switch on $(call display,$*)"
 	@if [ -f cache/switch.$* ]; then \
-		$(SSH) $(HOST_$*) $(SUDO) ovs-appctl exit;\
+		$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-switch
 	 fi
 	@rm -f cache/switch.$*
 
 del-db.%:
 	@echo "Shutting down db on $(call display,$*)"
 	@if [ -f cache/db.$* ]; then \
-		$(SSH) $(HOST_$*) $(SUDO) ovs-appctl --target=$(VARRUN)/ovsdb-server.$$(cat cache/db.$*).ctl exit;\
+		$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-db
 	 fi
 	@rm -f cache/db.$*
 
@@ -193,9 +193,9 @@ cache/iface.%: cache/bridge.$$(call get,%)
 cache/link.%: cache/host.$$(call rget,$$*) cache/iface.% cache/iface.$$(call opp,$$*)
 	@echo "Setting port number of link $(call proj1,$*) on $(call get,$*)"
 	@$(SSH) $(HOST_$(call get,$*)) \
-		$(SUDO) ovs-vsctl set interface L$(call proj1,$*) \
-			options:remote_ip=$$(cat cache/host.$(call rget,$*)) \
-			options:remote_port=$$(cat cache/iface.$(call opp,$*)) \
+		$(SUDO) sliver-ovs set-remote-endpoint L$(call proj1,$*) \
+			$$(cat cache/host.$(call rget,$*)) \
+			$$(cat cache/iface.$(call opp,$*)) \
 	 && touch $@
 
 ####################

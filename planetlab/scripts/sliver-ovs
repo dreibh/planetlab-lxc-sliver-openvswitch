@@ -188,6 +188,7 @@ EOF
 
 function create_port () {
 
+    [[ -z "$@" ]] || error "$COMMAND create-port <bridge> <port>"
     bridge=$1; shift
     [[ -z "$@" ]] || error "$COMMAND create-port <bridge> <port>"
     port=$1; shift
@@ -201,6 +202,26 @@ function create_port () {
 	ovs-vsctl --db=unix:$DB_SOCKET add-port "$bridge" "$port" -- set interface "$port" type=tunnel
     fi
     ovs-appctl --target=$SWITCH_SOCKET netdev-tunnel/get-port "$port"
+    return 0
+}
+
+function set_remote_endpoint () {
+
+    [[ -z "$@" ]] || error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
+    port=$1; shift
+    [[ -z "$@" ]] || error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
+    remote_ip=$1; shift
+    [[ -z "$@" ]] || error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
+    remote_port=$1; shift
+    [[ -n "$@" ]] || error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
+
+    # ensure ovs-vswitchd is running
+    is_switch_running || { echo "ovs-vswitchd not running" >&2 ; exit 1 ; }
+
+    set -e
+    ovs-vsctl --db=unix:$DB_SOCKET set interface "$port" \
+        options:remote_ip=$remote_ip \
+	options:remote_port=$remote_port
     return 0
 }
 
@@ -248,7 +269,8 @@ function del_port () {
 ####################
 SUPPORTED_SUBCOMMANDS="start stop status 
 start_db stop_db start_switch stop_switch
-create_bridge create_port del_bridge del_port"
+create_bridge create_port del_bridge del_port
+set-remote-endpoint"
 
 function main () {
 	message="Usage: $COMMAND <subcommand> ...
