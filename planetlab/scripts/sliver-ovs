@@ -188,11 +188,11 @@ EOF
 
 function create_port () {
 
-    [[ -z "$@" ]] || error "$COMMAND create-port <bridge> <port>"
+    [[ -z "$@" ]] && error "$COMMAND create-port <bridge> <port>"
     bridge=$1; shift
-    [[ -z "$@" ]] || error "$COMMAND create-port <bridge> <port>"
+    [[ -z "$@" ]] && error "$COMMAND create-port <bridge> <port>"
     port=$1; shift
-    [[ -n "$@" ]] || error "$COMMAND create-port <bridge> <port>"
+    [[ -n "$@" ]] && error "$COMMAND create-port <bridge> <port>"
 
     # ensure ovs-vswitchd is running
     is_switch_running || { echo "ovs-vswitchd not running" >&2 ; exit 1 ; }
@@ -207,13 +207,13 @@ function create_port () {
 
 function set_remote_endpoint () {
 
-    [[ -z "$@" ]] || error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
+    [[ -z "$@" ]] && error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
     port=$1; shift
-    [[ -z "$@" ]] || error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
+    [[ -z "$@" ]] && error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
     remote_ip=$1; shift
-    [[ -z "$@" ]] || error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
+    [[ -z "$@" ]] && error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
     remote_port=$1; shift
-    [[ -n "$@" ]] || error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
+    [[ -n "$@" ]] && error "$COMMAND set-remote-endpoint <local_port> <remote_ip> <remote_UDP_port>"
 
     # ensure ovs-vswitchd is running
     is_switch_running || { echo "ovs-vswitchd not running" >&2 ; exit 1 ; }
@@ -270,7 +270,7 @@ function del_port () {
 SUPPORTED_SUBCOMMANDS="start stop status 
 start_db stop_db start_switch stop_switch
 create_bridge create_port del_bridge del_port
-set-remote-endpoint"
+set_remote_endpoint"
 
 function main () {
 	message="Usage: $COMMAND <subcommand> ...
@@ -280,7 +280,7 @@ $SUPPORTED_SUBCOMMANDS"
 
 	subcommand=$1; shift
 	# support dashes instead of underscores
-	subcommand=$(echo $subcommand | sed -e s,-,_,)
+	subcommand=$(echo $subcommand | sed -e s,-,_,g)
         found=""
         for supported in $SUPPORTED_SUBCOMMANDS; do [ "$subcommand" = "$supported" ] && found=yes; done
 
