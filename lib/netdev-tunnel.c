@@ -169,11 +169,11 @@ netdev_tunnel_get_config(struct netdev_dev *dev_, struct smap *args)
     struct netdev_dev_tunnel *netdev_dev = netdev_dev_tunnel_cast(dev_);
 
     if (netdev_dev->valid_remote_ip)
-    	smap_add(args, "remote_ip",
-	    xasprintf(IP_FMT, IP_ARGS(&netdev_dev->remote_addr.sin_addr)));
+    	smap_add_format(args, "remote_ip", IP_FMT,
+		IP_ARGS(&netdev_dev->remote_addr.sin_addr));
     if (netdev_dev->valid_remote_port)
-        smap_add(args, "remote_port",
-	    xasprintf("%"PRIu16, ntohs(netdev_dev->remote_addr.sin_port)));
+        smap_add_format(args, "remote_port", "%"PRIu16,
+		ntohs(netdev_dev->remote_addr.sin_port));
     return 0;
 }
 
