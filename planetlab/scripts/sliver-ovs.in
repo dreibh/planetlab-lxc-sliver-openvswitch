@@ -9,15 +9,11 @@ COMMAND=$0
 RUN_DIR=@RUNDIR@
 DB_CONF_FILE=@DBDIR@/conf.db
 DB_SCHEMA=@pkgdatadir@/vswitch.ovsschema
-DB_PID_FILE=$RUN_DIR/db.pid
 DB_LOG=@LOGDIR@/ovs-db.log
-DB_CTL_PATTERN='ovsdb-server.*.ctl'
 ##
 DB_SOCKET=$RUN_DIR/db.sock
 ##
-SWITCH_PID_FILE=$RUN_DIR/switch.pid
 SWITCH_LOG=@LOGDIR@/ovs-switch.log
-SWITCH_SOCKET=@RUNDIR@/switch.sock
 
 #################### helper functions
 
@@ -42,11 +38,11 @@ function get_params {
 }
 
 function is_switch_running {
-    ovs-appctl --target=$SWITCH_SOCKET version >& /dev/null
+    ovs-appctl --target=ovs-vswitchd version >& /dev/null
 }
 
 function is_db_running {
-    ovs-appctl --target=$DB_CTRL_SOCKET version >& /dev/null
+    ovs-appctl --target=ovsdb-server version >& /dev/null
 }
 
 function tapname () {
@@ -101,22 +97,20 @@ function start_db () {
     [ -d $RUN_DIR ] || { echo "Could not initialize $RUN_DIR - exiting" ; exit 1 ; }
 
     ## run the stuff
-    if [ ! -f "$DB_PID_FILE" ]; then
+    if [ ! -f "$RUN_DIR/ovsdb-server.pid" ]; then
 	ovsdb-server $DB_CONF_FILE \
 	    --remote=punix:$DB_SOCKET \
 	    --remote=db:Open_vSwitch,manager_options \
 	    --private-key=db:SSL,private_key \
 	    --certificate=db:SSL,certificate \
 	    --bootstrap-ca-cert=db:SSL,ca_cert \
-	    --pidfile=$DB_PID_FILE \
+	    --pidfile \
 	    --log-file=$DB_LOG \
-	    --unixctl=$DB_CTRL_SOCKET \
 	    --detach >& /dev/null
     else
 	echo 'ovsdb-server appears to be running already, *not* starting'
     fi
-    wait_server $DB_PID_FILE ovsdb-server 30
-    echo $DB_PID_FILE
+    wait_server $RUN_DIR/ovsdb-server.pid ovsdb-server 30
 }
 
 function start_switch () {
@@ -125,29 +119,24 @@ function start_switch () {
     # ensure ovsdb-server is running
     is_db_running || { echo "ovsdb-server not running" >&2 ; exit 1 ; }
 
-    if [ ! -f "$SWITCH_PID_FILE" ] ; then
+    if [ ! -f "$RUN_DIR/ovs-vswitchd.pid" ] ; then
 	ovs-vswitchd \
-	    --pidfile=$SWITCH_PID_FILE \
+	    --pidfile \
 	    --log-file=$SWITCH_LOG \
-	    --unixctl=$SWITCH_SOCKET \
 	    --detach \
 	    unix:$DB_SOCKET >& /dev/null
     else
 	echo 'ovs-vswitchd appears to be running already, *not* starting'
     fi
-    wait_server $SWITCH_PID_FILE ovs-vswitchd 30
+    wait_server $RUN_DIR/ovs-vswitchd.pid ovs-vswitchd 30
 }
 
-# first dumb stab just read "pkill ovsdb-server" and "pkill ovs-vswitchd"
-# quick and dirty : we locate the control file through a search in /var/run
-# caller should be requested to remember and provide this pid instead
 function stop_db () { 
-    controlfile=$(ls $RUN_DIR/$DB_CTL_PATTERN)
-    [ -f $controlfile ] && ovs-appctl --target=$controlfile exit 
+    ovs-appctl --target=ovsdb-server exit || :
 }
 
 function stop_switch () { 
-    ovs-appctl --target=$SWITCH_SOCKET exit || :
+    ovs-appctl --target=ovs-vswitchd exit || :
 }
 
 function status () {
@@ -214,7 +203,7 @@ function create_port () {
     if ! ovs-vsctl --db=unix:$DB_SOCKET list-ports "$bridge" | grep -q "^$port\$"; then
 	ovs-vsctl --db=unix:$DB_SOCKET add-port "$bridge" "$port" -- set interface "$port" type=tunnel
     fi
-    ovs-appctl --target=$SWITCH_SOCKET netdev-tunnel/get-port "$port"
+    ovs-appctl --target=ovs-vswitchd netdev-tunnel/get-port "$port"
     return 0
 }
 
