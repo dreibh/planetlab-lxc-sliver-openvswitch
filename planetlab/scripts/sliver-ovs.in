@@ -189,7 +189,6 @@ EOF
     wait_device $TAPNAME 60 && \
 	ovs-vsctl --db=unix:$DB_SOCKET add-br $TAPNAME -- set bridge $TAPNAME datapath_type=planetlab
     echo $TAPNAME
-    return 0
 }
 
 function create_port () {
@@ -200,11 +199,8 @@ function create_port () {
     is_switch_running || { echo "ovs-vswitchd not running" >&2 ; exit 1 ; }
 
     set -e
-    if ! ovs-vsctl --db=unix:$DB_SOCKET list-ports "$bridge" | grep -q "^$port\$"; then
-	ovs-vsctl --db=unix:$DB_SOCKET add-port "$bridge" "$port" -- set interface "$port" type=tunnel
-    fi
+    ovs-vsctl --db=unix:$DB_SOCKET -- --may-exist add-port "$bridge" "$port" -- set interface "$port" type=tunnel
     ovs-appctl --target=ovs-vswitchd netdev-tunnel/get-port "$port"
-    return 0
 }
 
 function set_remote_endpoint () {
@@ -218,7 +214,6 @@ function set_remote_endpoint () {
     ovs-vsctl --db=unix:$DB_SOCKET set interface $local_port \
         options:remote_ip=$remote_ip \
 	options:remote_port=$remote_UDP_port
-    return 0
 }
 
 #################### del functions
@@ -234,10 +229,7 @@ function del_bridge () {
     	W="--no-wait"
     fi
 
-    if ovs-vsctl --db=unix:$DB_SOCKET br-exists "$bridge_name"; then
-	ovs-vsctl --db=unix:$DB_SOCKET $W del-br $bridge_name
-    fi
-    return 0
+    ovs-vsctl --db=unix:$DB_SOCKET $W -- --if-exists del-br $bridge_name
 }
 
 function del_port () {
@@ -252,11 +244,7 @@ function del_port () {
     	W="--no-wait"
     fi
 
-    set -e
-    if ovs-vsctl --db=unix:$DB_SOCKET port-to-br "$port" >/dev/null 2>&1; then
-	ovs-vsctl --db=unix:$DB_SOCKET $W del-port "$port"
-    fi
-    return 0
+    ovs-vsctl --db=unix:$DB_SOCKET $W -- --if-exists del-port "$port"
 }
 
 function show () {
