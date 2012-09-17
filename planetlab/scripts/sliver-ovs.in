@@ -6,18 +6,18 @@
 COMMAND=$0
 
 #################### global vars
-RUN_DIR=/var/run/openvswitch
-DB_CONF_FILE=/etc/openvswitch/conf.db
-DB_SCHEMA=/usr/share/openvswitch/vswitch.ovsschema
-DB_PID_FILE=/var/run/openvswitch/db.pid
-DB_LOG=/var/log/ovs-db.log
+RUN_DIR=@RUNDIR@
+DB_CONF_FILE=@DBDIR@/conf.db
+DB_SCHEMA=@pkgdatadir@/vswitch.ovsschema
+DB_PID_FILE=$RUN_DIR/db.pid
+DB_LOG=@LOGDIR@/ovs-db.log
 DB_CTL_PATTERN='ovsdb-server.*.ctl'
 ##
-DB_SOCKET=/var/run/openvswitch/db.sock
+DB_SOCKET=$RUN_DIR/db.sock
 ##
-SWITCH_PID_FILE=/var/run/openvswitch/switch.pid
-SWITCH_LOG=/var/log/ovs-switch.log
-SWITCH_SOCKET=/var/run/openvswitch/switch.sock
+SWITCH_PID_FILE=$RUN_DIR/switch.pid
+SWITCH_LOG=@LOGDIR@/ovs-switch.log
+SWITCH_SOCKET=@RUNDIR@/switch.sock
 
 #################### helper functions
 

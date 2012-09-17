@@ -14,3 +14,6 @@ planetlab_pltap_ovs_pltap_ovs_SOURCES += planetlab/pltap-ovs/tunalloc.h
 
 planetlab_vsysc_vsysc_SOURCES =
 planetlab_vsysc_vsysc_SOURCES += planetlab/vsysc/vsysc.c
+
+EXTRA_DIST += \
+	planetlab/scripts/sliver-ovs.in
