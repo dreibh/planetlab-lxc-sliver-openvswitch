@@ -599,9 +599,9 @@ extern const struct netdev_class netdev_tap_class;
 #ifdef __FreeBSD__
 extern const struct netdev_class netdev_bsd_class;
 #endif
-extern const struct netdev_class netdev_tap_pl_class;
 
 extern const struct netdev_class netdev_tunnel_class;
+extern const struct netdev_class netdev_pltap_class;
 
 #ifdef  __cplusplus
 }

@@ -321,7 +321,7 @@ static const char* internal_port_type(const struct dp_netdev* dp)
 	if (dp->class == &dpif_netdev_class)
 		return "tap";
 	if (dp->class == &dpif_planetlab_class)
-		return "tap_pl";
+		return "pltap";
 	return "dummy";
 }
 

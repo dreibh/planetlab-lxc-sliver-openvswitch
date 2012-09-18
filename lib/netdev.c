@@ -79,7 +79,6 @@ netdev_initialize(void)
         netdev_register_provider(&netdev_linux_class);
         netdev_register_provider(&netdev_internal_class);
         netdev_register_provider(&netdev_tap_class);
-	netdev_register_provider(&netdev_tap_pl_class);
         netdev_vport_register();
 #endif
 #ifdef __FreeBSD__
@@ -87,6 +86,7 @@ netdev_initialize(void)
         netdev_register_provider(&netdev_bsd_class);
 #endif
 	netdev_register_provider(&netdev_tunnel_class);
+	netdev_register_provider(&netdev_pltap_class);
     }
 }
 

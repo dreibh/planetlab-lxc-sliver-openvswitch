@@ -11,6 +11,9 @@ include $(CONF)
 # if undefined in the conf file, use single dash
 SEP?=-
 
+# bridge name (XXX the same on all nodes)
+BRIDGE?=$(SLICE)
+
 ### helper functions
 # flip(1) = 2
 # flip(2) = 1
@@ -131,8 +134,8 @@ cache/switch.%: cache/db.%
 
 cache/bridge.%: cache/switch.%
 	@echo "Creating bridge on $(call display,$*) - logs in $@.log"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(IP_$*) > $@ 2> $@.log || { rm $@; exit 1; }
-	@echo Created bridge $$(cat $@) on $(HOST_$*)
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(BRIDGE) $(IP_$*) > $@ 2> $@.log || { rm $@; exit 1; }
+	@echo Created bridge with tap $$(cat $@) on $(call display,$*)
 
 # xxx this probably needs a more thorough cleanup in cache/
 cache/stop.%: del-bridge.%
@@ -152,7 +155,7 @@ U/%: del-iface.%@1 del-iface.%@2
 del-bridge.%: cache/db.%
 	@echo "Deleting bridge on $(call display,$*)"
 	@if [ -f cache/bridge.$* ]; then \
-		$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-bridge $$(cat cache/bridge.$*);\
+		$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-bridge $(BRIDGE);\
 	 fi
 	@rm -f cache/bridge.$* \
 	      cache/iface.$*$(SEP)*@1 cache/iface.*$(SEP)$*@2 \
@@ -195,9 +198,8 @@ del-iface.%: cache/db.$$(call get,%)
 #bridgefile=cache/bridge.$(nodeid)
 cache/iface.%: cache/bridge.$$(call get,%)
 	@echo "Creating interface for link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $@.log"
-	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs create-port $$(cat cache/bridge.$(call get,$(*F))) L$(call linkpart,$(*F)) > $@ 2> $@.log || { rm $@; exit 1; }
-	echo cache/bridge.$(call get,$(*F))
-	echo cache/host.$(call get,$(*F)) cache/iface.$(*F) cache/iface.$(call opp,$(*F))
+	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs create-port $(BRIDGE) \
+		L$(call linkpart,$(*F)) > $@ 2> $@.log || { rm $@; exit 1; }
 
 
 # linkid=$(call linkpart,%)

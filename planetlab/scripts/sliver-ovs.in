@@ -157,38 +157,19 @@ function stop () {
 #################### create functions
 function create_bridge () {
     
-    get_params "IP/PREFIX" "$@"
+    get_params "bridge IP/PREFIX" "$@"
 
     IP=${IP_PREFIX%/*}
     PREFIX=${IP_PREFIX#*/}
 
-    set -e
     # ensure ovs-vswitchd is running
     is_switch_running || { echo "ovs-vswitchd not running" >&2 ; exit 1 ; }
 
-    # check whether the address is already assigned
-    TAPNAME=$(tapname $IP)
-    if [ ! -z "$TAPNAME" ]; then
-	if ovs-vsctl --db=unix:$DB_SOCKET br-exists "$TAPNAME"; then
-	    echo $TAPNAME
-	    exit 0
-	fi
-	kill_pltap_ovs
-	error "$IP already assigned to $TAPNAME"
-    fi
-
-    # we're clear
-    TAPNAME=$(pltap-ovs)
-    trap kill_pltap_ovs EXIT
-    # xxx wouldn't that be safer if left-aligned ?
-    vsysc vif_up << EOF
-	$TAPNAME
-	$IP
-	$PREFIX
-EOF
-    wait_device $TAPNAME 60 && \
-	ovs-vsctl --db=unix:$DB_SOCKET add-br $TAPNAME -- set bridge $TAPNAME datapath_type=planetlab
-    echo $TAPNAME
+    set -e
+    ovs-vsctl --db=unix:$DB_SOCKET -- --may-exist add-br "$bridge" \
+    	-- set bridge "$bridge" datapath_type=planetlab \
+	-- set interface "$bridge" options:local_ip="$IP" option:local_netmask="$PREFIX"
+    ovs-appctl netdev-pltap/get-tapname "$bridge"
 }
 
 function create_port () {
