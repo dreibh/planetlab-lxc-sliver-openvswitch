@@ -204,7 +204,7 @@ cache/iface.%: cache/bridge.$$(call get,%)
 # nodeid=$(call get,%)
 # iface1=cache/iface.%
 # iface2=cache/iface.$(call opp,%)
-cache/link.%: cache/host.$$(call get,%) cache/iface.% cache/iface.$$(call opp,%)
+cache/link.%: cache/host.$$(call rget,%) cache/iface.% cache/iface.$$(call opp,%)
 	@echo "Setting port number of link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $@.log"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs set-remote-endpoint L$(call linkpart,$(*F)) \
 			$$(cat cache/host.$(call rget,$(*F))) \
