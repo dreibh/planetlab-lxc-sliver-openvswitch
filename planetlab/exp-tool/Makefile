@@ -43,6 +43,9 @@ solve_ip=$(IP_$(1))
 # can be redefined in conf.mk if that's not the expected behaviour
 display?=host $(1) aka $(call solve,$(1))
 
+# log file name
+log=$(addprefix log/,$(notdir $(1)))
+
 #################### set variables after conf.mk
 ifeq "$(SSH_KEY)" ""
 SSH_KEY_OPTION ?=
@@ -63,6 +66,7 @@ all+init: init all
 init:
 	@[ -d L ] || ( echo Creating tmp dir L; mkdir L)
 	@[ -d U ] || ( echo Creating tmp dir U; mkdir U)
+	@[ -d log ] || (echo Creating tmp dir log; mkdir log)
 	@[ -d cache ] || ( echo Creating tmp dir cache; mkdir cache)
 .PHONY: all+init init
 
@@ -125,16 +129,16 @@ cache/host.%:
 	@host $(HOST_$*) | sed -n 's/^.*has address *//p' > $@
 
 cache/db.%:
-	@echo "Starting db server on $(call display,$*) - logs in $@.log"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-db &> $@.log && touch $@
+	@echo "Starting db server on $(call display,$*) - logs in $(call log,$@)"
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-db &> $(call log,$@) && touch $@
 
 cache/switch.%: cache/db.%
-	@echo "Starting vswitchd on $(call display,$*) - logs in $@.log"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-switch &> $@.log && touch $@
+	@echo "Starting vswitchd on $(call display,$*) - logs in $(call log,$@)"
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-switch &> $(call log,$@) && touch $@
 
 cache/bridge.%: cache/switch.%
-	@echo "Creating bridge on $(call display,$*) - logs in $@.log"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(BRIDGE) $(IP_$*) > $@ 2> $@.log || { rm $@; exit 1; }
+	@echo "Creating bridge on $(call display,$*) - logs in $(call log,$@)"
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(BRIDGE) $(IP_$*) > $@ 2> $(call log,$@) || { rm $@; exit 1; }
 	@echo Created bridge with tap $$(cat $@) on $(call display,$*)
 
 # xxx this probably needs a more thorough cleanup in cache/
@@ -164,12 +168,12 @@ del-bridge.%: cache/db.%
 
 del-switch.%: del-bridge.%
 	@echo "Shutting down switch on $(call display,$*)"
-	@[ -f cache/switch.$* ] && $(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-switch
-	@rm -f cache/switch.$*
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-switch
+	@rm -f cache/switch.$* 
 
 del-db.%:
 	@echo "Shutting down db on $(call display,$*)"
-	@[ -f cache/db.$* ] && $(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-db
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-db
 	@rm -f cache/db.$*
 
 del-links: $(addprefix U/,$(notdir $(filter-out %.log,$(wildcard L/*))))
@@ -197,9 +201,9 @@ del-iface.%: cache/db.$$(call get,%)
 #nodeid=$(call get,%)
 #bridgefile=cache/bridge.$(nodeid)
 cache/iface.%: cache/bridge.$$(call get,%)
-	@echo "Creating interface for link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $@.log"
+	@echo "Creating interface for link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs create-port $(BRIDGE) \
-		L$(call linkpart,$(*F)) > $@ 2> $@.log || { rm $@; exit 1; }
+		L$(call linkpart,$(*F)) > $@ 2> $(call log,$@) || { rm $@; exit 1; }
 
 
 # linkid=$(call linkpart,%)
@@ -207,10 +211,10 @@ cache/iface.%: cache/bridge.$$(call get,%)
 # iface1=cache/iface.%
 # iface2=cache/iface.$(call opp,%)
 cache/link.%: cache/host.$$(call rget,%) cache/iface.% cache/iface.$$(call opp,%)
-	@echo "Setting port number of link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $@.log"
+	@echo "Setting port number of link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs set-remote-endpoint L$(call linkpart,$(*F)) \
 			$$(cat cache/host.$(call rget,$(*F))) \
-			$$(cat cache/iface.$(call opp,$(*F))) 2> $@.log \
+			$$(cat cache/iface.$(call opp,$(*F))) 2> $(call log,$@) \
 	 && touch $@
 
 ####################
