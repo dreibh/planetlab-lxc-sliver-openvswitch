@@ -60,6 +60,7 @@ SUDO ?= sudo -S
 
 ALL_NODE_IDS=$(sort $(foreach link,$(LINKS),$(call leftnode,$(link))) $(foreach link,$(LINKS),$(call rightnode,$(link))))
 ALL_LINK_IDS=$(addsuffix @1,$(LINKS)) $(addsuffix @2,$(LINKS))
+CONF_NODE_IDS=$(subst HOST_,,$(filter HOST_%,$(.VARIABLES)))
 
 ####################
 all+init: init all
@@ -182,6 +183,30 @@ del-dbs: $(addprefix del-,$(notdir $(filter-out %.log,$(wildcard cache/db.*))))
 shutdown: del-switchs del-dbs
 
 .PHONY: del-links del-switchs del-dbs shutdown
+
+
+### snapshots
+remote-snapshot: remote-snapshot-ips remote-snapshot-links
+	@true
+
+remote-snapshot-ips: $(addprefix cache/rsnap.ip.,$(CONF_NODE_IDS))
+	@cat /dev/null $^
+
+remote-snapshot-links: $(addprefix cache/rsnap.links.,$(CONF_NODE_IDS))
+	@sort -u /dev/null $^
+
+.PHONY: remote-snapshot remote-snapshot-ips remote-snapshot-links
+
+cache/rsnap.ip.%: 
+	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl -- \
+		get interface $(BRIDGE) options:local_ip options:local_netmask |\
+		sed -n 's|"||g;1h;2{G;s|\(.*\)\n\(.*\)|IP_$* = \2/\1|p}' > $@ || \
+	 { rm $@; exit 1; }
+
+cache/rsnap.links.%: 
+	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl list-ifaces $(BRIDGE) | \
+	 sed -n 's/^L/LINKS += /p' > $@ || \
+	 { rm $@; exit 1; }
 
 .SECONDEXPANSION:
 
