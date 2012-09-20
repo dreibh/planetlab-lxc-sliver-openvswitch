@@ -65,7 +65,6 @@ ALL_LINK_IDS=$(addsuffix @1,$(LINKS)) $(addsuffix @2,$(LINKS))
 all+init: init all
 init:
 	@[ -d L ] || ( echo Creating tmp dir L; mkdir L)
-	@[ -d U ] || ( echo Creating tmp dir U; mkdir U)
 	@[ -d log ] || (echo Creating tmp dir log; mkdir log)
 	@[ -d cache ] || ( echo Creating tmp dir cache; mkdir cache)
 .PHONY: all+init init
