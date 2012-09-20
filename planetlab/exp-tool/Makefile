@@ -157,9 +157,7 @@ U/%: del-iface.%@1 del-iface.%@2
 
 del-bridge.%: cache/db.%
 	@echo "Deleting bridge on $(call display,$*)"
-	@if [ -f cache/bridge.$* ]; then \
-		$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-bridge $(BRIDGE);\
-	 fi
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-bridge $(BRIDGE);
 	@rm -f cache/bridge.$* \
 	      cache/iface.$*$(SEP)*@1 cache/iface.*$(SEP)$*@2 \
 	      cache/link.$*$(SEP)*@?  cache/link.*$(SEP)$*@?  \
