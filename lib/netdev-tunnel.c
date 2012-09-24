@@ -89,15 +89,15 @@ static int
 netdev_tunnel_create(const struct netdev_class *class, const char *name,
                     struct netdev_dev **netdev_devp)
 {
-    static unsigned int n = 0xaa550000;
+    static unsigned int n = 0;
     struct netdev_dev_tunnel *netdev_dev;
     int error;
 
     netdev_dev = xzalloc(sizeof *netdev_dev);
     netdev_dev_init(&netdev_dev->netdev_dev, name, class);
-    netdev_dev->hwaddr[0] = 0x55;
-    netdev_dev->hwaddr[1] = 0xaa;
-    netdev_dev->hwaddr[2] = n >> 24;
+    netdev_dev->hwaddr[0] = 0xfe;
+    netdev_dev->hwaddr[1] = 0xff;
+    netdev_dev->hwaddr[2] = 0xff;
     netdev_dev->hwaddr[3] = n >> 16;
     netdev_dev->hwaddr[4] = n >> 8;
     netdev_dev->hwaddr[5] = n;

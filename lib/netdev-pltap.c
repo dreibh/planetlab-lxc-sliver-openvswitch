@@ -19,11 +19,13 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <net/if.h>
 #include <arpa/inet.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <net/if.h>
+#include <net/if_arp.h>
 #include <linux/if_tun.h>
+#include <netinet/in.h>
 #include <errno.h>
 
 #include "flow.h"
@@ -45,7 +47,6 @@ VLOG_DEFINE_THIS_MODULE(netdev_pltap);
 
 struct netdev_dev_pltap {
     struct netdev_dev netdev_dev;
-    uint8_t hwaddr[ETH_ADDR_LEN];
     char *real_name;
     char *error;
     struct netdev_stats stats;
@@ -434,27 +435,52 @@ static int
 netdev_pltap_set_etheraddr(struct netdev *netdev,
                            const uint8_t mac[ETH_ADDR_LEN])
 {
-    struct netdev_dev_pltap *dev =
-        netdev_dev_pltap_cast(netdev_get_dev(netdev));
+    return ENOTSUP;
+}
 
-    if (!eth_addr_equals(dev->hwaddr, mac)) {
-        memcpy(dev->hwaddr, mac, ETH_ADDR_LEN);
-        netdev_pltap_update_seq(dev);
+// XXX from netdev-linux.c
+static int
+get_etheraddr(const char *netdev_name, uint8_t ea[ETH_ADDR_LEN])
+{
+    struct ifreq ifr;
+    int hwaddr_family;
+    int af_inet_sock;
+
+    /* Create AF_INET socket. */
+    af_inet_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (af_inet_sock < 0) {
+        VLOG_ERR("failed to create inet socket: %s", strerror(errno));
     }
 
+    memset(&ifr, 0, sizeof ifr);
+    ovs_strzcpy(ifr.ifr_name, netdev_name, sizeof ifr.ifr_name);
+    if (ioctl(af_inet_sock, SIOCGIFHWADDR, &ifr) < 0) {
+        /* ENODEV probably means that a vif disappeared asynchronously and
+         * hasn't been removed from the database yet, so reduce the log level
+         * to INFO for that case. */
+        VLOG(errno == ENODEV ? VLL_INFO : VLL_ERR,
+             "ioctl(SIOCGIFHWADDR) on %s device failed: %s",
+             netdev_name, strerror(errno));
+        return errno;
+    }
+    hwaddr_family = ifr.ifr_hwaddr.sa_family;
+    if (hwaddr_family != AF_UNSPEC && hwaddr_family != ARPHRD_ETHER) {
+        VLOG_WARN("%s device has unknown hardware address family %d",
+                  netdev_name, hwaddr_family);
+    }
+    memcpy(ea, ifr.ifr_hwaddr.sa_data, ETH_ADDR_LEN);
     return 0;
 }
 
-// XXX we need the real mac
 static int
 netdev_pltap_get_etheraddr(const struct netdev *netdev,
                            uint8_t mac[ETH_ADDR_LEN])
 {
-    const struct netdev_dev_pltap *dev =
-        netdev_dev_pltap_cast(netdev_get_dev(netdev));
-
-    memcpy(mac, dev->hwaddr, ETH_ADDR_LEN);
-    return 0;
+    struct netdev_dev_pltap *dev = 
+    	netdev_dev_pltap_cast(netdev_get_dev(netdev));
+    if (dev->fd < 0 || !dev->finalized)
+        return EAGAIN;
+    return get_etheraddr(dev->real_name, mac);
 }
 
 
