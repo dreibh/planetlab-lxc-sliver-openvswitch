@@ -36,7 +36,7 @@ enum ofperr ofputil_port_from_ofp11(ovs_be32 ofp11_port, uint16_t *ofp10_port);
 ovs_be32 ofputil_port_to_ofp11(uint16_t ofp10_port);
 
 enum ofperr ofputil_check_output_port(uint16_t ofp_port, int max_ports);
-bool ofputil_port_from_string(const char *, uint16_t *port);
+uint16_t ofputil_port_from_string(const char *);
 void ofputil_format_port(uint16_t port, struct ds *);
 
 /* Converting OFPFW10_NW_SRC_MASK and OFPFW10_NW_DST_MASK wildcard bit counts
@@ -449,6 +449,15 @@ enum ofperr ofputil_decode_port_mod(const struct ofp_header *,
                                     struct ofputil_port_mod *);
 struct ofpbuf *ofputil_encode_port_mod(const struct ofputil_port_mod *,
                                        enum ofputil_protocol);
+
+/* Abstract table stats.
+ *
+ * For now we use ofp12_table_stats as a superset of the other protocol
+ * versions' table stats. */
+
+struct ofpbuf *ofputil_encode_table_stats_reply(
+    const struct ofp12_table_stats[], int n,
+    const struct ofp_header *request);
 
 /* Abstract nx_flow_monitor_request. */
 struct ofputil_flow_monitor_request {
