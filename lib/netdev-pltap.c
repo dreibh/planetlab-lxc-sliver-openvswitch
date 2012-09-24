@@ -377,7 +377,7 @@ netdev_pltap_send(struct netdev *netdev_, const void *buffer, size_t size)
     struct netdev_dev_pltap *dev = 
     	netdev_dev_pltap_cast(netdev_get_dev(netdev_));
     if (dev->fd < 0 || !dev->finalized)
-        return -EAGAIN;
+        return EAGAIN;
     for (;;) {
         ssize_t retval;
         retval = write(dev->fd, buffer, size);
@@ -488,13 +488,13 @@ netdev_pltap_get_etheraddr(const struct netdev *netdev,
 static int
 netdev_pltap_get_stats(const struct netdev *netdev OVS_UNUSED, struct netdev_stats *stats OVS_UNUSED)
 {
-    return -ENOTSUP;
+    return ENOTSUP;
 }
 
 static int
 netdev_pltap_set_stats(struct netdev *netdev OVS_UNUSED, const struct netdev_stats *stats OVS_UNUSED)
 {
-    return -ENOTSUP;
+    return ENOTSUP;
 }
 
 static int
