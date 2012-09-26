@@ -338,13 +338,16 @@ netdev_pltap_recv(struct netdev *netdev_, void *buffer, size_t size)
 {
     struct netdev_dev_pltap *dev = 
     	netdev_dev_pltap_cast(netdev_get_dev(netdev_));
+    char prefix[4];
+    struct iovec iov[2] = {
+        { .iov_base = prefix, .iov_len = 4 },
+	{ .iov_base = buffer, .iov_len = size }
+    };
     if (!dev->finalized)
         return -EAGAIN;
     for (;;) {
         ssize_t retval;
-        retval = read(dev->fd, buffer, size);
-	VLOG_DBG("%s: read(%"PRIxPTR", %"PRIu64") = %"PRId64,
-		 netdev_get_name(netdev_), (uintptr_t)buffer, size, retval);
+        retval = readv(dev->fd, iov, 2);
         if (retval >= 0) {
             if (retval <= size) {
 	    	return retval;
@@ -376,17 +379,20 @@ netdev_pltap_send(struct netdev *netdev_, const void *buffer, size_t size)
 {
     struct netdev_dev_pltap *dev = 
     	netdev_dev_pltap_cast(netdev_get_dev(netdev_));
+    char prefix[4] = { 0, 0, 8, 6 };
+    struct iovec iov[2] = {
+        { .iov_base = prefix, .iov_len = 4 },
+	{ .iov_base = buffer, .iov_len = size }
+    };
     if (dev->fd < 0 || !dev->finalized)
         return EAGAIN;
     for (;;) {
         ssize_t retval;
-        retval = write(dev->fd, buffer, size);
-    	VLOG_DBG("%s: write(%"PRIxPTR", %"PRIu64") = %"PRId64,
-	         netdev_get_name(netdev_), (uintptr_t)buffer, size, retval);
+        retval = writev(dev->fd, iov, 2);
         if (retval >= 0) {
-	    if (retval != size) {
-	        VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%"PRId64" bytes of "
-		             "%"PRIu64") on %s", retval, size, netdev_get_name(netdev_));
+	    if (retval != size + 4) {
+	        VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%zd bytes of %zu) on %s",
+		             retval, size + 4, netdev_get_name(netdev_));
 	    }
             return 0;
         } else if (errno != EINTR) {
