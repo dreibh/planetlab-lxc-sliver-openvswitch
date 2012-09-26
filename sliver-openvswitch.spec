@@ -1,7 +1,7 @@
 %define name sliver-openvswitch
 # to check for any change:
 # grep AC_INIT configure.ac 
-%define version 1.6.90
+%define version 1.8.90
 %define taglevel 1
 
 %define debug_package %{nil}
@@ -49,3 +49,8 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Wed Sep 26 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.8.90-1
+- merged mainstream 1.8.90
+- planetlab extensions to the openvswitch: single helper command tool 'sliver-ovs' in /usr/sbin
+- planetlab exp-tool : single config file (conf.mk)
+- planetlab exp-tool : can retrieve and save current topology
