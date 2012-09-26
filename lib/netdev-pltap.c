@@ -432,8 +432,8 @@ netdev_pltap_drain(struct netdev *netdev_)
 }
 
 static int
-netdev_pltap_set_etheraddr(struct netdev *netdev,
-                           const uint8_t mac[ETH_ADDR_LEN])
+netdev_pltap_set_etheraddr(struct netdev *netdevi OVS_UNUSED,
+                           const uint8_t mac[ETH_ADDR_LEN] OVS_UNUSED)
 {
     return ENOTSUP;
 }
