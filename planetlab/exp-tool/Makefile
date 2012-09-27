@@ -38,6 +38,7 @@ opp=$(call linkpart,$(1))@$(call flip,$(call endpart,$(1)))
 # rget(x-y@2) = x
 rget=$(call get,$(call opp,$(1)))
 ###
+default=$(if $($(1)_$(2)),$($(1)_$(2)),$($(1)))
 solve=$(HOST_$(1))
 solve_ip=$(IP_$(1))
 # can be redefined in conf.mk if that's not the expected behaviour
@@ -146,8 +147,8 @@ cache/bridge.%: cache/switch.%
 	@echo Created bridge with tap $$(cat $@) on $(call display,$*)
 
 cache/controller.%: cache/bridge.%
-	@echo "Setting controller on $(call display,$*) - logs in $(call log,$@)"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs set-controller $(BRIDGE) $(CONTROLLER_$*) &> $(call log,$@) || { rm $@; exit 1; }
+	@echo "Setting controller $(call default,CONTROLLER,$*) on $(call display,$*) - logs in $(call log,$@)"
+	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl set-controller $(BRIDGE) $(call default,CONTROLLER,$*) &> $(call log,$@) || { rm $@; exit 1; }
 
 # xxx this probably needs a more thorough cleanup in cache/
 cache/stop.%: del-bridge.%
