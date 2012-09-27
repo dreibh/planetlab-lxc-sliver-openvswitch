@@ -113,6 +113,10 @@ BRIDGES=$(foreach id,$(ALL_NODE_IDS),cache/bridge.$(id))
 bridges: $(BRIDGES)
 .PHONY: bridges
 
+CONTROLLERS=$(foreach id,$(ALL_NODE_IDS),cache/controller.$(id))
+controllers: $(CONTROLLERS)
+.PHONY: controllers
+
 ### node-oriented targets
 # check ssh connectivity
 cache/sshcheck.%: FORCE
@@ -140,6 +144,10 @@ cache/bridge.%: cache/switch.%
 	@echo "Creating bridge on $(call display,$*) - logs in $(call log,$@)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(BRIDGE) $(IP_$*) > $@ 2> $(call log,$@) || { rm $@; exit 1; }
 	@echo Created bridge with tap $$(cat $@) on $(call display,$*)
+
+cache/controller.%: cache/bridge.%
+	@echo "Setting controller on $(call display,$*) - logs in $(call log,$@)"
+	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl set-controller $(BRIDGE) $(CONTROLLER_$*) &> $(call log,$@) || { rm $@; exit 1; }
 
 # xxx this probably needs a more thorough cleanup in cache/
 cache/stop.%: del-bridge.%
