@@ -147,7 +147,7 @@ cache/bridge.%: cache/switch.%
 
 cache/controller.%: cache/bridge.%
 	@echo "Setting controller on $(call display,$*) - logs in $(call log,$@)"
-	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl set-controller $(BRIDGE) $(CONTROLLER_$*) &> $(call log,$@) || { rm $@; exit 1; }
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs set-controller $(BRIDGE) $(CONTROLLER_$*) &> $(call log,$@) || { rm $@; exit 1; }
 
 # xxx this probably needs a more thorough cleanup in cache/
 cache/stop.%: del-bridge.%

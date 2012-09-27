@@ -197,6 +197,17 @@ function set_remote_endpoint () {
 	options:remote_port=$remote_UDP_port
 }
 
+function set_controller () {
+
+    get_params "bridge_name controller" "$@"
+
+    # ensure ovs-vswitchd is running
+    is_switch_running || { echo "ovs-vswitchd not running" >&2 ; exit 1 ; }
+
+    set -e
+    ovs-vsctl --db=unix:$DB_SOCKET set-controller "$bridge_name" "$controller"
+}
+
 #################### del functions
 function del_bridge () {
     
