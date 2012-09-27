@@ -2,7 +2,7 @@
 # to check for any change:
 # grep AC_INIT configure.ac 
 %define version 1.8.90
-%define taglevel 1
+%define taglevel 2
 
 %define debug_package %{nil}
 
@@ -49,6 +49,9 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Thu Sep 27 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.8.90-2
+- add/skip packet information on tap send/recv
+
 * Wed Sep 26 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.8.90-1
 - merged mainstream 1.8.90
 - planetlab extensions to the openvswitch: single helper command tool 'sliver-ovs' in /usr/sbin
