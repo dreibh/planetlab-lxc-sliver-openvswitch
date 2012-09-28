@@ -97,5 +97,8 @@ int tun_alloc(int iftype, char *if_name)
     }
 
     remotefd = receive_vif_fd(control_fd, if_name);
+
+    close(control_fd);
+
     return remotefd;
 }

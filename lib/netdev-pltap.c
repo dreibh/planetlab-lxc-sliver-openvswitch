@@ -467,6 +467,7 @@ get_etheraddr(const char *netdev_name, uint8_t ea[ETH_ADDR_LEN])
         VLOG(errno == ENODEV ? VLL_INFO : VLL_ERR,
              "ioctl(SIOCGIFHWADDR) on %s device failed: %s",
              netdev_name, strerror(errno));
+	close(af_inet_sock);
         return errno;
     }
     hwaddr_family = ifr.ifr_hwaddr.sa_family;
@@ -475,6 +476,7 @@ get_etheraddr(const char *netdev_name, uint8_t ea[ETH_ADDR_LEN])
                   netdev_name, hwaddr_family);
     }
     memcpy(ea, ifr.ifr_hwaddr.sa_data, ETH_ADDR_LEN);
+    close(af_inet_sock);
     return 0;
 }
 
