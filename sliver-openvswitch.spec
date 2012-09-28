@@ -2,7 +2,7 @@
 # to check for any change:
 # grep AC_INIT configure.ac 
 %define version 1.8.90
-%define taglevel 3
+%define taglevel 4
 
 %define debug_package %{nil}
 
@@ -49,6 +49,9 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Fri Sep 28 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.8.90-4
+- fix file descriptor leaks
+
 * Fri Sep 28 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.8.90-3
 - can specify OpenFlow controller ip/port for each ovs instance
 - through $(CONTROLLER_<id>), or $(CONTROLLER) by default
