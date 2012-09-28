@@ -2,7 +2,7 @@
 # to check for any change:
 # grep AC_INIT configure.ac 
 %define version 1.8.90
-%define taglevel 2
+%define taglevel 3
 
 %define debug_package %{nil}
 
@@ -49,6 +49,10 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Fri Sep 28 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.8.90-3
+- can specify OpenFlow controller ip/port for each ovs instance
+- through $(CONTROLLER_<id>), or $(CONTROLLER) by default
+
 * Thu Sep 27 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.8.90-2
 - add/skip packet information on tap send/recv
 
