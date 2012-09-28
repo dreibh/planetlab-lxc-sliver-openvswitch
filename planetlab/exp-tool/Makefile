@@ -204,6 +204,17 @@ remote-snapshot-ips: $(addprefix cache/rsnap.ip.,$(CONF_NODE_IDS))
 remote-snapshot-links: $(addprefix cache/rsnap.links.,$(CONF_NODE_IDS))
 	@sort -u /dev/null $^
 
+### update sliver-ovs
+update: $(addprefix update-,$(CONF_NODE_IDS))
+	@true
+
+update-%: FORCE
+	@[ -n "$(SLIVER_OVS)" ] || { echo "SLIVER_OVS not set" >&2; exit 1; }
+	@[ -f "$(SLIVER_OVS)" ] || { echo "$(SLIVER_OVS) not found" >&2; exit 1; }
+	@echo "Sending $(SLIVER_OVS) to $(call display,$*)"
+	@scp -q $(SLIVER_OVS) $(SLICE)@$(call solve,$*):
+	@$(SSH) $(call solve,$*) $(SUDO) mv $(notdir $(SLIVER_OVS)) /usr/sbin/sliver-ovs
+
 .PHONY: remote-snapshot remote-snapshot-ips remote-snapshot-links
 
 cache/rsnap.ip.%: 
@@ -260,6 +271,7 @@ graph.dot:
 	( echo "digraph $(SLICE) {"; ls L | sed 's/$(SEP)/->/;s/$$/;/'; echo "}" ) > $@
 graph.ps: graph.dot
 	dot -Tps < $^ > $@	
+
 
 ####################
 # 'virtual' targets in that there's no real file attached
