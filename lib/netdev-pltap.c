@@ -338,9 +338,9 @@ netdev_pltap_recv(struct netdev *netdev_, void *buffer, size_t size)
 {
     struct netdev_dev_pltap *dev = 
     	netdev_dev_pltap_cast(netdev_get_dev(netdev_));
-    char prefix[4];
+    struct tun_pi pi;
     struct iovec iov[2] = {
-        { .iov_base = prefix, .iov_len = 4 },
+        { .iov_base = &pi, .iov_len = sizeof(pi) },
 	{ .iov_base = buffer, .iov_len = size }
     };
     if (!dev->finalized)
@@ -379,9 +379,9 @@ netdev_pltap_send(struct netdev *netdev_, const void *buffer, size_t size)
 {
     struct netdev_dev_pltap *dev = 
     	netdev_dev_pltap_cast(netdev_get_dev(netdev_));
-    char prefix[4] = { 0, 0, 8, 6 };
+    struct tun_pi pi = { 0, htons(ETH_P_IP) };
     struct iovec iov[2] = {
-        { .iov_base = prefix, .iov_len = 4 },
+        { .iov_base = &pi, .iov_len = sizeof(pi) },
 	{ .iov_base = buffer, .iov_len = size }
     };
     if (dev->fd < 0 || !dev->finalized)
@@ -390,9 +390,9 @@ netdev_pltap_send(struct netdev *netdev_, const void *buffer, size_t size)
         ssize_t retval;
         retval = writev(dev->fd, iov, 2);
         if (retval >= 0) {
-	    if (retval != size + 4) {
+	    if (retval != size + sizeof(pi)) {
 	        VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%zd bytes of %zu) on %s",
-		             retval, size + 4, netdev_get_name(netdev_));
+		             retval, size + sizeof(pi), netdev_get_name(netdev_));
 	    }
             return 0;
         } else if (errno != EINTR) {
