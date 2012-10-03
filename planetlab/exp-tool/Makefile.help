@@ -1,0 +1,39 @@
+make [init+all]
+        shortcut for 'make init all'
+make init
+        create util subdirs needed by this tool
+make all
+        initialize the whole topology on all nodes
+make showslice
+        show SLICE as defined in conf.mk
+make shownodes
+make showhostnames
+make showips
+make showlinks
+        show nodes and links declared in conf.mk in various formats
+make sshchecks
+make ovsversions
+        try out ssh connectivity to slivers in the slice, or show installed ovs version
+make dbs
+        initialize ovs db in all slivers
+make switchs
+        start ovs switch in all slivers
+make start 
+        shortcut for make dbs switchs
+make stop
+        stop all ovs switch in all slivers
+make status
+        list status of db and switch processes in all slivers
+make bridges
+        create a bridge interface linked to tap devce in each sliver
+====================
+make showcontrollers
+	show how OF controllers are configured from conf.mk
+	use CONTROLLER_<nodeid> if set, or CONTROLLER as a default otherwise
+make controllers
+	configure the various switches so they use the configured controllers
+
+====================
+make update (devel)
+	push a new version of sliver-ovs into the slivers
+	use SLIVER_OVS that should point to the local new version
