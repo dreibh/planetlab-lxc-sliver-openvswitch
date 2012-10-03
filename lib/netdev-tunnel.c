@@ -286,7 +286,7 @@ netdev_tunnel_send(struct netdev *netdev_, const void *buffer, size_t size)
 	         netdev_get_name(netdev_), (uintptr_t)buffer, size, retval);
         if (retval >= 0) {
 	    dev->stats.tx_packets++;
-	    dev->stats.tx_bytes++;
+	    dev->stats.tx_bytes += retval;
 	    if (retval != size) {
 	        VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%"PRId64" bytes of "
 		             "%"PRIu64") on %s", retval, size, netdev_get_name(netdev_));
