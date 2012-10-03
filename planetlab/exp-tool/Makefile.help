@@ -1,9 +1,11 @@
+==================== usual target
 make [init+all]
         shortcut for 'make init all'
 make init
         create util subdirs needed by this tool
 make all
         initialize the whole topology on all nodes
+==================== inspect donfig
 make showslice
         show SLICE as defined in conf.mk
 make shownodes
@@ -14,26 +16,37 @@ make showlinks
 make sshchecks
 make ovsversions
         try out ssh connectivity to slivers in the slice, or show installed ovs version
+==================== For changing the topology on the fly
+make L/<id1>-<id2>
+	create a link between nodes with ids <id1> and <id2>
+make U/<id1>-<id2>
+	delete link between nodes with ids <id1> and <id2>
+==================== cleanup
+make clean
+	clean up whatever has been created on the slivers
+make distclean
+	clean up local cache, useful when restarting from a clean slice
+==================== configure (direct switches towards) OF controllers 
+make showcontrollers
+	show how OF controllers are configured from conf.mk
+	use CONTROLLER_<nodeid> if set, or CONTROLLER as a default otherwise
+make controllers
+	configure the various switches so they use the configured controllers
+==================== devel
+make update 
+	push a new version of sliver-ovs into the slivers
+	use SLIVER_OVS that should point to the local new version
+==================== manually/progressively deploy stuff (done in make all)
 make dbs
         initialize ovs db in all slivers
 make switchs
         start ovs switch in all slivers
+make bridges
+        create a bridge interface linked to tap device in each sliver
 make start 
         shortcut for make dbs switchs
 make stop
         stop all ovs switch in all slivers
 make status
         list status of db and switch processes in all slivers
-make bridges
-        create a bridge interface linked to tap devce in each sliver
 ====================
-make showcontrollers
-	show how OF controllers are configured from conf.mk
-	use CONTROLLER_<nodeid> if set, or CONTROLLER as a default otherwise
-make controllers
-	configure the various switches so they use the configured controllers
-
-====================
-make update (devel)
-	push a new version of sliver-ovs into the slivers
-	use SLIVER_OVS that should point to the local new version

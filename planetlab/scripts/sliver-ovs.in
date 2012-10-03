@@ -259,11 +259,57 @@ function show () {
     ovs-vsctl --db=unix:$DB_SOCKET show
 }
 
+### for demos - connect to an ndnmap deployment to visualize links bandwidth
+# this expects 3 arguments
+# an interface name, L<id1>-<id2> based on your ids in conf.mk
+# the hostname for a ndnmap deployment
+# a linkid, this is the id that this link has in your ndnmap scenario (hard-coded in some json file)
+# this one-shot function writes the current statistics onto the ndnmap site
+# it needs to be called regularly so that ndnmap can do the bw computations
+# would make sense for the caller to redirect stderr onto some relevant location
+function gmap_report_once () {
+    iface=$1; shift
+    hostname=$1; shift
+    linkid=$1; shift
+    report=$(ovs-vsctl get interface $iface statistics)
+    rx_bytes=$(echo $report | sed -e 's/^.*rx_bytes=//' -e 's/,.*$//')
+    tx_bytes=$(echo $report | sed -e 's/^.*tx_bytes=//' -e 's/,.*$//')
+    rx_bits=$(($rx_bytes*8))
+    tx_bits=$(($tx_bytes*8))
+    now=$(date +%s).$(date +%N)
+    trigger=http://${hostname}/bw/${linkid}/${now}/${rx_bits}/${tx_bits}
+#    curl -s -L $trigger | grep -q "Got it" || echo Missed event with $trigger
+#    echo $trigger
+    curl -s -L $trigger >& /dev/null
+}
+
+### the front end, manages pid and so on
+function gmap_report () {
+    iface=$1; shift
+    hostname=$1; shift
+    linkid=$1; shift
+    looptime=$1; shift
+    [ -z "$looptime" ] && looptime=1
+# we'd need a means to avoid running 2 instances at the same time
+# but it's kind of hard to keep track of the right pid here..
+#    pidfile=/var/run/openvswitch/gmap-$iface.pid
+#    if [ -f $pidfile ] ; then
+#	pid=$(cat $pidfile)
+#	[ -n "$pid" ] && kill $pid
+#	rm $pidfile
+#    fi
+    while true; do
+#	echo $$ > $pidfile
+	gmap_report_once $iface $hostname $linkid
+	sleep $looptime
+    done 
+}
+
 ####################
 SUPPORTED_SUBCOMMANDS="start stop status 
 start_db stop_db start_switch stop_switch
 create_bridge create_port del_bridge del_port
-show set_remote_endpoint set_controller del_controller"
+show set_remote_endpoint set_controller del_controller gmap_report"
 
 function main () {
 	message="Usage: $COMMAND <subcommand> ...

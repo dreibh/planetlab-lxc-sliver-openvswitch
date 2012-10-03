@@ -65,12 +65,12 @@ ALL_LINK_IDS=$(addsuffix @1,$(LINKS)) $(addsuffix @2,$(LINKS))
 CONF_NODE_IDS=$(subst HOST_,,$(filter HOST_%,$(.VARIABLES)))
 
 ####################
-init+all: init all
+init_all: init all
 init:
 	@[ -d L ] || ( echo Creating tmp dir L; mkdir L)
 	@[ -d log ] || (echo Creating tmp dir log; mkdir log)
 	@[ -d cache ] || ( echo Creating tmp dir cache; mkdir cache)
-.PHONY: init+all init
+.PHONY: init_all init
 
 FORCE:
 
@@ -139,7 +139,7 @@ ovsversion-%: FORCE
 # should probably replace sshcheck
 cache/status.%: FORCE
 	@echo "=== DB and SWITCH processes on $(call display,$*)"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs status
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs status ||:
 
 cache/host.%:
 	@echo "IP lookup for $(call display,$*)"
@@ -280,7 +280,7 @@ cache/link.%: cache/host.$$(call rget,%) cache/iface.% cache/iface.$$(call opp,%
 CLEANTARGETS=$(addprefix del-,$(notdir $(filter-out %.log,$(wildcard cache/bridge.*))))
 clean: $(CLEANTARGETS)
 distclean:
-	rm -rf L U cache
+	rm -rf L log cache
 .PHONY: clean distclean
 
 ####################
