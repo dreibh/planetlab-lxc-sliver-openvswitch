@@ -32,7 +32,7 @@ Openvswitch tuned for running within a PlanetLab sliver
 %build
 ./boot.sh
 # let's be as close as the regular linux/fedora layout
-./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var
+./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --with-logdir=/var/log
 make
 
 %install
