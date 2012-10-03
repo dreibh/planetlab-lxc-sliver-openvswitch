@@ -2,6 +2,7 @@ planetlab/exp-tool
 planetlab/exp-tool/Makefile
 planetlab/exp-tool/showgraph
 planetlab/exp-tool/README
+planetlab/scripts/refresh
 sliver-openvswitch.spec
 .gitignore
 .non-distfiles
