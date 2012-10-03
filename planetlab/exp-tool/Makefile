@@ -60,16 +60,17 @@ SSH = ssh $(SSH_OPTIONS)
 SUDO ?= sudo -S
 
 ALL_NODE_IDS=$(sort $(foreach link,$(LINKS),$(call leftnode,$(link))) $(foreach link,$(LINKS),$(call rightnode,$(link))))
+ALL_NODE_HOSTS=$(foreach id,$(ALL_NODE_IDS),$(call solve,$(id)))
 ALL_LINK_IDS=$(addsuffix @1,$(LINKS)) $(addsuffix @2,$(LINKS))
 CONF_NODE_IDS=$(subst HOST_,,$(filter HOST_%,$(.VARIABLES)))
 
 ####################
-all+init: init all
+init+all: init all
 init:
 	@[ -d L ] || ( echo Creating tmp dir L; mkdir L)
 	@[ -d log ] || (echo Creating tmp dir log; mkdir log)
 	@[ -d cache ] || ( echo Creating tmp dir cache; mkdir cache)
-.PHONY: all+init init
+.PHONY: init+all init
 
 FORCE:
 
@@ -84,14 +85,19 @@ showslice: ++SLICE FORCE
 
 shownodes:
 	@$(foreach id,$(ALL_NODE_IDS),echo $(id)=$(call display,$(id));)
+showhostnames: ++ALL_NODE_HOSTS
 showips:
 	@$(foreach id,$(ALL_NODE_IDS),echo $(id)=$(call display,$(id)) has ip/network set to $(IP_$(id));)
 showlinks:
 	@$(foreach link,$(LINKS), echo $(call display,$(call leftnode,$(link))) '====>' $(call display,$(call rightnode,$(link)));)
-.PHONY: shownodes showips showlinks
+showcontrollers:
+	@$(foreach id,$(ALL_NODE_IDS), echo $(call display,$(id)) has controller $(call default,CONTROLLER,$(id));)
+.PHONY: shownodes showhostnames showips showlinks showcontrollers
 
-sshchecks: $(foreach id,$(ALL_NODE_IDS),cache/sshcheck.$(id))
+sshchecks: $(foreach id,$(ALL_NODE_IDS),sshcheck-$(id))
 .PHONY: sshchecks
+ovsversions: $(foreach id,$(ALL_NODE_IDS),ovsversion-$(id))
+.PHONY: ovsversions
 
 DBS=$(foreach id,$(ALL_NODE_IDS),cache/db.$(id))
 dbs: $(DBS)
@@ -123,9 +129,12 @@ del-controllers: $(foreach id,$(ALL_NODE_IDS),del-controller-$(id))
 
 ### node-oriented targets
 # check ssh connectivity
-cache/sshcheck.%: FORCE
-	@if $(SSH) $(HOST_$*) hostname 2> /dev/null; then echo "ssh on" $(call display,$*) "OK" ; \
+sshcheck-%: FORCE
+	@if $(SSH) $(HOST_$*) hostname &> /dev/null; then echo "ssh on" $(call display,$*) "OK" ; \
 	 else echo "ssh on" $(call display,$*) "KO !!!"; fi
+
+ovsversion-%: FORCE
+	@OVSVERSION=$$($(SSH) $(HOST_$*) rpm -q sliver-openvswitch); echo $(call display,$*) has $$OVSVERSION
 
 # should probably replace sshcheck
 cache/status.%: FORCE
@@ -284,7 +293,7 @@ graph.ps: graph.dot
 ####################
 # 'virtual' targets in that there's no real file attached
 define node_shortcuts
-sshcheck.$(1): cache/sshcheck.$(1) FORCE
+sshcheck.$(1): sshcheck-$(1) FORCE
 db.$(1): cache/db.$(1) FORCE
 switch.$(1): cache/switch.$(1) FORCE
 start.$(1): cache/start.$(1) FORCE
@@ -304,6 +313,9 @@ link.%: cache/link.%
 endef
 
 $(foreach id,$(ALL_LINK_IDS), $(eval $(call link_shortcuts,$(id))))
+
+help:
+	@cat Makefile.help
 
 #################### convenience, for debugging only
 # make +foo : prints the value of $(foo)

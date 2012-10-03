@@ -1,0 +1,13 @@
+#!/bin/bash
+#
+# this script is not used by the build but can be convenient 
+# in a devel environment to ship an experimental sliver-ovs 
+# into running slices (using e.g. make update)
+DIRNAME=$(dirname $0)
+cd $DIRNAME
+echo Refreshing sliver-ovs from sliver-ovs.in in $(pwd)
+sed -e s,@RUNDIR@,/var/run/openvswitch,g \
+    -e s,@DBDIR@,/etc/openvswitch,g \
+    -e s,@pkgdatadir@,/usr/share/openvswitch,g \
+    -e s,@LOGDIR@,/var/log/openvswitch,g \
+    sliver-ovs.in > sliver-ovs
