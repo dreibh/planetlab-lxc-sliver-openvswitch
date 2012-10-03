@@ -118,6 +118,9 @@ CONTROLLERS=$(foreach id,$(ALL_NODE_IDS),cache/controller.$(id))
 controllers: $(CONTROLLERS)
 .PHONY: controllers
 
+del-controllers: $(foreach id,$(ALL_NODE_IDS),del-controller-$(id))
+.PHONY: del-controllers
+
 ### node-oriented targets
 # check ssh connectivity
 cache/sshcheck.%: FORCE
@@ -182,6 +185,11 @@ del-db.%:
 	@echo "Shutting down db on $(call display,$*)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-db
 	@rm -f cache/db.$*
+
+del-controller.%:
+	@echo "Removing controller for $(call display,$*)"
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-controller $(BRIDGE)
+	@rm -f cache/controller.$*
 
 del-links: $(addprefix U/,$(notdir $(filter-out %.log,$(wildcard L/*))))
 

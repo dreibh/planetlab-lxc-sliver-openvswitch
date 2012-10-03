@@ -208,6 +208,17 @@ function set_controller () {
     ovs-vsctl --db=unix:$DB_SOCKET set-controller "$bridge_name" "$controller"
 }
 
+function del_controller () {
+
+    get_params "bridge_name" "$@"
+
+    # ensure ovs-vswitchd is running
+    is_switch_running || { echo "ovs-vswitchd not running" >&2 ; exit 1 ; }
+
+    set -e
+    ovs-vsctl --db=unix:$DB_SOCKET del-controller "$bridge_name"
+}
+
 #################### del functions
 function del_bridge () {
     
@@ -252,7 +263,7 @@ function show () {
 SUPPORTED_SUBCOMMANDS="start stop status 
 start_db stop_db start_switch stop_switch
 create_bridge create_port del_bridge del_port
-show set_remote_endpoint"
+show set_remote_endpoint set_controller del_controller"
 
 function main () {
 	message="Usage: $COMMAND <subcommand> ...
