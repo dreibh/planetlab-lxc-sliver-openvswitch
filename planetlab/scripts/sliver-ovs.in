@@ -271,8 +271,8 @@ function gmap_report_once () {
     iface=$1; shift
     hostname=$1; shift
     linkid=$1; shift
-    rx_bytes=$(ovs-vsctl get interface $iface statistics:rx_bytes)
-    tx_bytes=$(ovs-vsctl get interface $iface statistics:tx_bytes)
+    rx_bytes=$(ovs-appctl netdev-tunnel/get-rx-bytes $iface)
+    tx_bytes=$(ovs-appctl netdev-tunnel/get-tx-bytes $iface)
     rx_bits=$(($rx_bytes*8))
     tx_bits=$(($tx_bytes*8))
     now=$(date +%s).$(date +%N)
