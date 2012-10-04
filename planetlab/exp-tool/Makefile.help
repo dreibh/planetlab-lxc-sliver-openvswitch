@@ -1,9 +1,13 @@
+in almost all cases below it is recommended to use the -j option to make
+which was the point with uing make in the first place
+so that maximum degree of parallelism can be reached
+
 ==================== usual target
 make [init+all]
         shortcut for 'make init all'
 make init
         create util subdirs needed by this tool
-make all
+make -j all
         initialize the whole topology on all nodes
 ==================== inspect donfig
 make showslice
@@ -16,20 +20,26 @@ make showlinks
 make sshchecks
 make ovsversions
         try out ssh connectivity to slivers in the slice, or show installed ovs version
+make sshs SSH-COMMAND="bla bla bla"
+	run "bla bla bla" in all slivers (and under sudo)
 ==================== For changing the topology on the fly
 make L/<id1>-<id2>
 	create a link between nodes with ids <id1> and <id2>
 make U/<id1>-<id2>
 	delete link between nodes with ids <id1> and <id2>
 ==================== cleanup
+make shutdown
+	tear down everything on the slivers, stops daemons and all
 make clean
-	clean up whatever has been created on the slivers
+	clean up whatever has been created on the slivers, keeps daemons running
 make distclean
 	clean up local cache, useful when restarting from a clean slice
 ==================== configure (direct switches towards) OF controllers 
 make showcontrollers
 	show how OF controllers are configured from conf.mk
 	use CONTROLLER_<nodeid> if set, or CONTROLLER as a default otherwise
+	e.g. CONTROLLER=tcp:112.34.23.56:6633
+
 make controllers
 	configure the various switches so they use the configured controllers
 ==================== devel

@@ -98,6 +98,9 @@ sshchecks: $(foreach id,$(ALL_NODE_IDS),sshcheck-$(id))
 .PHONY: sshchecks
 ovsversions: $(foreach id,$(ALL_NODE_IDS),ovsversion-$(id))
 .PHONY: ovsversions
+# more general form; run with  make sshs SSH-COMMAND="bla bla bla"
+sshs: $(foreach id,$(ALL_NODE_IDS),ssh-$(id))
+.PHONY: sshs
 
 DBS=$(foreach id,$(ALL_NODE_IDS),cache/db.$(id))
 dbs: $(DBS)
@@ -136,6 +139,9 @@ sshcheck-%: FORCE
 ovsversion-%: FORCE
 	@OVSVERSION=$$($(SSH) $(HOST_$*) rpm -q sliver-openvswitch); echo $(call display,$*) has $$OVSVERSION
 
+ssh-%: FORCE
+	@$(SSH) $(HOST_$*) $(SUDO) $(SSH-COMMAND)
+
 # should probably replace sshcheck
 cache/status.%: FORCE
 	@echo "=== DB and SWITCH processes on $(call display,$*)"
@@ -165,7 +171,7 @@ cache/controller.%: cache/bridge.%
 # xxx this probably needs a more thorough cleanup in cache/
 cache/stop.%: del-bridge.%
 	@echo "Stopping switch & db on $(call display,$*)"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop && rm cache/switch.% cache/db.%
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop && rm cache/switch.$* cache/db.$*
 
 ### link-oriented targets
 # L/<nodeid>-<node_id>

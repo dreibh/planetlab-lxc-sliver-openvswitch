@@ -1,6 +1,13 @@
 # the slice that you're using
 SLICE=inri_sl1
 
+# optionally, the OF controller that you'd like to use
+# CONTROLLER = tcp:138.96.116.63:6633
+# you need to run 'make controllers' for this to take effect
+# you can also specify a controller per node, e.g.
+# CONTROLLER_SENDER = <another localtion>
+# NOTE that hostnames do not seem to be supported as of this writing
+
 # optionnally, the related ssh (private) key to use
 SSH_KEY=key_user.rsa
 
