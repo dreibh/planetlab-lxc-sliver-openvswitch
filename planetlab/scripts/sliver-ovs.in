@@ -289,19 +289,18 @@ function gmap_report () {
     linkid=$1; shift
     looptime=$1; shift
     [ -z "$looptime" ] && looptime=1
-# we'd need a means to avoid running 2 instances at the same time
-# but it's kind of hard to keep track of the right pid here..
-#    pidfile=/var/run/openvswitch/gmap-$iface.pid
-#    if [ -f $pidfile ] ; then
-#	pid=$(cat $pidfile)
-#	[ -n "$pid" ] && kill $pid
-#	rm $pidfile
-#    fi
+    pid_file=/var/run/openvswitch/gmap-$iface.pid
+    if [ -f $pid_file ] ; then
+	pid=$(cat $pid_file)
+	[ -n "$pid" ] && kill $pid >& /dev/null
+	rm $pid_file
+    fi
     while true; do
-#	echo $$ > $pidfile
 	gmap_report_once $iface $hostname $linkid
 	sleep $looptime
-    done 
+    done &
+    # this is the pid for the background process
+    echo $! > $pid_file
 }
 
 ####################
