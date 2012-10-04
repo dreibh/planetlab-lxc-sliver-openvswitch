@@ -439,12 +439,50 @@ netdev_tunnel_get_port(struct unixctl_conn *conn,
     unixctl_command_reply(conn, buf);
 }
 
+static void
+netdev_tunnel_get_tx_bytes(struct unixctl_conn *conn,
+                     int argc OVS_UNUSED, const char *argv[], void *aux OVS_UNUSED)
+{
+    struct netdev_dev_tunnel *tunnel_dev;
+    char buf[128];
+
+    tunnel_dev = shash_find_data(&tunnel_netdev_devs, argv[1]);
+    if (!tunnel_dev) {
+        unixctl_command_reply_error(conn, "no such tunnel netdev");
+        return;
+    }
+
+    sprintf(buf, "%"PRIu64, tunnel_dev->stats.tx_bytes);
+    unixctl_command_reply(conn, buf);
+}
+
+static void
+netdev_tunnel_get_rx_bytes(struct unixctl_conn *conn,
+                     int argc OVS_UNUSED, const char *argv[], void *aux OVS_UNUSED)
+{
+    struct netdev_dev_tunnel *tunnel_dev;
+    char buf[128];
+
+    tunnel_dev = shash_find_data(&tunnel_netdev_devs, argv[1]);
+    if (!tunnel_dev) {
+        unixctl_command_reply_error(conn, "no such tunnel netdev");
+        return;
+    }
+
+    sprintf(buf, "%"PRIu64, tunnel_dev->stats.rx_bytes);
+    unixctl_command_reply(conn, buf);
+}
+
 
 static int
 netdev_tunnel_init(void)
 {
     unixctl_command_register("netdev-tunnel/get-port", "NAME",
                              1, 1, netdev_tunnel_get_port, NULL);
+    unixctl_command_register("netdev-tunnel/get-tx-bytes", "NAME",
+                             1, 1, netdev_tunnel_get_tx_bytes, NULL);
+    unixctl_command_register("netdev-tunnel/get-rx-bytes", "NAME",
+                             1, 1, netdev_tunnel_get_rx_bytes, NULL);
     return 0;
 }
 
