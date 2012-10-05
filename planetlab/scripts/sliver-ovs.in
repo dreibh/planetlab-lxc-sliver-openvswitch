@@ -29,7 +29,7 @@ function error {
 function get_params {
     params=$1; shift
     err_msg="$COMMAND $SUBCOMMAND $(echo $params | perl -pe 's/\S+/<$&>/g')"
-    for p in $(echo $params); do
+    for p in $params; do
         [[ -z "$@" ]] && error "$err_msg"
         pname=$(echo -n $p|perl -pe 's/\W/_/g')
         eval $pname="$1"; shift
@@ -157,7 +157,8 @@ function stop () {
 #################### create functions
 function create_bridge () {
     
-    get_params "bridge IP/PREFIX" "$@"
+    get_params "bridge IP/PREFIX" "$1" "$2"
+    shift; shift;
 
     IP=${IP_PREFIX%/*}
     PREFIX=${IP_PREFIX#*/}
@@ -174,7 +175,8 @@ function create_bridge () {
     set -e
     ovs-vsctl --db=unix:$DB_SOCKET $W -- --may-exist add-br "$bridge" \
     	-- set bridge "$bridge" datapath_type=planetlab \
-	-- set interface "$bridge" options:local_ip="$IP" option:local_netmask="$PREFIX"
+	-- set interface "$bridge" options:local_ip="$IP" option:local_netmask="$PREFIX" \
+	-- "$@"
 }
 
 function create_port () {

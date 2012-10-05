@@ -161,7 +161,8 @@ cache/switch.%: | cache/db.%
 
 cache/bridge.%: | cache/db.%
 	@echo "Creating bridge on $(call display,$*) - logs in $(call log,$@)"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(BRIDGE) $(IP_$*) &> $(call log,$@) \
+	@$(SSH) $(HOST_$*) $(SUDO) \
+		sliver-ovs create-bridge $(BRIDGE) $(IP_$*) $(call default,BROPTIONS,$*) &> $(call log,$@) \
 	 && touch $@
 
 cache/controller.%: cache/bridge.%
