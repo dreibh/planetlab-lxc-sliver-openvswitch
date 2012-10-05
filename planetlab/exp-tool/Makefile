@@ -201,7 +201,7 @@ del-db.%:
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-db
 	@rm -f cache/db.$*
 
-del-controller.%:
+del-controller-%:
 	@echo "Removing controller for $(call display,$*)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-controller $(BRIDGE)
 	@rm -f cache/controller.$*

@@ -42,6 +42,8 @@ make showcontrollers
 
 make controllers
 	configure the various switches so they use the configured controllers
+make del-controllers
+	reset the switches to run in standalone mode
 ==================== devel
 make update 
 	push a new version of sliver-ovs into the slivers
