@@ -155,18 +155,19 @@ cache/db.%:
 	@echo "Starting db server on $(call display,$*) - logs in $(call log,$@)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-db &> $(call log,$@) && touch $@
 
-cache/switch.%: cache/db.%
+cache/switch.%: | cache/db.%
 	@echo "Starting vswitchd on $(call display,$*) - logs in $(call log,$@)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-switch &> $(call log,$@) && touch $@
 
-cache/bridge.%: cache/switch.%
+cache/bridge.%: | cache/db.%
 	@echo "Creating bridge on $(call display,$*) - logs in $(call log,$@)"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(BRIDGE) $(IP_$*) > $@ 2> $(call log,$@) || { rm $@; exit 1; }
-	@echo Created bridge with tap $$(cat $@) on $(call display,$*)
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs create-bridge $(BRIDGE) $(IP_$*) &> $(call log,$@) \
+	 && touch $@
 
 cache/controller.%: cache/bridge.%
 	@echo "Setting controller $(call default,CONTROLLER,$*) on $(call display,$*) - logs in $(call log,$@)"
-	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl set-controller $(BRIDGE) $(call default,CONTROLLER,$*) &> $(call log,$@) || { rm $@; exit 1; }
+	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl set-controller $(BRIDGE) $(call default,CONTROLLER,$*) &> $(call log,$@) \
+	 && touch $@
 
 # xxx this probably needs a more thorough cleanup in cache/
 cache/stop.%: del-bridge.%
@@ -175,42 +176,46 @@ cache/stop.%: del-bridge.%
 
 ### link-oriented targets
 # L/<nodeid>-<node_id>
-L/%: cache/link.%@1 cache/link.%@2
+L/%: cache/endpoint.%@1 cache/endpoint.%@2
 	@touch $@
-	@echo "Created link $*"
+	@echo "Link $* is up"
 
 U/%: del-iface.%@1 del-iface.%@2
 	@rm -f L/$*
 	@echo "Deleted link $*"
 
-del-bridge.%: cache/db.%
+del-bridge.%: | cache/db.%
 	@echo "Deleting bridge on $(call display,$*)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-bridge $(BRIDGE);
 	@rm -f cache/bridge.$* \
 	      cache/iface.$*$(SEP)*@1 cache/iface.*$(SEP)$*@2 \
-	      cache/link.$*$(SEP)*@?  cache/link.*$(SEP)$*@?  \
+	      cache/port.$*$(SEP)*@1  cache/port.*$(SEP)$*@2  \
+	      cache/endpoint.$*$(SEP)*@?  cache/endpoint.*$(SEP)$*@?  \
 	      L/$*$(SEP)*	      L/*$(SEP)$*
 
-del-switch.%: del-bridge.%
+del-switch.%:
 	@echo "Shutting down switch on $(call display,$*)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-switch
-	@rm -f cache/switch.$* 
+	@rm -f cache/switch.$* \
+	       cache/port.$*$(SEP)*@1  cache/port.*$(SEP)$*@2  \
+	       cache/endpoint.$*$(SEP)*@2  cache/endpoint.*$(SEP)$*@1  \
+	       L/$*$(SEP)*	      L/*$(SEP)$*
 
 del-db.%:
 	@echo "Shutting down db on $(call display,$*)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-db
 	@rm -f cache/db.$*
 
-del-controller-%:
+del-controller-%: | cache/db.%
 	@echo "Removing controller for $(call display,$*)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-controller $(BRIDGE)
 	@rm -f cache/controller.$*
 
-del-links: $(addprefix U/,$(notdir $(filter-out %.log,$(wildcard L/*))))
+del-links: $(addprefix U/,$(notdir $(wildcard L/*)))
 
-del-switchs: $(addprefix del-,$(notdir $(filter-out %.log,$(wildcard cache/switch.*))))
+del-switchs: $(addprefix del-,$(notdir $(wildcard cache/switch.*)))
 
-del-dbs: $(addprefix del-,$(notdir $(filter-out %.log,$(wildcard cache/db.*))))
+del-dbs: $(addprefix del-,$(notdir $(wildcard cache/db.*)))
 
 shutdown: del-switchs del-dbs
 
@@ -253,11 +258,11 @@ cache/rsnap.links.%:
 
 .SECONDEXPANSION:
 
-del-iface.%: cache/db.$$(call get,%)
+del-iface.%: 
 	@echo "Removing interface for link $(call linkpart,$*) from $(call get,$*)"
 	@$(SSH) $(HOST_$(call get,$*)) \
 		$(SUDO) sliver-ovs del-port L$(call linkpart,$*)
-	@rm -f cache/iface.$* cache/link.$* cache/link.$(call opp,$*)
+	@rm -f cache/iface.$* cache/port.$* cache/endpoint.$* cache/endpoint.$(call opp,$*)
 
 
 ### '%' here is leftid-rightid@{1,2}
@@ -265,25 +270,32 @@ del-iface.%: cache/db.$$(call get,%)
 #linkid=$(call linkpart,%)
 #nodeid=$(call get,%)
 #bridgefile=cache/bridge.$(nodeid)
-cache/iface.%: cache/bridge.$$(call get,%)
+cache/iface.%: cache/bridge.$$(call get,%) | cache/switch.$$(call get,%)
 	@echo "Creating interface for link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs create-port $(BRIDGE) \
-		L$(call linkpart,$(*F)) > $@ 2> $(call log,$@) || { rm $@; exit 1; }
+		L$(call linkpart,$(*F)) &> $(call log,$@) \
+	 && touch $@
+
+cache/port.%: cache/iface.% cache/switch.$$(call get,%)
+	@echo "Getting port number for link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
+	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) \
+		ovs-appctl netdev-tunnel/get-port L$(call linkpart,$(*F)) > $@ 2> $(call log,$@) \
+	 || { rm $@; exit 1; }
 
 
 # linkid=$(call linkpart,%)
 # nodeid=$(call get,%)
 # iface1=cache/iface.%
 # iface2=cache/iface.$(call opp,%)
-cache/link.%: cache/host.$$(call rget,%) cache/iface.% cache/iface.$$(call opp,%)
+cache/endpoint.%: cache/host.$$(call rget,%) cache/port.$$(call opp,%) cache/iface.%
 	@echo "Setting port number of link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs set-remote-endpoint L$(call linkpart,$(*F)) \
 			$$(cat cache/host.$(call rget,$(*F))) \
-			$$(cat cache/iface.$(call opp,$(*F))) 2> $(call log,$@) \
+			$$(cat cache/port.$(call opp,$(*F))) 2> $(call log,$@) \
 	 && touch $@
 
 ####################
-CLEANTARGETS=$(addprefix del-,$(notdir $(filter-out %.log,$(wildcard cache/bridge.*))))
+CLEANTARGETS=$(addprefix del-,$(notdir $(wildcard cache/bridge.*)))
 clean: $(CLEANTARGETS)
 distclean:
 	rm -rf L log cache
@@ -315,7 +327,7 @@ $(foreach id,$(ALL_NODE_IDS), $(eval $(call node_shortcuts,$(id))))
 
 define link_shortcuts
 iface.%: cache/iface.%
-link.%: cache/link.%
+endpoint.%: cache/endpoint.%
 endef
 
 $(foreach id,$(ALL_LINK_IDS), $(eval $(call link_shortcuts,$(id))))
