@@ -305,13 +305,13 @@ graph.ps: graph.dot
 # SENDER-MUX=SENDER=3=0.5
 # which would mean, the link 'SENDER-MUX' should be monitored at the 'SENDER' node and is coded 
 # in links.json with id=3, every half second
-# sliver-ovs gmap-report is designed to run in background,
+# sliver-ovs gmap-probe is designed to run in background,
 # and so that a new run will kill any previously running instance
-gmap-probes: $(foreach probe,$(GMAP_PROBES),gprobe-$(probe))
+gprobes: $(foreach probe,$(GMAP_PROBES),gprobe-$(probe))
 
 gprobe-%: FORCE
 	$(SSH) -n $(call solve,$(word 2,$(subst @, ,$(*F)))) $(SUDO) \
-	sliver-ovs gmap-report L$(word 1,$(subst @, ,$(*F))) $(GMAP_SERVER) $(word 3,$(subst @, ,$(*F))) $(word 4,$(subst @, ,$(*F)))
+	sliver-ovs gmap-probe L$(word 1,$(subst @, ,$(*F))) $(GMAP_SERVER) $(word 3,$(subst @, ,$(*F))) $(word 4,$(subst @, ,$(*F)))
 
 ####################
 # 'virtual' targets in that there's no real file attached

@@ -267,7 +267,7 @@ function show () {
 # this one-shot function writes the current statistics onto the ndnmap site
 # it needs to be called regularly so that ndnmap can do the bw computations
 # would make sense for the caller to redirect stderr onto some relevant location
-function gmap_report_once () {
+function gmap_probe_once () {
     iface=$1; shift
     hostname=$1; shift
     linkid=$1; shift
@@ -283,7 +283,7 @@ function gmap_report_once () {
 }
 
 ### the front end, manages pid and so on
-function gmap_report () {
+function gmap_probe () {
     iface=$1; shift
     hostname=$1; shift
     linkid=$1; shift
@@ -299,7 +299,7 @@ function gmap_report () {
     exec <&-
     exec >&-
     while true; do
-	gmap_report_once $iface $hostname $linkid
+	gmap_probe_once $iface $hostname $linkid
 	sleep $looptime
     done &
     # this is the pid for the background process
@@ -310,7 +310,7 @@ function gmap_report () {
 SUPPORTED_SUBCOMMANDS="start stop status 
 start_db stop_db start_switch stop_switch
 create_bridge create_port del_bridge del_port
-show set_remote_endpoint set_controller del_controller gmap_report"
+show set_remote_endpoint set_controller del_controller gmap_probe"
 
 function main () {
 	message="Usage: $COMMAND <subcommand> ...
