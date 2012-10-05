@@ -295,6 +295,9 @@ function gmap_report () {
 	[ -n "$pid" ] && kill $pid >& /dev/null
 	rm $pid_file
     fi
+    # close std fds so that ssh invokations can return
+    exec <&-
+    exec >&-
     while true; do
 	gmap_report_once $iface $hostname $linkid
 	sleep $looptime

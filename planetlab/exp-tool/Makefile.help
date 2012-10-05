@@ -62,3 +62,8 @@ make stop
 make status
         list status of db and switch processes in all slivers
 ====================
+make gmap-probes
+	Uses GMAP_SERVER and GMAP_PROBES to run probes in selected slivers
+	that can update a googlemap server for animating link speeds
+	This of course is mostly a demo thing, based on a one-host ndnmap deployment for now
+====================
