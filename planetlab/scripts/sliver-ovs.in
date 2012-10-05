@@ -29,7 +29,7 @@ function error {
 function get_params {
     params=$1; shift
     err_msg="$COMMAND $SUBCOMMAND $(echo $params | perl -pe 's/\S+/<$&>/g')"
-    for p in $(echo $params); do
+    for p in $params; do
         [[ -z "$@" ]] && error "$err_msg"
         pname=$(echo -n $p|perl -pe 's/\W/_/g')
         eval $pname="$1"; shift
@@ -157,19 +157,26 @@ function stop () {
 #################### create functions
 function create_bridge () {
     
-    get_params "bridge IP/PREFIX" "$@"
+    get_params "bridge IP/PREFIX" "$1" "$2"
+    shift; shift;
 
     IP=${IP_PREFIX%/*}
     PREFIX=${IP_PREFIX#*/}
 
-    # ensure ovs-vswitchd is running
-    is_switch_running || { echo "ovs-vswitchd not running" >&2 ; exit 1 ; }
+    W=
+    if ! is_switch_running; then
+    	# we can create the bridge even if ovs-vswitchd is not running,
+	# but we need a running ovsdb-server
+    	is_db_running || { echo "ovsdb-server not running" >&2; exit 1; }
+    	W="--no-wait"
+    fi
+
 
     set -e
-    ovs-vsctl --db=unix:$DB_SOCKET -- --may-exist add-br "$bridge" \
+    ovs-vsctl --db=unix:$DB_SOCKET $W -- --may-exist add-br "$bridge" \
     	-- set bridge "$bridge" datapath_type=planetlab \
-	-- set interface "$bridge" options:local_ip="$IP" option:local_netmask="$PREFIX"
-    ovs-appctl netdev-pltap/get-tapname "$bridge"
+	-- set interface "$bridge" options:local_ip="$IP" option:local_netmask="$PREFIX" \
+	-- "$@"
 }
 
 function create_port () {
