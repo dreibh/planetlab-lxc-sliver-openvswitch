@@ -260,6 +260,7 @@ cache/rsnap.links.%:
 .SECONDEXPANSION:
 
 del-iface.%: 
+del-iface.%: | cache/db.$$(call get,%)
 	@echo "Removing interface for link $(call linkpart,$*) from $(call get,$*)"
 	@$(SSH) $(HOST_$(call get,$*)) \
 		$(SUDO) sliver-ovs del-port L$(call linkpart,$*)
@@ -271,7 +272,7 @@ del-iface.%:
 #linkid=$(call linkpart,%)
 #nodeid=$(call get,%)
 #bridgefile=cache/bridge.$(nodeid)
-cache/iface.%: cache/bridge.$$(call get,%) | cache/switch.$$(call get,%)
+cache/iface.%: cache/bridge.$$(call get,%) | cache/db.$$(call get,%)
 	@echo "Creating interface for link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs create-port $(BRIDGE) \
 		L$(call linkpart,$(*F)) &> $(call log,$@) \

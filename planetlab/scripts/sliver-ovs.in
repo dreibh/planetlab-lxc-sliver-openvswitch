@@ -182,24 +182,34 @@ function create_bridge () {
 function create_port () {
 
     get_params "bridge port" "$@"
-
-    # ensure ovs-vswitchd is running
-    is_switch_running || { echo "ovs-vswitchd not running" >&2 ; exit 1 ; }
+   
+    W=
+    if ! is_switch_running; then
+    	# we can create the port even if ovs-vswitchd is not running,
+	# but we need a running ovsdb-server
+    	is_db_running || { echo "ovsdb-server not running" >&2; exit 1; }
+    	W="--no-wait"
+    fi
 
     set -e
-    ovs-vsctl --db=unix:$DB_SOCKET -- --may-exist add-port "$bridge" "$port" -- set interface "$port" type=tunnel
-    ovs-appctl --target=ovs-vswitchd netdev-tunnel/get-port "$port"
+    ovs-vsctl --db=unix:$DB_SOCKET $W -- --may-exist add-port "$bridge" "$port" \
+        -- set interface "$port" type=tunnel
 }
 
 function set_remote_endpoint () {
 
     get_params "local_port remote_ip remote_UDP_port" "$@"
 
-    # ensure ovs-vswitchd is running
-    is_switch_running || { echo "ovs-vswitchd not running" >&2 ; exit 1 ; }
+    W=
+    if ! is_switch_running; then
+    	# we can store the info even if ovs-vswitchd is not running,
+	# but we need a running ovsdb-server
+    	is_db_running || { echo "ovsdb-server not running" >&2; exit 1; }
+    	W="--no-wait"
+    fi
 
     set -e
-    ovs-vsctl --db=unix:$DB_SOCKET set interface $local_port \
+    ovs-vsctl --db=unix:$DB_SOCKET $W set interface $local_port \
         options:remote_ip=$remote_ip \
 	options:remote_port=$remote_UDP_port
 }
