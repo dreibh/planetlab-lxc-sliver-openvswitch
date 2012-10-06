@@ -176,15 +176,29 @@ cache/stop.%: del-bridge.%
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop && rm cache/switch.$* cache/db.$*
 
 ### link-oriented targets
-# L/<nodeid>-<node_id>
+# L/<nodeid1>-<node_id2>:
+# 	Establish a link between nodes <node_id1> and <node_id2>
 L/%: cache/endpoint.%@1 cache/endpoint.%@2
 	@touch $@
 	@echo "Link $* is up"
 
+# U/<node_id1>-<node_id2>
+# 	Tear down the link between nodes <node_id1> and <node_id2>
 U/%: del-iface.%@1 del-iface.%@2
 	@rm -f L/$*
 	@echo "Deleted link $*"
 
+# del-bridge.<node_id>: Delete the bridge on node <node_id>.
+#
+# We can do this only if the db on node <node_id> is running, but
+# we don't need to re-delete if the db is restarted (hence the
+# order-only dependency).
+#
+# Deleting a bridge also deletes all interfaces of the bridge
+# as a side effect. This in turn invalidates local tunnel
+# port numbers and endpoint info on both sides of each affected tunnel.
+# The corresponding links obviously go down. We invalidate the
+# cache accordingly.
 del-bridge.%: | cache/db.%
 	@echo "Deleting bridge on $(call display,$*)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-bridge $(BRIDGE);
@@ -194,6 +208,13 @@ del-bridge.%: | cache/db.%
 	      cache/endpoint.$*$(SEP)*@?  cache/endpoint.*$(SEP)$*@?  \
 	      L/$*$(SEP)*	      L/*$(SEP)$*
 
+# del-switch.<node_id>: Stops the switch daemon on <node_id>.
+#
+# As a side effect, the local port numbers of the tunnels
+# are no longer valid (they will change when the daemon is restarted)
+# and, therefore, the endpoint info on the remote side of
+# the tunnels must be invalidated. The links also go down.
+# We invalidate the cache accordingly.
 del-switch.%:
 	@echo "Shutting down switch on $(call display,$*)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-switch
@@ -202,22 +223,33 @@ del-switch.%:
 	       cache/endpoint.$*$(SEP)*@2  cache/endpoint.*$(SEP)$*@1  \
 	       L/$*$(SEP)*	      L/*$(SEP)$*
 
+# del-db.<node_id>: Stops the db daemon on <node_id>.
+#
+# This has no additional side effects.
 del-db.%:
 	@echo "Shutting down db on $(call display,$*)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs stop-db
 	@rm -f cache/db.$*
 
+# del-controller.<node_id>:
+# 	Detaches <node_id> from the controller.
+#
+# This has no additional side effects.
 del-controller-%: | cache/db.%
 	@echo "Removing controller for $(call display,$*)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-controller $(BRIDGE)
 	@rm -f cache/controller.$*
 
+# del-links: Shortcut to delete all currently up links.
 del-links: $(addprefix U/,$(notdir $(wildcard L/*)))
 
+# del-switchs: Shortcut to stop all currently running switch daemons.
 del-switchs: $(addprefix del-,$(notdir $(wildcard cache/switch.*)))
 
+# del-dbs: Shortcut to stop all currently running db daemona.s
 del-dbs: $(addprefix del-,$(notdir $(wildcard cache/db.*)))
 
+# shutdown: Shortcut to stop all currently running daemons.
 shutdown: del-switchs del-dbs
 
 .PHONY: del-links del-switchs del-dbs shutdown
@@ -259,7 +291,15 @@ cache/rsnap.links.%:
 
 .SECONDEXPANSION:
 
-del-iface.%: 
+# del-iface.<node_id>-<node_id>@<endpoint>:
+# 	Deletes the interface of link <node_id1>-<node_id2> on either
+# 	<node_id1> or <node_id2>, according to <endpoint>.
+# 
+# We need a running db daemon to do this, but we do not have to
+# redo the delete if the db daemon is restarted.
+#
+# This also invalidates the local port of the tunnel and the endpoint
+# info on both sides of the tunnel.
 del-iface.%: | cache/db.$$(call get,%)
 	@echo "Removing interface for link $(call linkpart,$*) from $(call get,$*)"
 	@$(SSH) $(HOST_$(call get,$*)) \
@@ -272,12 +312,29 @@ del-iface.%: | cache/db.$$(call get,%)
 #linkid=$(call linkpart,%)
 #nodeid=$(call get,%)
 #bridgefile=cache/bridge.$(nodeid)
+
+# cache/iface.<node_id1>-<node_id2>@<endpoint>:
+# 	Creates the interface for link <node_id1>-<node_id2> on
+# 	<node_id<endpoint>>. 
+#
+# The bridge of the local node must already exist, and we need to create
+# the interface again if the bridge is re-created.
+# We also need a running db daemon, but we do not need to do anything
+# if the db daemon is restarted.
 cache/iface.%: cache/bridge.$$(call get,%) | cache/db.$$(call get,%)
 	@echo "Creating interface for link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs create-port $(BRIDGE) \
 		L$(call linkpart,$(*F)) &> $(call log,$@) \
 	 && touch $@
 
+# cache/port.<node_id1>-<node_id2>@<endpoint>:
+# 	Retrieves the local port of link <node_id1>-<node_id2> on
+# 	node <node_id<endpoint>>.
+#
+# The local interface must have been created already and the
+# switch daemon must be running. We need to retrieve the port
+# number again if the interface is re-created, or the switch
+# daemon is restarted.
 cache/port.%: cache/iface.% cache/switch.$$(call get,%)
 	@echo "Getting port number for link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) \
@@ -289,6 +346,13 @@ cache/port.%: cache/iface.% cache/switch.$$(call get,%)
 # nodeid=$(call get,%)
 # iface1=cache/iface.%
 # iface2=cache/iface.$(call opp,%)
+
+# cache/endpoint.<node_id1>-<node_id2>@<endpoint>:
+# 	Sets the other side (IP address, UDP port) info for link <node_id1>-<node_id2>
+# 	on <node_id<endpoint>>.
+#
+# We need the IP address and the UDP port of the other side and the interace of this side.
+# We need to set the info again if any of these change.
 cache/endpoint.%: cache/host.$$(call rget,%) cache/port.$$(call opp,%) cache/iface.%
 	@echo "Setting port number of link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs set-remote-endpoint L$(call linkpart,$(*F)) \
