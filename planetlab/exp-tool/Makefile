@@ -299,12 +299,14 @@ cache/rsnap.links.%:
 # redo the delete if the db daemon is restarted.
 #
 # This also invalidates the local port of the tunnel and the endpoint
-# info on both sides of the tunnel.
+# info on both sides of the tunnel. The link goes down.
 del-iface.%: | cache/db.$$(call get,%)
 	@echo "Removing interface for link $(call linkpart,$*) from $(call get,$*)"
 	@$(SSH) $(HOST_$(call get,$*)) \
 		$(SUDO) sliver-ovs del-port L$(call linkpart,$*)
-	@rm -f cache/iface.$* cache/port.$* cache/endpoint.$* cache/endpoint.$(call opp,$*)
+	@rm -f cache/iface.$* \
+	       cache/port.$* cache/endpoint.$* cache/endpoint.$(call opp,$*) \
+	       L/$(call linkpart,$*)
 
 
 ### '%' here is leftid-rightid@{1,2}
