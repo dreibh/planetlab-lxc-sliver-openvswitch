@@ -197,8 +197,9 @@ U/%: del-iface.%@1 del-iface.%@2
 # Deleting a bridge also deletes all interfaces of the bridge
 # as a side effect. This in turn invalidates local tunnel
 # port numbers and endpoint info on both sides of each affected tunnel.
-# The corresponding links obviously go down. We invalidate the
-# cache accordingly.
+# The corresponding links obviously go down. 
+# Controller information is also lost.
+# We invalidate the cache accordingly.
 del-bridge.%: | cache/db.%
 	@echo "Deleting bridge on $(call display,$*)"
 	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-bridge $(BRIDGE);
@@ -206,7 +207,8 @@ del-bridge.%: | cache/db.%
 	      cache/iface.$*$(SEP)*@1 cache/iface.*$(SEP)$*@2 \
 	      cache/port.$*$(SEP)*@1  cache/port.*$(SEP)$*@2  \
 	      cache/endpoint.$*$(SEP)*@?  cache/endpoint.*$(SEP)$*@?  \
-	      L/$*$(SEP)*	      L/*$(SEP)$*
+	      L/$*$(SEP)*	      L/*$(SEP)$* \
+	      cache/controller.$*
 
 # del-switch.<node_id>: Stops the switch daemon on <node_id>.
 #
@@ -214,6 +216,7 @@ del-bridge.%: | cache/db.%
 # are no longer valid (they will change when the daemon is restarted)
 # and, therefore, the endpoint info on the remote side of
 # the tunnels must be invalidated. The links also go down.
+# Controller information is also lost.
 # We invalidate the cache accordingly.
 del-switch.%:
 	@echo "Shutting down switch on $(call display,$*)"
@@ -221,7 +224,8 @@ del-switch.%:
 	@rm -f cache/switch.$* \
 	       cache/port.$*$(SEP)*@1  cache/port.*$(SEP)$*@2  \
 	       cache/endpoint.$*$(SEP)*@2  cache/endpoint.*$(SEP)$*@1  \
-	       L/$*$(SEP)*	      L/*$(SEP)$*
+	       L/$*$(SEP)*	      L/*$(SEP)$* \
+	       cache/controller.$*
 
 # del-db.<node_id>: Stops the db daemon on <node_id>.
 #
@@ -404,6 +408,7 @@ stop.$(1): cache/stop.$(1) FORCE
 status.$(1): cache/status.$(1) FORCE
 bridge.$(1): cache/bridge.$(1) FORCE
 host.$(1): cache/host.$(1) FORCE
+controller.$(1): cache/controller.$(1) FORCE
 # switch already depends on db, but well
 cache/start.$(1): cache/db.$(1) cache/switch.$(1) FORCE
 endef
