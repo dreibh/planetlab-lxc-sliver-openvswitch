@@ -101,6 +101,8 @@ ovsversions: $(foreach id,$(ALL_NODE_IDS),ovsversion-$(id))
 # more general form; run with  make sshs SSH-COMMAND="bla bla bla"
 sshs: $(foreach id,$(ALL_NODE_IDS),ssh-$(id))
 .PHONY: sshs
+showdpids: $(foreach id,$(ALL_NODE_IDS),showdpid-$(id))
+.PHONY: showdpids
 
 DBS=$(foreach id,$(ALL_NODE_IDS),cache/db.$(id))
 dbs: $(DBS)
@@ -141,6 +143,9 @@ ovsversion-%: FORCE
 
 ssh-%: FORCE
 	@$(SSH) $(HOST_$*) $(SUDO) $(SSH-COMMAND)
+
+showdpid-%: FORCE
+	@echo $(call display,$*) uses dpid=$$( $(SSH) $(HOST_$*) $(SUDO) ovs-vsctl get bridge $(BRIDGE) datapath_id)
 
 # should probably replace sshcheck
 cache/status.%: FORCE
