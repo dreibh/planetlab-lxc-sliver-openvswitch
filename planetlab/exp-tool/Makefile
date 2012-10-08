@@ -408,6 +408,53 @@ gprobe-%: FORCE
 	$(SSH) -n $(call solve,$(word 2,$(subst @, ,$(*F)))) $(SUDO) \
 	sliver-ovs gmap-probe L$(word 1,$(subst @, ,$(*F))) $(GMAP_SERVER) $(word 3,$(subst @, ,$(*F))) $(word 4,$(subst @, ,$(*F)))
 
+jsons: routers.json links.json geocode.json
+.PHONE: jsons
+
+routers.json: $(CONF)
+	@{  echo "[";   \
+	    sep="  ";   \
+	    for n in $(CONF_NODE_IDS); do \
+	        echo "    $$sep\"$$n\"";  \
+	        sep=", "; \
+	    done; \
+	    echo "]"; \
+	  } > $@
+
+links.json: $(foreach l,$(LINKS),cache/json.$(l))
+	@{  echo "["; \
+	    cat $^ | sed '2,$$s/^/, /'; \
+	    echo "]"; \
+	 } > $@
+
+cache/json.%: $(CONF)
+	@echo "{\"id\": $($*_linkid), \"start\": \"$(call get,$*@1)\", \"end\": \"$(call get,$*@2)\"}" > $@
+
+geocode.json: $(foreach n,$(CONF_NODE_IDS),cache/geocode.$(n))
+	@{  echo "{"; \
+	    sep="  "; \
+	    for f in $^; do \
+	        echo -n "$$sep"; \
+		cat $$f; \
+		sep=", "; \
+	    done; \
+	    echo "}"; \
+	 } > $@
+	     
+cache/geocode.%: cache/loc.% $(CONF)
+	@{  echo "\"$*\": {"; \
+	    echo "    \"name\": \"$(HOST_$*)\","; \
+	    echo "    \"shortname\": \"$*\","; \
+	    echo "    \"site\": \"\","; \
+	    echo "    \"backbone\": false,"; \
+	    echo "    \"position\": [ $(shell cat cache/loc.$*) ]"; \
+	    echo "   }"; \
+	 } > $@
+
+cache/loc.%: $(CONF)
+	@wget -O - 'http://freegeoip.net/csv/$(HOST_$*)' | \
+	    awk -F, '{ printf "%s, %s\n", $$8, $$9 }' > $@
+
 ####################
 # 'virtual' targets in that there's no real file attached
 define node_shortcuts
