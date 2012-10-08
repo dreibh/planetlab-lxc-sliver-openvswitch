@@ -168,12 +168,12 @@ cache/bridge.%: | cache/db.%
 	@echo "Creating bridge on $(call display,$*) - logs in $(call log,$@)"
 	@$(SSH) $(HOST_$*) $(SUDO) \
 		sliver-ovs create-bridge $(BRIDGE) $(IP_$*) $(call default,BROPTIONS,$*) &> $(call log,$@) \
-	 && touch $@
+	 && { echo "IP_$*=$(IP_$*)"; echo "BROPTIONS_$*=$(call default,BROPTIONS,$*)"; } > $@
 
 cache/controller.%: cache/bridge.%
 	@echo "Setting controller $(call default,CONTROLLER,$*) on $(call display,$*) - logs in $(call log,$@)"
 	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl set-controller $(BRIDGE) $(call default,CONTROLLER,$*) &> $(call log,$@) \
-	 && touch $@
+	 && echo "CONTROLLER_$*=$(call default,CONTROLLER,$*)" > $@
 
 # xxx this probably needs a more thorough cleanup in cache/
 cache/stop.%: del-bridge.%
@@ -265,6 +265,12 @@ shutdown: del-switchs del-dbs
 
 
 ### snapshots
+snapshot:
+	@echo BRIDGE=$(BRIDGE)
+	@cat cache/bridge.* 2>/dev/null || :
+	@cat cache/controller.* 2>/dev/null || :
+	@ls L | sed 's/^/LINKS += /'
+
 remote-snapshot: remote-snapshot-ips remote-snapshot-links
 	@true
 
