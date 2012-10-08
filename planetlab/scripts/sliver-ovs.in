@@ -286,6 +286,26 @@ function show () {
     ovs-vsctl --db=unix:$DB_SOCKET show
 }
 
+function get_local_ip () {
+
+    get_params "bridge" "$@"
+
+    set -e
+    ovs-vsctl --db=unix:$DB_SOCKET br-exists "$bridge" || return
+    local ip=$(ovs-vsctl get interface "$bridge" options:local_ip)
+    local netmask=$(ovs-vsctl get interface "$bridge" options:local_netmask)
+    eval echo $ip/$netmask
+}
+
+function get_local_links () {
+
+    get_params "bridge" "$@"
+
+    set -e
+    ovs-vsctl --db=unix:$DB_SOCKET br-exists "$bridge" || return
+    ovs-vsctl --db=unix:$DB_SOCKET list-ifaces "$bridge"
+}
+
 ### for demos - connect to an ndnmap deployment to visualize links bandwidth
 # this expects 3 arguments
 # an interface name, L<id1>-<id2> based on your ids in conf.mk
@@ -338,7 +358,8 @@ SUPPORTED_SUBCOMMANDS="start stop status
 start_db stop_db start_switch stop_switch
 create_bridge create_port del_bridge del_port
 show get_local_endpoint set_remote_endpoint
-set_controller del_controller gmap_probe"
+set_controller del_controller gmap_probe
+get_local_ip get_local_links"
 
 function main () {
 	message="Usage: $COMMAND <subcommand> ...

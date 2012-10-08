@@ -274,6 +274,19 @@ remote-snapshot-ips: $(addprefix cache/rsnap.ip.,$(CONF_NODE_IDS))
 remote-snapshot-links: $(addprefix cache/rsnap.links.,$(CONF_NODE_IDS))
 	@sort -u /dev/null $^
 
+.PHONY: remote-snapshot remote-snapshot-ips remote-snapshot-links
+
+
+cache/rsnap.ip.%: FORCE
+	@$(SSH) $(HOST_$*) $(SUDO) \
+		sliver-ovs get-local-ip $(BRIDGE) | sed 's/^/IP_$*=/' > $@ \
+	 || { rm $@; exit 1; }
+
+cache/rsnap.links.%: FORCE
+	@$(SSH) $(HOST_$*) $(SUDO) \
+		sliver-ovs get-local-links $(BRIDGE) | sed -n 's/^L/LINKS += /p' > $@ \
+	 || { rm $@; exit 1; }
+
 ### update sliver-ovs
 update: $(addprefix update-,$(CONF_NODE_IDS))
 	@true
@@ -284,19 +297,6 @@ update-%: FORCE
 	@echo "Sending $(SLIVER_OVS) to $(call display,$*)"
 	@scp -q $(SLIVER_OVS) $(SLICE)@$(call solve,$*):
 	@$(SSH) $(call solve,$*) $(SUDO) mv $(notdir $(SLIVER_OVS)) /usr/sbin/sliver-ovs
-
-.PHONY: remote-snapshot remote-snapshot-ips remote-snapshot-links
-
-cache/rsnap.ip.%: 
-	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl -- \
-		get interface $(BRIDGE) options:local_ip options:local_netmask |\
-		sed -n 's|"||g;1h;2{G;s|\(.*\)\n\(.*\)|IP_$* = \2/\1|p}' > $@ || \
-	 { rm $@; exit 1; }
-
-cache/rsnap.links.%: 
-	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl list-ifaces $(BRIDGE) | \
-	 sed -n 's/^L/LINKS += /p' > $@ || \
-	 { rm $@; exit 1; }
 
 .SECONDEXPANSION:
 
