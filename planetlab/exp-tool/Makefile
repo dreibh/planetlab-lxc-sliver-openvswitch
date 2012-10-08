@@ -349,7 +349,7 @@ cache/iface.%: cache/bridge.$$(call get,%) | cache/db.$$(call get,%)
 cache/port.%: cache/iface.% cache/switch.$$(call get,%)
 	@echo "Getting port number for link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) \
-		ovs-appctl netdev-tunnel/get-port L$(call linkpart,$(*F)) > $@ 2> $(call log,$@) \
+		sliver-ovs get-local-endpoint L$(call linkpart,$(*F)) > $@ 2> $(call log,$@) \
 	 || { rm $@; exit 1; }
 
 

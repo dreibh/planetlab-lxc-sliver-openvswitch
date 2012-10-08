@@ -196,6 +196,16 @@ function create_port () {
         -- set interface "$port" type=tunnel
 }
 
+function get_local_endpoint () {
+
+    get_params "local_port" "$@"
+
+    is_switch_running || { echo "ovs-vswitchd not running" >&2; exit 1; }
+
+    set -e
+    ovs-appctl --target=ovs-vswitchd netdev-tunnel/get-port "$local_port"
+}
+
 function set_remote_endpoint () {
 
     get_params "local_port remote_ip remote_UDP_port" "$@"
@@ -327,7 +337,8 @@ function gmap_probe () {
 SUPPORTED_SUBCOMMANDS="start stop status 
 start_db stop_db start_switch stop_switch
 create_bridge create_port del_bridge del_port
-show set_remote_endpoint set_controller del_controller gmap_probe"
+show get_local_endpoint set_remote_endpoint
+set_controller del_controller gmap_probe"
 
 function main () {
 	message="Usage: $COMMAND <subcommand> ...
