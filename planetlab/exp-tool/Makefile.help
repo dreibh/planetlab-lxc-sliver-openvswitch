@@ -2,6 +2,21 @@ in almost all cases below it is recommended to use the -j option to make
 which was the point with uing make in the first place
 so that maximum degree of parallelism can be reached
 
+**********************************************************
+Note: to get the greatest speedup from make -j you should also enable
+connection reuse in your ssh setup, e.g., by having the following lines
+in your .ssh/config:
+host *
+	ControlMaster auto
+	ControlPath ~/.ssh/ssh_mux_%h_%p_%r
+	ControlPersist 4h
+
+Please note, however, that maximum concurrent per-node reuse is usually
+set to something low (typically 10), and this is a problem if some node
+in your topology has many links. In this case you should raise that limit
+on the slivers, or limit makefile concurrency (e.g., by using make -j10).
+**********************************************************
+
 ==================== usual target
 make [init+all]
         shortcut for 'make init all'
