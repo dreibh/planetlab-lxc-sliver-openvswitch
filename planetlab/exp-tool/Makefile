@@ -145,7 +145,7 @@ ssh-%: FORCE
 	@$(SSH) $(HOST_$*) $(SUDO) $(SSH-COMMAND)
 
 showdpid-%: FORCE
-	@echo $(call display,$*) uses dpid=$$( $(SSH) $(HOST_$*) $(SUDO) ovs-vsctl get bridge $(BRIDGE) datapath_id)
+	@echo $*_DPID=0x$$( $(SSH) $(HOST_$*) $(SUDO) ovs-vsctl get bridge $(BRIDGE) datapath_id | sed -e 's,",,g')
 
 # should probably replace sshcheck
 cache/status.%: FORCE
