@@ -103,7 +103,8 @@ sshs: $(foreach id,$(ALL_NODE_IDS),ssh-$(id))
 .PHONY: sshs
 showdpids: $(foreach id,$(ALL_NODE_IDS),showdpid-$(id))
 .PHONY: showdpids
-
+showmacs: $(foreach id,$(ALL_NODE_IDS),showmac-$(id))
+.PHONY: showmacs
 showports: $(foreach id,$(ALL_NODE_IDS),showports-$(id))
 .PHONY: showports
 
@@ -150,11 +151,13 @@ ssh-%: FORCE
 showdpid-%: FORCE
 	@echo $*_DPID=0x$$( $(SSH) $(HOST_$*) $(SUDO) ovs-vsctl get bridge $(BRIDGE) datapath_id | sed -e 's,",,g')
 
+showmac-%: FORCE
+	@echo $*_MAC=$$( $(SSH) $(HOST_$*) $(SUDO) sliver-ovs show-mac)
+
 showports-%: FORCE
 	@$(SSH) $(HOST_$*) $(SUDO) ovs-ofctl show $(BRIDGE) \
 		| perl -nle '/(\d+)\(L(.*?)\Q$(SEP)\E(.*?)\):/ && \
 			print "PORT_".("$$2" eq "$*" ? "$$2_$$3" : "$$3_$$2")."=$$1"'
-
 # should probably replace sshcheck
 cache/status.%: FORCE
 	@echo "=== DB and SWITCH processes on $(call display,$*)"
