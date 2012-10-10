@@ -86,6 +86,9 @@ showslice: ++SLICE FORCE
 shownodes:
 	@$(foreach id,$(ALL_NODE_IDS),echo $(id)=$(call display,$(id));)
 showhostnames: ++ALL_NODE_HOSTS
+# xxx missing: something that outputs raw python stuff like
+# SEND_IP="10.0.16.1"
+# that would belong in the export to OF
 showips:
 	@$(foreach id,$(ALL_NODE_IDS),echo $(id)=$(call display,$(id)) has ip/network set to $(IP_$(id));)
 showlinks:
@@ -152,7 +155,7 @@ showdpid-%: FORCE
 	@echo $*_DPID=0x$$( $(SSH) $(HOST_$*) $(SUDO) ovs-vsctl get bridge $(BRIDGE) datapath_id | sed -e 's,",,g')
 
 showmac-%: FORCE
-	@echo $*_MAC=$$( $(SSH) $(HOST_$*) $(SUDO) sliver-ovs show-mac)
+	@echo $*_MAC=\"$$( $(SSH) $(HOST_$*) $(SUDO) sliver-ovs show-mac)\"
 
 showports-%: FORCE
 	@$(SSH) $(HOST_$*) $(SUDO) ovs-ofctl show $(BRIDGE) \
