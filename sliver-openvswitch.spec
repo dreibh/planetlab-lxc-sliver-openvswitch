@@ -2,7 +2,7 @@
 # to check for any change:
 # grep AC_INIT configure.ac 
 %define version 1.8.90
-%define taglevel 4
+%define taglevel 5
 
 %define debug_package %{nil}
 
@@ -49,6 +49,13 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Tue Oct 16 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.8.90-5
+- numerous additional make targets for finer control (use make help)
+- including gprobe for reporting traffic to an ndnmap instance
+- related, more functions in sliver-ovs as well, like exposing
+- detailed info (mac, dpids..) relevant to the OF controller
+- retrieving rx_bytes/tx_bytes (fixed) accessible through ovs-appctl
+
 * Fri Sep 28 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.8.90-4
 - fix file descriptor leaks
 
