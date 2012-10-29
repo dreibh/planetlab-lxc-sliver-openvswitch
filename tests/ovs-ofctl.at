@@ -10,6 +10,8 @@ tcp,nw_src=192.168.0.3,tp_dst=80 actions=set_queue:37,output:1
 udp,nw_src=192.168.0.3,tp_dst=53 actions=pop_queue,output:1
 cookie=0x123456789abcdef hard_timeout=10 priority=60000 actions=controller
 actions=note:41.42.43,note:00.01.02.03.04.05.06.07,note
+actions=set_field:fe80:0123:4567:890a:a6ba:dbff:fefe:59fa->ipv6_src
+in_port=0 actions=resubmit:0
 ]])
 
 AT_CHECK([ovs-ofctl parse-flows flows.txt
@@ -24,6 +26,8 @@ OFPT_FLOW_MOD: ADD tcp,nw_src=192.168.0.3,tp_dst=80 actions=set_queue:37,output:
 OFPT_FLOW_MOD: ADD udp,nw_src=192.168.0.3,tp_dst=53 actions=pop_queue,output:1
 OFPT_FLOW_MOD: ADD priority=60000 cookie:0x123456789abcdef hard:10 actions=CONTROLLER:65535
 OFPT_FLOW_MOD: ADD actions=note:41.42.43.00.00.00,note:00.01.02.03.04.05.06.07.00.00.00.00.00.00,note:00.00.00.00.00.00
+OFPT_FLOW_MOD: ADD actions=load:0xa6badbfffefe59fa->NXM_NX_IPV6_SRC[0..63],load:0xfe8001234567890a->NXM_NX_IPV6_SRC[64..127]
+OFPT_FLOW_MOD: ADD in_port=0 actions=resubmit:0
 ]])
 AT_CLEANUP
 
@@ -836,20 +840,20 @@ xxxxxxxx c0a88055 xxxx xxxx
 003220ef xxxx xxxxxxxxxxxx xxxxxxxxxxxx xxxx xx xx 0800 xx xx xxxx dnl
 xxxxxxxx c0a88055 xxxx xxxx
 
-# arp,nw_src=192.168.128.85
+# arp,arp_spa=192.168.128.85
 003800ef xxxx xxxxxxxxxxxx xxxxxxxxxxxx xxxx xx xx 0806 xx xx xxxx dnl
 c0a88055 xxxxxxxx xxxx xxxx
 
-# arp,nw_src=192.168.128.0/24
+# arp,arp_spa=192.168.128.0/24
 # 31: 55 -> 00
 003808ef xxxx xxxxxxxxxxxx xxxxxxxxxxxx xxxx xx xx 0806 xx xx xxxx dnl
 c0a88055 xxxxxxxx xxxx xxxx
 
-# arp,nw_dst=192.168.128.85
+# arp,arp_tpa=192.168.128.85
 003020ef xxxx xxxxxxxxxxxx xxxxxxxxxxxx xxxx xx xx 0806 xx xx xxxx dnl
 xxxxxxxx c0a88055 xxxx xxxx
 
-# arp,nw_dst=192.168.128.0/24
+# arp,arp_tpa=192.168.128.0/24
 # 35: 55 -> 00
 003220ef xxxx xxxxxxxxxxxx xxxxxxxxxxxx xxxx xx xx 0806 xx xx xxxx dnl
 xxxxxxxx c0a88055 xxxx xxxx
@@ -1105,13 +1109,13 @@ dnl Try invalid TOS:
 0000 00 00 0800 00 00 00000000ffffffff c0a880005a5a5a5a 0000 0000 dnl
 00000000 00 000000 0000000000000000ffffffffffffffff
 
-# arp,nw_src=192.168.128.0/24
+# arp,arp_spa=192.168.128.0/24
 0000 0058 00000000 000003f7 dnl
 000000000000ffffffffffff 000000000000ffffffffffff dnl
 0000 00 00 0806 00 00 c0a88000000000ff 00000000ffffffff 0000 0000 dnl
 00000000 00 000000 0000000000000000ffffffffffffffff
 
-# arp,nw_dst=192.168.128.0/24
+# arp,arp_tpa=192.168.128.0/24
 0000 0058 00000000 000003f7 dnl
 000000000000ffffffffffff 000000000000ffffffffffff dnl
 0000 00 00 0806 00 00 00000000ffffffff c0a88000000000ff 0000 0000 dnl

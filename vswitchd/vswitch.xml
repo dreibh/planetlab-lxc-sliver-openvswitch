@@ -1199,6 +1199,21 @@
             IPsec tunnel.
           </dd>
 
+          <dt><code>gre64</code></dt>
+          <dd>
+            It is same as GRE, but it allows 64 bit key. To store higher 32-bits
+            of key, it uses GRE protocol sequence number field. This is non
+            standard use of GRE protocol since OVS does not increment
+            sequence number for every packet at time of encap as expected by
+            standard GRE implementation. See <ref group="Tunnel Options"/>
+            for information on configuring GRE tunnels.
+          </dd>
+
+          <dt><code>ipsec_gre64</code></dt>
+          <dd>
+            Same as IPSEC_GRE except 64 bit key.
+          </dd>
+
           <dt><code>capwap</code></dt>
           <dd>
             An Ethernet tunnel over the UDP transport portion of CAPWAP (RFC
@@ -1224,7 +1239,8 @@
     <group title="Tunnel Options">
       <p>
         These options apply to interfaces with <ref column="type"/> of
-        <code>gre</code>, <code>ipsec_gre</code>, and <code>capwap</code>.
+        <code>gre</code>, <code>ipsec_gre</code>, <code>gre64</code>,
+        <code>ipsec_gre64</code>, and <code>capwap</code>.
       </p>
 
       <p>
@@ -1350,7 +1366,7 @@
         of the tunnel headers.  Note that this option causes behavior that is
         typically reserved for routers and therefore is not entirely in
         compliance with the IEEE 802.1D specification for bridges.  Default is
-        enabled; set to <code>false</code> to disable.
+        disabled; set to <code>true</code> to enable.
       </column>
 
       <group title="Tunnel Options: gre only">
@@ -1702,6 +1718,12 @@
         faulted otherwise.
       </p>
 
+      <p>
+          When operating over tunnels which have no <code>in_key</code>, or an
+          <code>in_key</code> of <code>flow</code>.  CFM will only accept CCMs
+          with a tunnel key of zero.
+      </p>
+
       <column name="cfm_mpid">
         A Maintenance Point ID (MPID) uniquely identifies each endpoint within
         a Maintenance Association.  The MPID is used to identify this endpoint
@@ -1857,7 +1879,7 @@
       <column name="other_config" key="cfm_ccm_pcp"
         type='{"type": "integer", "minInteger": 1, "maxInteger": 7}'>
         When set, the CFM module will apply a VLAN tag to all CCMs it generates
-        with the given PCP value.  The VLAN ID of the tag is governed by the
+        with the given PCP value, the VLAN ID of the tag is governed by the
         value of <ref column="other_config" key="cfm_ccm_vlan"/>. If
         <ref column="other_config" key="cfm_ccm_vlan"/> is unset, a VLAN ID of
         zero is used.

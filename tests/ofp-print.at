@@ -337,7 +337,7 @@ c0 a8 00 02 27 2f 00 00 78 50 cc 5b 57 af 42 1e \
 50 00 02 00 26 e8 00 00 00 00 00 00 00 00 \
 "], [0], [dnl
 OFPT_PACKET_IN (xid=0x0): total_len=60 in_port=3 (via no_match) data_len=60 buffer=0x00000111
-priority:0,tunnel:0,metadata:0,in_port:0000,tci(0) mac(50:54:00:00:00:05->50:54:00:00:00:06) type:0800 proto:6 tos:0 ttl:64 ip(192.168.0.1->192.168.0.2) port(10031->0) tcp_csum:26e8
+priority=0,tcp,metadata=0,in_port=0,vlan_tci=0x0000,dl_src=50:54:00:00:00:05,dl_dst=50:54:00:00:00:06,nw_src=192.168.0.1,nw_dst=192.168.0.2,nw_tos=0,nw_ecn=0,nw_ttl=64,tp_src=10031,tp_dst=0 tcp_csum:26e8
 ])
 AT_CLEANUP
 
@@ -351,7 +351,7 @@ AT_CHECK([ovs-ofctl ofp-print "\
 00 00 00 23 20 83 c1 5f 00 00 00 00 \
 "], [0], [dnl
 OFPT_PACKET_IN (OF1.2) (xid=0x0): total_len=42 in_port=LOCAL (via no_match) data_len=42 buffer=0xffffff00
-priority:0,tunnel:0,metadata:0,in_port:0000,tci(0) mac(00:23:20:83:c1:5f->ff:ff:ff:ff:ff:ff) type:8035
+priority=0,metadata=0,in_port=0,vlan_tci=0x0000,dl_src=00:23:20:83:c1:5f,dl_dst=ff:ff:ff:ff:ff:ff,dl_type=0x8035
 ])
 AT_CLEANUP
 
@@ -365,7 +365,7 @@ AT_CHECK([ovs-ofctl ofp-print "\
 30 e0 35 00 00 05 00 00 00 00 00 00 00 00 00 01 \
 00 00 00 00 00 00 00 3c \
 "], [0], [dnl
-OFPT_FLOW_REMOVED (xid=0x0): priority=65535,arp,in_port=3,vlan_tci=0x0000,dl_src=50:54:00:00:00:05,dl_dst=50:54:00:00:00:06,nw_src=192.168.0.1,nw_dst=192.168.0.2,arp_op=2,nw_tos=0,tp_src=0,tp_dst=0 reason=idle duration5.82s idle5 pkts1 bytes60
+OFPT_FLOW_REMOVED (xid=0x0): priority=65535,arp,in_port=3,vlan_tci=0x0000,dl_src=50:54:00:00:00:05,dl_dst=50:54:00:00:00:06,arp_spa=192.168.0.1,arp_tpa=192.168.0.2,arp_op=2,nw_tos=0,tp_src=0,tp_dst=0 reason=idle duration5.82s idle5 pkts1 bytes60
 ])
 AT_CLEANUP
 
@@ -376,7 +376,7 @@ AT_CHECK([ovs-ofctl ofp-print "\
 80 00 01 05 00 00 00 01 00 98 96 80 00 3c 00 78 \
 00 00 00 00 00 12 d6 87 00 00 00 00 6f 68 ba 66 \
 00 01 00 0a 80 00 0c 02 10 09 00 00 00 00 00 00"], [0], [dnl
-OFPT_FLOW_REMOVED (OF1.2) (xid=0x0): dl_vlan=9 reason=hard cookie:0xfedcba9876543210 duration1.01s idle60 hard120 pkts1234567 bytes1869134438
+OFPT_FLOW_REMOVED (OF1.2) (xid=0x0): dl_vlan=9 reason=hard table_id=5 cookie:0xfedcba9876543210 duration1.01s idle60 hard120 pkts1234567 bytes1869134438
 ])
 AT_CLEANUP
 
@@ -452,11 +452,11 @@ AT_CHECK([ovs-ofctl '-vPATTERN:console:%c|%p|%m' ofp-print "\
 00 00 00 00 00 00 00 00 00 00 00 05 00 00 00 00 \
 00 00 01 0e 00 00 00 00 00 00 00 08 00 03 00 00 \
 " 2], [0], [dnl
-OFPT_FLOW_MOD (xid=0x0): ADD priority=65535,arp,in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,nw_src=192.168.0.2,nw_dst=192.168.0.1,arp_op=2 idle:5 buf:0x10e out_port:0 actions=output:3
+OFPT_FLOW_MOD (xid=0x0): ADD priority=65535,arp,in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,arp_spa=192.168.0.2,arp_tpa=192.168.0.1,arp_op=2 idle:5 buf:0x10e out_port:0 actions=output:3
 ], [dnl
 ofp_util|INFO|normalization changed ofp_match, details:
-ofp_util|INFO| pre: arp,in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,nw_src=192.168.0.2,nw_dst=192.168.0.1,arp_op=2,nw_tos=0,tp_src=0,tp_dst=0
-ofp_util|INFO|post: arp,in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,nw_src=192.168.0.2,nw_dst=192.168.0.1,arp_op=2
+ofp_util|INFO| pre: arp,in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,arp_spa=192.168.0.2,arp_tpa=192.168.0.1,arp_op=2,nw_tos=0,tp_src=0,tp_dst=0
+ofp_util|INFO|post: arp,in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,arp_spa=192.168.0.2,arp_tpa=192.168.0.1,arp_op=2
 ])
 AT_CLEANUP
 
@@ -474,7 +474,7 @@ ff ff ff ff ff ff ff ff ff ff ff ff 00 00 00 00 \
 00 01 00 00 00 00 00 00 00 04 00 18 00 00 00 00 \
 00 00 00 10 00 00 00 03 00 00 00 00 00 00 00 00 \
 " 2], [0], [dnl
-OFPT_FLOW_MOD (OF1.2) (xid=0x2): ADD table:255 priority=65535,arp,in_port=1,vlan_tci=0x0000/0x1fff,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,nw_src=192.168.0.2,nw_dst=192.168.0.1,arp_op=2 actions=output:3
+OFPT_FLOW_MOD (OF1.2) (xid=0x2): ADD table:255 priority=65535,arp,in_port=1,vlan_tci=0x0000/0x1fff,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,arp_spa=192.168.0.2,arp_tpa=192.168.0.1,arp_op=2 actions=output:3
 ], [dnl
 ])
 AT_CLEANUP
@@ -493,8 +493,8 @@ AT_CHECK([ovs-ofctl '-vPATTERN:console:%c|%p|%m' ofp-print "\
 OFPT_FLOW_MOD (xid=0x0): ADD arp,in_port=1,dl_vlan=65535,dl_vlan_pcp=0,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,nw_src=192.168.0.2,nw_dst=192.168.0.1,arp_op=2,nw_tos=0,tp_src=0,tp_dst=0 idle:5 pri:65535 buf:0x10e out_port:0 actions=output:3
 ], [dnl
 ofp_util|INFO|normalization changed ofp_match, details:
-ofp_util|INFO| pre: arp,in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,nw_src=192.168.0.2,nw_dst=192.168.0.1,arp_op=2,nw_tos=0,tp_src=0,tp_dst=0
-ofp_util|INFO|post: arp,in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,nw_src=192.168.0.2,nw_dst=192.168.0.1,arp_op=2
+ofp_util|INFO| pre: arp,in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,arp_spa=192.168.0.2,arp_tpa=192.168.0.1,arp_op=2,nw_tos=0,tp_src=0,tp_dst=0
+ofp_util|INFO|post: arp,in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,arp_spa=192.168.0.2,arp_tpa=192.168.0.1,arp_op=2
 ])
 AT_CLEANUP
 
@@ -512,7 +512,71 @@ ff ff ff ff ff ff ff ff ff ff ff ff 00 00 00 00 \
 00 01 00 00 00 00 00 00 00 04 00 18 00 00 00 00 \
 00 00 00 10 00 00 00 03 00 00 00 00 00 00 00 00 \
 " 2], [0], [dnl
-OFPT_FLOW_MOD (OF1.2) (xid=0x2): ADD table:255 priority=65535,arp,in_port=1,vlan_tci=0x0000/0x1fff,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,nw_src=192.168.0.2,nw_dst=192.168.0.1,arp_op=2 actions=output:3
+OFPT_FLOW_MOD (OF1.2) (xid=0x2): ADD table:255 priority=65535,arp,in_port=1,vlan_tci=0x0000/0x1fff,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,arp_spa=192.168.0.2,arp_tpa=192.168.0.1,arp_op=2 actions=output:3
+], [dnl
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_FLOW_MOD - OF1.2 - set-field ip_src])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl '-vPATTERN:console:%c|%p|%m' ofp-print "\
+03 0e 00 58 52 33 45 02 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff \
+ff ff ff ff ff ff ff ff ff ff ff ff 00 00 00 00 \
+00 01 00 0a 80 00 0a 02 08 00 00 00 00 00 00 00 \
+00 04 00 18 00 00 00 00 00 19 00 10 80 00 16 04 \
+c0 a8 03 5c 00 00 00 00                         \
+" 2], [0], [dnl
+OFPT_FLOW_MOD (OF1.2) (xid=0x52334502): ADD priority=255,ip actions=set_field:192.168.3.92->ip_src
+], [dnl
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_FLOW_MOD - OF1.2 - set-field ip_dst])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl '-vPATTERN:console:%c|%p|%m' ofp-print "\
+03 0e 00 58 52 33 45 07 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff \
+ff ff ff ff ff ff ff ff ff ff ff ff 00 00 00 00 \
+00 01 00 0a 80 00 0a 02 08 00 00 00 00 00 00 00 \
+00 04 00 18 00 00 00 00 00 19 00 10 80 00 18 04 \
+c0 a8 4a 7a 00 00 00 00                         \
+" 2], [0], [dnl
+OFPT_FLOW_MOD (OF1.2) (xid=0x52334507): ADD priority=255,ip actions=set_field:192.168.74.122->ip_dst
+], [dnl
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_FLOW reply - OF1.2 - set-field ip_src])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl '-vPATTERN:console:%c|%p|%m' ofp-print "\
+03 13 00 68 52 33 45 04 00 01 00 00 00 00 00 00 \
+00 58 00 00 00 00 00 00 00 00 00 00 00 ff 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 01 00 0a 80 00 0a 02 08 00 00 00 00 00 00 00 \
+00 04 00 18 00 00 00 00 00 19 00 10 80 00 16 04 \
+c0 a8 03 5c 00 00 00 00                         \
+" 2], [0], [dnl
+OFPST_FLOW reply (OF1.2) (xid=0x52334504):
+ cookie=0x0, duration=0s, table=0, n_packets=0, n_bytes=0, priority=255,ip actions=set_field:192.168.3.92->ip_src
+], [dnl
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_FLOW reply - OF1.2 - set-field ip_dst])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl '-vPATTERN:console:%c|%p|%m' ofp-print "\
+03 13 00 68 52 33 45 09 00 01 00 00 00 00 00 00 \
+00 58 00 00 00 00 00 00 00 00 00 00 00 ff 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 01 00 0a 80 00 0a 02 08 00 00 00 00 00 00 00 \
+00 04 00 18 00 00 00 00 00 19 00 10 80 00 18 04 \
+c0 a8 4a 7a 00 00 00 00                         \
+" 2], [0], [dnl
+OFPST_FLOW reply (OF1.2) (xid=0x52334509):
+ cookie=0x0, duration=0s, table=0, n_packets=0, n_bytes=0, priority=255,ip actions=set_field:192.168.74.122->ip_dst
 ], [dnl
 ])
 AT_CLEANUP
@@ -705,9 +769,9 @@ c0 a8 00 02 00 08 00 00 00 00 00 09 05 b8 d8 00 \
 00 00 00 00 00 00 00 00 \
 "], [0], [dnl
 OFPST_FLOW reply (xid=0x4):
- cookie=0x0, duration=4.2s, table=0, n_packets=1, n_bytes=60, idle_timeout=5, priority=65535,arp,in_port=3,vlan_tci=0x0000,dl_src=50:54:00:00:00:05,dl_dst=50:54:00:00:00:06,nw_src=192.168.0.1,nw_dst=192.168.0.2,arp_op=2,nw_tos=0,tp_src=0,tp_dst=0 actions=output:1
+ cookie=0x0, duration=4.2s, table=0, n_packets=1, n_bytes=60, idle_timeout=5, priority=65535,arp,in_port=3,vlan_tci=0x0000,dl_src=50:54:00:00:00:05,dl_dst=50:54:00:00:00:06,arp_spa=192.168.0.1,arp_tpa=192.168.0.2,arp_op=2,nw_tos=0,tp_src=0,tp_dst=0 actions=output:1
  cookie=0x0, duration=8.9s, table=0, n_packets=13, n_bytes=1274, idle_timeout=5, priority=65535,icmp,in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,nw_src=192.168.0.2,nw_dst=192.168.0.1,nw_tos=0,icmp_type=0,icmp_code=0 actions=output:3
- cookie=0x0, duration=4.28s, table=0, n_packets=1, n_bytes=60, idle_timeout=5, priority=65535,arp,in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,nw_src=192.168.0.2,nw_dst=192.168.0.1,arp_op=1,nw_tos=0,icmp_type=0,icmp_code=0 actions=output:3
+ cookie=0x0, duration=4.28s, table=0, n_packets=1, n_bytes=60, idle_timeout=5, priority=65535,arp,in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:06,dl_dst=50:54:00:00:00:05,arp_spa=192.168.0.2,arp_tpa=192.168.0.1,arp_op=1,nw_tos=0,tp_src=0,tp_dst=0 actions=output:3
  cookie=0x0, duration=9.096s, table=0, n_packets=13, n_bytes=1274, idle_timeout=5, icmp,vlan_tci=0x0000,dl_src=50:54:00:00:00:05,dl_dst=50:54:00:00:00:06,nw_src=192.168.0.1,nw_dst=192.168.0.2,nw_tos=0,icmp_type=8,icmp_code=0 actions=output:1
  cookie=0x0, duration=0s, table=2, n_packets=0, n_bytes=0, actions=drop
 ])
@@ -885,7 +949,7 @@ AT_KEYWORDS([ofp-print OFPT_STATS_REPLY])
 AT_CHECK([ovs-ofctl ofp-print "$(cat in)"], [0], [expout])
 AT_CLEANUP
 
-AT_SETUP([OFPST_PORT request])
+AT_SETUP([OFPST_PORT request - 1.0])
 AT_KEYWORDS([ofp-print OFPT_STATS_REQUEST])
 AT_CHECK([ovs-ofctl ofp-print "\
 01 10 00 14 00 00 00 01 00 04 00 00 ff ff 00 00 \
@@ -895,7 +959,27 @@ OFPST_PORT request (xid=0x1): port_no=65535
 ])
 AT_CLEANUP
 
-AT_SETUP([OFPST_PORT reply])
+AT_SETUP([OFPST_PORT request - 1.1])
+AT_KEYWORDS([ofp-print OFPT_STATS_REQUEST])
+AT_CHECK([ovs-ofctl ofp-print "\
+02 12 00 18 00 00 00 02 00 04 00 00 00 00 00 00 \
+ff ff ff ff 00 00 00 00 \
+"], [0], [dnl
+OFPST_PORT request (OF1.1) (xid=0x2): port_no=65535
+])
+AT_CLEANUP
+
+AT_SETUP([OFPST_PORT request - 1.2])
+AT_KEYWORDS([ofp-print OFPT_STATS_REQUEST])
+AT_CHECK([ovs-ofctl ofp-print "\
+03 12 00 18 00 00 00 02 00 04 00 00 00 00 00 00 \
+ff ff ff ff 00 00 00 00 \
+"], [0], [dnl
+OFPST_PORT request (OF1.2) (xid=0x2): port_no=65535
+])
+AT_CLEANUP
+
+AT_SETUP([OFPST_PORT reply - OF1.0])
 AT_KEYWORDS([ofp-print OFPT_STATS_REPLY])
 AT_CHECK([ovs-ofctl ofp-print "\
 01 11 01 ac 00 00 00 01 00 04 00 00 00 03 00 00 \
@@ -938,7 +1022,42 @@ OFPST_PORT reply (xid=0x1): 4 ports
 ])
 AT_CLEANUP
 
-AT_SETUP([OFPST_QUEUE request])
+AT_SETUP([OFPST_PORT reply - OF1.2])
+AT_KEYWORDS([ofp-print OFPT_STATS_REPLY])
+AT_CHECK([ovs-ofctl ofp-print "\
+03 13 01 48 00 00 00 02 00 04 00 00 00 00 00 00 \
+00 00 00 02 00 00 00 00 00 00 00 00 00 01 95 56 \
+00 00 00 00 00 00 00 88 00 00 00 00 02 5d 08 98 \
+00 00 00 00 00 00 2c f8 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 ff ff ff fe 00 00 00 00 \
+00 00 00 00 00 00 00 44 00 00 00 00 00 00 9d 2c \
+00 00 00 00 00 00 16 7c 00 00 00 00 01 1e 36 44 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 44 \
+00 00 00 00 00 00 9d 2c 00 00 00 00 00 00 16 7c \
+00 00 00 00 01 1e 36 44 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 \
+"], [0], [dnl
+OFPST_PORT reply (OF1.2) (xid=0x2): 3 ports
+  port  2: rx pkts=103766, bytes=39651480, drop=0, errs=0, frame=0, over=0, crc=0
+           tx pkts=136, bytes=11512, drop=0, errs=0, coll=0
+  port 65534: rx pkts=68, bytes=5756, drop=0, errs=0, frame=0, over=0, crc=0
+           tx pkts=40236, bytes=18757188, drop=0, errs=0, coll=0
+  port  1: rx pkts=68, bytes=5756, drop=0, errs=0, frame=0, over=0, crc=0
+           tx pkts=40236, bytes=18757188, drop=0, errs=0, coll=0
+])
+AT_CLEANUP
+
+AT_SETUP([OFPST_QUEUE request - OF1.0])
 AT_KEYWORDS([ofp-print OFPT_STATS_REQUEST])
 AT_CHECK([ovs-ofctl ofp-print "\
 01 10 00 14 00 00 00 01 00 05 00 00 ff fc 00 00 \
@@ -948,7 +1067,27 @@ OFPST_QUEUE request (xid=0x1):port=ALL queue=ALL
 ])
 AT_CLEANUP
 
-AT_SETUP([OFPST_QUEUE reply])
+AT_SETUP([OFPST_QUEUE request - OF1.1])
+AT_KEYWORDS([ofp-print OFPT_STATS_REQUEST])
+AT_CHECK([ovs-ofctl ofp-print "\
+02 12 00 18 00 00 00 02 00 05 00 00 00 00 00 00 \
+ff ff ff fc ff ff ff ff \
+"], [0], [dnl
+OFPST_QUEUE request (OF1.1) (xid=0x2):port=ALL queue=ALL
+])
+AT_CLEANUP
+
+AT_SETUP([OFPST_QUEUE request - OF1.2])
+AT_KEYWORDS([ofp-print OFPT_STATS_REQUEST])
+AT_CHECK([ovs-ofctl ofp-print "\
+03 12 00 18 00 00 00 02 00 05 00 00 00 00 00 00 \
+ff ff ff fc ff ff ff ff \
+"], [0], [dnl
+OFPST_QUEUE request (OF1.2) (xid=0x2):port=ALL queue=ALL
+])
+AT_CLEANUP
+
+AT_SETUP([OFPST_QUEUE reply - OF1.0])
 AT_KEYWORDS([ofp-print OFPT_STATS_REPLY])
 AT_CHECK([ovs-ofctl ofp-print "\
 01 11 00 cc 00 00 00 01 00 05 00 00 00 03 00 00 \
@@ -979,6 +1118,60 @@ AT_SETUP([OFPST_PORT_DESC request - OF1.0])
 AT_KEYWORDS([ofp-print OFPT_STATS_REQUEST])
 AT_CHECK([ovs-ofctl ofp-print "0110000c00000001000d0000"], [0], [dnl
 OFPST_PORT_DESC request (xid=0x1):
+])
+AT_CLEANUP
+
+AT_SETUP([OFPST_QUEUE reply - OF1.1])
+AT_KEYWORDS([ofp-print OFPT_STATS_REPLY])
+AT_CHECK([ovs-ofctl ofp-print "\
+02 13 00 d0 00 00 00 01 00 05 00 00 00 00 00 00 \
+00 00 00 03 00 00 00 01 00 00 00 00 00 00 01 2e \
+00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 00 \
+00 00 00 03 00 00 00 02 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 02 00 00 00 01 00 00 00 00 00 00 08 34 \
+00 00 00 00 00 00 00 14 00 00 00 00 00 00 00 00 \
+00 00 00 02 00 00 00 02 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 01 00 00 00 01 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 01 00 00 00 02 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+"], [0], [dnl
+OFPST_QUEUE reply (OF1.1) (xid=0x1): 6 queues
+  port 3 queue 1: bytes=302, pkts=1, errors=0
+  port 3 queue 2: bytes=0, pkts=0, errors=0
+  port 2 queue 1: bytes=2100, pkts=20, errors=0
+  port 2 queue 2: bytes=0, pkts=0, errors=0
+  port 1 queue 1: bytes=0, pkts=0, errors=0
+  port 1 queue 2: bytes=0, pkts=0, errors=0
+])
+AT_CLEANUP
+
+AT_SETUP([OFPST_QUEUE reply - OF1.2])
+AT_KEYWORDS([ofp-print OFPT_STATS_REPLY])
+AT_CHECK([ovs-ofctl ofp-print "\
+03 13 00 d0 00 00 00 01 00 05 00 00 00 00 00 00 \
+00 00 00 03 00 00 00 01 00 00 00 00 00 00 01 2e \
+00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 00 \
+00 00 00 03 00 00 00 02 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 02 00 00 00 01 00 00 00 00 00 00 08 34 \
+00 00 00 00 00 00 00 14 00 00 00 00 00 00 00 00 \
+00 00 00 02 00 00 00 02 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 01 00 00 00 01 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+00 00 00 01 00 00 00 02 00 00 00 00 00 00 00 00 \
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+"], [0], [dnl
+OFPST_QUEUE reply (OF1.2) (xid=0x1): 6 queues
+  port 3 queue 1: bytes=302, pkts=1, errors=0
+  port 3 queue 2: bytes=0, pkts=0, errors=0
+  port 2 queue 1: bytes=2100, pkts=20, errors=0
+  port 2 queue 2: bytes=0, pkts=0, errors=0
+  port 1 queue 1: bytes=0, pkts=0, errors=0
+  port 1 queue 2: bytes=0, pkts=0, errors=0
 ])
 AT_CLEANUP
 
@@ -1090,7 +1283,7 @@ ff ff ff ff ff ff 00 00 00 00 82 82 82 82 82 82 \
 31 6d 00 00 00 00 00 00 00 00 \
 "], [0], [dnl
 NXT_PACKET_IN (xid=0x0): table_id=7 cookie=0x9 total_len=64 in_port=1 tun_id=0x6 metadata=0x5a5a5a5a5a5a5a5a reg0=0x1 reg1=0x2 reg2=0x3 reg3=0x4 reg4=0x5 (via action) data_len=64 (unbuffered)
-priority:0,tunnel:0,metadata:0,in_port:0000,tci(vlan:80,pcp:0) mac(80:81:81:81:81:81->82:82:82:82:82:82) type:0800 proto:6 tos:0 ttl:0 ip(83.83.83.83->84.84.84.84) port(85->86) tcp_csum:316d
+priority=0,tcp,metadata=0,in_port=0,dl_vlan=80,dl_vlan_pcp=0,dl_src=80:81:81:81:81:81,dl_dst=82:82:82:82:82:82,nw_src=83.83.83.83,nw_dst=84.84.84.84,nw_tos=0,nw_ecn=0,nw_ttl=0,tp_src=85,tp_dst=86 tcp_csum:316d
 ])
 AT_CLEANUP
 
@@ -1205,7 +1398,7 @@ AT_CHECK([ovs-ofctl ofp-print "\
 1e 02 00 02 00 00 20 04 c0 a8 00 01 00 00 22 04 \
 c0 a8 00 02 00 00 00 00 \
 "], [0], [dnl
-NXT_FLOW_REMOVED (xid=0x0): priority=65535,arp,in_port=3,vlan_tci=0x0000,dl_src=50:54:00:00:00:05,dl_dst=50:54:00:00:00:06,nw_src=192.168.0.1,nw_dst=192.168.0.2,arp_op=2 reason=idle duration6.024s idle5 pkts1 bytes60
+NXT_FLOW_REMOVED (xid=0x0): priority=65535,arp,in_port=3,vlan_tci=0x0000,dl_src=50:54:00:00:00:05,dl_dst=50:54:00:00:00:06,arp_spa=192.168.0.1,arp_tpa=192.168.0.2,arp_op=2 reason=idle duration6.024s idle5 pkts1 bytes60
 ])
 AT_CLEANUP
 

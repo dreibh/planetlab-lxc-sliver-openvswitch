@@ -60,6 +60,7 @@
     DEFINE_OFPACT(SET_VLAN_VID,    ofpact_vlan_vid,      ofpact)    \
     DEFINE_OFPACT(SET_VLAN_PCP,    ofpact_vlan_pcp,      ofpact)    \
     DEFINE_OFPACT(STRIP_VLAN,      ofpact_null,          ofpact)    \
+    DEFINE_OFPACT(PUSH_VLAN,       ofpact_null,          ofpact)    \
     DEFINE_OFPACT(SET_ETH_SRC,     ofpact_mac,           ofpact)    \
     DEFINE_OFPACT(SET_ETH_DST,     ofpact_mac,           ofpact)    \
     DEFINE_OFPACT(SET_IPV4_SRC,    ofpact_ipv4,          ofpact)    \
@@ -87,7 +88,13 @@
                                                                     \
     /* Other. */                                                    \
     DEFINE_OFPACT(NOTE,            ofpact_note,          data)      \
-    DEFINE_OFPACT(EXIT,            ofpact_null,          ofpact)
+    DEFINE_OFPACT(EXIT,            ofpact_null,          ofpact)    \
+                                                                    \
+    /* Instructions */                                              \
+    /* TODO:XXX Write-Actions */                                    \
+    DEFINE_OFPACT(WRITE_METADATA,  ofpact_metadata,      ofpact)    \
+    DEFINE_OFPACT(CLEAR_ACTIONS,   ofpact_null,          ofpact)    \
+    DEFINE_OFPACT(GOTO_TABLE,      ofpact_goto_table,    ofpact)
 
 /* enum ofpact_type, with a member OFPACT_<ENUM> for each action. */
 enum OVS_PACKED_ENUM ofpact_type {
@@ -169,9 +176,10 @@ ofpact_end(const struct ofpact *ofpacts, size_t ofpacts_len)
 
 /* Action structure for each OFPACT_*. */
 
-/* OFPACT_STRIP_VLAN, OFPACT_POP_QUEUE, OFPACT_EXIT.
+/* OFPACT_STRIP_VLAN, OFPACT_POP_QUEUE, OFPACT_EXIT, OFPACT_CLEAR_ACTIONS.
  *
- * Used for OFPAT10_STRIP_VLAN, NXAST_DEC_TTL, NXAST_POP_QUEUE, NXAST_EXIT.
+ * Used for OFPAT10_STRIP_VLAN, NXAST_POP_QUEUE, NXAST_EXIT,
+ * OFPAT11_POP_VLAN, OFPIT11_CLEAR_ACTIONS.
  *
  * Action structure for actions that do not have any extra data beyond the
  * action type. */
@@ -327,6 +335,15 @@ struct ofpact_fin_timeout {
     uint16_t fin_hard_timeout;
 };
 
+/* OFPACT_WRITE_METADATA.
+ *
+ * Used for NXAST_WRITE_METADATA. */
+struct ofpact_metadata {
+    struct ofpact ofpact;
+    ovs_be64 metadata;
+    ovs_be64 mask;
+};
+
 /* OFPACT_RESUBMIT.
  *
  * Used for NXAST_RESUBMIT, NXAST_RESUBMIT_TABLE. */
@@ -406,14 +423,21 @@ struct ofpact_note {
 
 /* OFPACT_DEC_TTL.
  *
- * Used for NXAST_DEC_TTL and NXAST_DEC_TTL_CNT_IDS. */
+ * Used for OFPAT11_DEC_NW_TTL, NXAST_DEC_TTL and NXAST_DEC_TTL_CNT_IDS. */
 struct ofpact_cnt_ids {
     struct ofpact ofpact;
 
     /* Controller ids. */
     unsigned int n_controllers;
     uint16_t cnt_ids[];
+};
 
+/* OFPACT_GOTO_TABLE
+ *
+ * Used for OFPIT11_GOTO_TABLE */
+struct ofpact_goto_table {
+    struct ofpact ofpact;
+    uint8_t table_id;
 };
 
 /* Converting OpenFlow to ofpacts. */
@@ -428,6 +452,7 @@ enum ofperr ofpacts_pull_openflow11_instructions(struct ofpbuf *openflow,
                                                  struct ofpbuf *ofpacts);
 enum ofperr ofpacts_check(const struct ofpact[], size_t ofpacts_len,
                           const struct flow *, int max_ports);
+enum ofperr ofpacts_verify(const struct ofpact ofpacts[], size_t ofpacts_len);
 
 /* Converting ofpacts to OpenFlow. */
 void ofpacts_put_openflow10(const struct ofpact[], size_t ofpacts_len,
@@ -566,7 +591,20 @@ enum {
 #undef DEFINE_INST
 };
 
+
+static inline bool
+ofpact_is_instruction(const struct ofpact *a)
+{
+    /* TODO:XXX Write-Actions */
+    return a->type == OFPACT_CLEAR_ACTIONS
+        || a->type == OFPACT_WRITE_METADATA
+        || a->type == OFPACT_GOTO_TABLE;
+}
+
 const char *ofpact_instruction_name_from_type(enum ovs_instruction_type type);
 int ofpact_instruction_type_from_name(const char *name);
+
+void ofpact_set_field_init(struct ofpact_reg_load *load,
+                           const struct mf_field *mf, const void *src);
 
 #endif /* ofp-actions.h */

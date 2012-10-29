@@ -177,7 +177,9 @@ void eth_addr_bitand(const uint8_t src[ETH_ADDR_LEN],
 
 #define ETH_TYPE_IP            0x0800
 #define ETH_TYPE_ARP           0x0806
-#define ETH_TYPE_VLAN          0x8100
+#define ETH_TYPE_VLAN_8021Q    0x8100
+#define ETH_TYPE_VLAN          ETH_TYPE_VLAN_8021Q
+#define ETH_TYPE_VLAN_8021AD   0x88a8
 #define ETH_TYPE_IPV6          0x86dd
 #define ETH_TYPE_LACP          0x8809
 #define ETH_TYPE_RARP          0x8035
@@ -325,6 +327,10 @@ void ip_format_masked(ovs_be32 ip, ovs_be32 mask, struct ds *);
 #endif
 
 /* TOS fields. */
+#define IP_ECN_NOT_ECT 0x0
+#define IP_ECN_ECT_1 0x01
+#define IP_ECN_ECT_0 0x02
+#define IP_ECN_CE 0x03
 #define IP_ECN_MASK 0x03
 #define IP_DSCP_MASK 0xfc
 

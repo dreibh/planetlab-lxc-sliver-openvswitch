@@ -897,6 +897,12 @@ as necessary to match the value specified.  Valid values are between 0
 .IP \fBstrip_vlan\fR
 Strips the VLAN tag from a packet if it is present.
 .
+.IP \fBpush_vlan\fR:\fIethertype\fR
+Push a new VLAN tag onto the packet.  Ethertype is used as the the Ethertype
+for the tag. Only ethertype 0x8100 should be used. (0x88a8 which the spec
+allows isn't supported at the moment.)
+A priority of zero and the tag of zero are used for the new tag.
+.
 .IP \fBmod_dl_src\fB:\fImac\fR
 Sets the source Ethernet address to \fImac\fR.
 .
@@ -919,7 +925,6 @@ Sets the TCP or UDP destination port to \fIport\fR.
 Sets the IPv4 ToS/DSCP field to \fItos\fR.  Valid values are between 0 and
 255, inclusive.  Note that the two lower reserved bits are never
 modified.
-.
 .RE
 .IP
 The following actions are Nicira vendor extensions that, as of this writing, are
@@ -1004,6 +1009,15 @@ in field \fIdst\fR.
 .IP
 Example: \fBload:55\->NXM_NX_REG2[0..5]\fR loads value 55 (bit pattern
 \fB110111\fR) into bits 0 through 5, inclusive, in register 2.
+.
+.IP "\fBset_field:\fIvalue\fB\->\fIdst"
+Writes the literal \fIvalue\fR into the field \fIdst\fR, which should
+be specified as a name used for matching.  (This is similar to
+\fBload\fR but more closely matches the set-field action defined in
+Open Flow 1.2 and above.)
+.
+.IP
+Example: \fBset_field:fe80:0123:4567:890a:a6ba:dbff:fefe:59fa\->ipv6_src\fR
 .
 .IP "\fBmultipath(\fIfields\fB, \fIbasis\fB, \fIalgorithm\fB, \fIn_links\fB, \fIarg\fB, \fIdst\fB[\fIstart\fB..\fIend\fB])\fR"
 Hashes \fIfields\fR using \fIbasis\fR as a universal hash parameter,
@@ -1130,6 +1144,26 @@ For best performance, segregate learned flows into a table (using
 possibly for a lowest-priority ``catch-all'' flow, that is, a flow
 with no match criteria.  (This is why the default \fBtable\fR is 1, to
 keep the learned flows separate from the primary flow table 0.)
+.
+.RS
+.IP \fBapply_actions(\fR[\fIaction\fR][\fB,\fIaction\fR...]\fB)
+Applies the specific action(s) immediately. The syntax of actions are same
+to \fBactions=\fR field.
+.
+.IP \fBclear_actions\fR
+Clears all the actions in the action set immediately.
+.
+.IP \fBwrite_metadata\fB:\fIvalue\fR[/\fImask\fR]
+Updates the metadata field for the flow. If \fImask\fR is omitted, the
+metadata field is set exactly to \fIvalue\fR; if \fImask\fR is specified, then
+a 1-bit in \fImask\fR indicates that the corresponding bit in the metadata
+field will be replaced with the corresponding bit from \fIvalue\fR. Both
+\fIvalue\fR and \fImask\fR are 64-bit values that are decimal by default; use
+a \fB0x\fR prefix to specify them in hexadecimal.
+.
+.IP \fBgoto_table\fR:\fItable\fR
+Indicates the next table in the process pipeline.
+.RE
 .
 .IP "\fBfin_timeout(\fIargument\fR[\fB,\fIargument\fR]\fB)"
 This action changes the idle timeout or hard timeout, or both, of this

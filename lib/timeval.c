@@ -18,6 +18,9 @@
 #include "timeval.h"
 #include <assert.h>
 #include <errno.h>
+#if HAVE_EXECINFO_H
+#include <execinfo.h>
+#endif
 #include <poll.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -27,7 +30,10 @@
 #include <unistd.h>
 #include "coverage.h"
 #include "dummy.h"
+#include "dynamic-string.h"
 #include "fatal-signal.h"
+#include "hash.h"
+#include "hmap.h"
 #include "signals.h"
 #include "unixctl.h"
 #include "util.h"
@@ -40,7 +46,7 @@ VLOG_DEFINE_THIS_MODULE(timeval);
  * to CLOCK_REALTIME. */
 static clockid_t monotonic_clock;
 
-/* Has a timer tick occurred? Only relevant if CACHE_TIME is 1.
+/* Has a timer tick occurred? Only relevant if CACHE_TIME is true.
  *
  * We initialize these to true to force time_init() to get called on the first
  * call to time_msec() or another function that queries the current time. */
@@ -58,15 +64,27 @@ static long long int boot_time;
 static struct timespec warp_offset; /* Offset added to monotonic_time. */
 static bool time_stopped;           /* Disables real-time updates, if true. */
 
-/* Time at which to die with SIGALRM (if not TIME_MIN). */
-static time_t deadline = TIME_MIN;
+/* Time in milliseconds at which to die with SIGALRM (if not LLONG_MAX). */
+static long long int deadline = LLONG_MAX;
+
+struct trace {
+    void *backtrace[32]; /* Populated by backtrace(). */
+    size_t n_frames;     /* Number of frames in 'backtrace'. */
+
+    /* format_backtraces() helper data. */
+    struct hmap_node node;
+    size_t count;
+};
+
+#define MAX_TRACES 50
+static struct trace traces[MAX_TRACES];
+static size_t trace_head = 0;
 
 static void set_up_timer(void);
 static void set_up_signal(int flags);
 static void sigalrm_handler(int);
 static void refresh_wall_if_ticked(void);
 static void refresh_monotonic_if_ticked(void);
-static time_t time_add(time_t, time_t);
 static void block_sigalrm(sigset_t *);
 static void unblock_sigalrm(const sigset_t *);
 static void log_poll_interval(long long int last_wakeup);
@@ -74,16 +92,50 @@ static struct rusage *get_recent_rusage(void);
 static void refresh_rusage(void);
 static void timespec_add(struct timespec *sum,
                          const struct timespec *a, const struct timespec *b);
+static unixctl_cb_func backtrace_cb;
+
+#ifndef HAVE_EXECINFO_H
+#define HAVE_EXECINFO_H 0
+
+static int
+backtrace(void **buffer OVS_UNUSED, int size OVS_UNUSED)
+{
+    NOT_REACHED();
+}
+
+static char **
+backtrace_symbols(void *const *buffer OVS_UNUSED, int size OVS_UNUSED)
+{
+    NOT_REACHED();
+}
+#endif
 
 /* Initializes the timetracking module, if not already initialized. */
 static void
 time_init(void)
 {
     static bool inited;
+
     if (inited) {
         return;
     }
     inited = true;
+
+    /* The implementation of backtrace() in glibc does some one time
+     * initialization which is not signal safe.  This can cause deadlocks if
+     * run from the signal handler.  As a workaround, force the initialization
+     * to happen here. */
+    if (HAVE_EXECINFO_H) {
+        void *bt[1];
+
+        backtrace(bt, ARRAY_SIZE(bt));
+    }
+
+    memset(traces, 0, sizeof traces);
+
+    if (HAVE_EXECINFO_H && CACHE_TIME) {
+        unixctl_command_register("backtrace", "", 0, 0, backtrace_cb, NULL);
+    }
 
     coverage_init();
 
@@ -94,10 +146,8 @@ time_init(void)
         VLOG_DBG("monotonic timer not available");
     }
 
-    if (CACHE_TIME) {
-        set_up_signal(SA_RESTART);
-        set_up_timer();
-    }
+    set_up_signal(SA_RESTART);
+    set_up_timer();
 
     boot_time = time_msec();
 }
@@ -149,6 +199,10 @@ set_up_timer(void)
     static timer_t timer_id;    /* "static" to avoid apparent memory leak. */
     struct itimerspec itimer;
 
+    if (!CACHE_TIME) {
+        return;
+    }
+
     if (timer_create(monotonic_clock, NULL, &timer_id)) {
         VLOG_FATAL("timer_create failed (%s)", strerror(errno));
     }
@@ -171,16 +225,7 @@ void
 time_postfork(void)
 {
     time_init();
-
-    if (CACHE_TIME) {
-        set_up_timer();
-    } else {
-        /* If we are not caching  kernel time, the only reason the timer should
-         * exist is if time_alarm() was called and deadline is set */
-        if (deadline != TIME_MIN) {
-            set_up_timer();
-        }
-    }
+    set_up_timer();
 }
 
 static void
@@ -212,7 +257,7 @@ refresh_monotonic(void)
 /* Forces a refresh of the current time from the kernel.  It is not usually
  * necessary to call this function, since the time will be refreshed
  * automatically at least every TIME_UPDATE_INTERVAL milliseconds.  If
- * CACHE_TIME is 0, we will always refresh the current time so this
+ * CACHE_TIME is false, we will always refresh the current time so this
  * function has no effect. */
 void
 time_refresh(void)
@@ -226,17 +271,6 @@ time_now(void)
 {
     refresh_monotonic_if_ticked();
     return monotonic_time.tv_sec;
-}
-
-/* Same as time_now() except does not write to static variables, for use in
- * signal handlers.  */
-static time_t
-time_now_sig(void)
-{
-    struct timespec cur_time;
-
-    clock_gettime(monotonic_clock, &cur_time);
-    return cur_time.tv_sec;
 }
 
 /* Returns the current time, in seconds. */
@@ -286,20 +320,20 @@ time_wall_timespec(struct timespec *ts)
 void
 time_alarm(unsigned int secs)
 {
+    long long int now;
+    long long int msecs;
+
     sigset_t oldsigs;
 
     time_init();
+    time_refresh();
+
+    now = time_msec();
+    msecs = secs * 1000;
 
     block_sigalrm(&oldsigs);
-    deadline = secs ? time_add(time_now(), secs) : TIME_MIN;
+    deadline = now < LLONG_MAX - msecs ? now + msecs : LLONG_MAX;
     unblock_sigalrm(&oldsigs);
-
-    if (!CACHE_TIME) {
-        /* If we aren't timing the gaps between kernel time refreshes we need to
-         * to start the timer up now */
-        set_up_signal(SA_RESTART);
-        set_up_timer();
-    }
 }
 
 /* Like poll(), except:
@@ -320,17 +354,22 @@ int
 time_poll(struct pollfd *pollfds, int n_pollfds, long long int timeout_when,
           int *elapsed)
 {
-    static long long int last_wakeup;
+    static long long int last_wakeup = 0;
     long long int start;
     sigset_t oldsigs;
     bool blocked;
     int retval;
 
     time_refresh();
-    log_poll_interval(last_wakeup);
+    if (last_wakeup) {
+        log_poll_interval(last_wakeup);
+    }
     coverage_clear();
     start = time_msec();
     blocked = false;
+
+    timeout_when = MIN(timeout_when, deadline);
+
     for (;;) {
         long long int now = time_msec();
         int time_left;
@@ -347,12 +386,21 @@ time_poll(struct pollfd *pollfds, int n_pollfds, long long int timeout_when,
         if (retval < 0) {
             retval = -errno;
         }
+
         time_refresh();
+        if (deadline <= time_msec()) {
+            fatal_signal_handler(SIGALRM);
+            if (retval < 0) {
+                retval = 0;
+            }
+            break;
+        }
+
         if (retval != -EINTR) {
             break;
         }
 
-        if (!blocked && deadline == TIME_MIN) {
+        if (!blocked && CACHE_TIME) {
             block_sigalrm(&oldsigs);
             blocked = true;
         }
@@ -366,22 +414,18 @@ time_poll(struct pollfd *pollfds, int n_pollfds, long long int timeout_when,
     return retval;
 }
 
-/* Returns the sum of 'a' and 'b', with saturation on overflow or underflow. */
-static time_t
-time_add(time_t a, time_t b)
-{
-    return (a >= 0
-            ? (b > TIME_MAX - a ? TIME_MAX : a + b)
-            : (b < TIME_MIN - a ? TIME_MIN : a + b));
-}
-
 static void
-sigalrm_handler(int sig_nr)
+sigalrm_handler(int sig_nr OVS_UNUSED)
 {
     wall_tick = true;
     monotonic_tick = true;
-    if (deadline != TIME_MIN && time_now_sig() > deadline) {
-        fatal_signal_handler(sig_nr);
+
+    if (HAVE_EXECINFO_H && CACHE_TIME) {
+        struct trace *trace = &traces[trace_head];
+
+        trace->n_frames = backtrace(trace->backtrace,
+                                    ARRAY_SIZE(trace->backtrace));
+        trace_head = (trace_head + 1) % MAX_TRACES;
     }
 }
 
@@ -471,65 +515,39 @@ timespec_add(struct timespec *sum,
 static void
 log_poll_interval(long long int last_wakeup)
 {
-    static unsigned int mean_interval; /* In 16ths of a millisecond. */
-    static unsigned int n_samples;
+    long long int interval = time_msec() - last_wakeup;
 
-    long long int now;
-    unsigned int interval;      /* In 16ths of a millisecond. */
+    if (interval >= 1000) {
+        const struct rusage *last_rusage = get_recent_rusage();
+        struct rusage rusage;
 
-    /* Compute interval from last wakeup to now in 16ths of a millisecond,
-     * capped at 10 seconds (16000 in this unit). */
-    now = time_msec();
-    interval = MIN(10000, now - last_wakeup) << 4;
-
-    /* Warn if we took too much time between polls: at least 50 ms and at least
-     * 8X the mean interval. */
-    if (n_samples > 10 && interval > mean_interval * 8 && interval > 50 * 16) {
-        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 3);
-
-        if (!VLOG_DROP_WARN(&rl)) {
-            const struct rusage *last_rusage = get_recent_rusage();
-            struct rusage rusage;
-
-            getrusage(RUSAGE_SELF, &rusage);
-            VLOG_WARN("%lld ms poll interval (%lld ms user, %lld ms system) "
-                      "is over %u times the weighted mean interval %u ms "
-                      "(%u samples)",
-                      now - last_wakeup,
-                      timeval_diff_msec(&rusage.ru_utime,
-                                        &last_rusage->ru_utime),
-                      timeval_diff_msec(&rusage.ru_stime,
-                                        &last_rusage->ru_stime),
-                      interval / mean_interval,
-                      (mean_interval + 8) / 16, n_samples);
-            if (rusage.ru_minflt > last_rusage->ru_minflt
-                || rusage.ru_majflt > last_rusage->ru_majflt) {
-                VLOG_WARN("faults: %ld minor, %ld major",
-                          rusage.ru_minflt - last_rusage->ru_minflt,
-                          rusage.ru_majflt - last_rusage->ru_majflt);
-            }
-            if (rusage.ru_inblock > last_rusage->ru_inblock
-                || rusage.ru_oublock > last_rusage->ru_oublock) {
-                VLOG_WARN("disk: %ld reads, %ld writes",
-                          rusage.ru_inblock - last_rusage->ru_inblock,
-                          rusage.ru_oublock - last_rusage->ru_oublock);
-            }
-            if (rusage.ru_nvcsw > last_rusage->ru_nvcsw
-                || rusage.ru_nivcsw > last_rusage->ru_nivcsw) {
-                VLOG_WARN("context switches: %ld voluntary, %ld involuntary",
-                          rusage.ru_nvcsw - last_rusage->ru_nvcsw,
-                          rusage.ru_nivcsw - last_rusage->ru_nivcsw);
-            }
+        getrusage(RUSAGE_SELF, &rusage);
+        VLOG_WARN("Unreasonably long %lldms poll interval"
+                  " (%lldms user, %lldms system)",
+                  interval,
+                  timeval_diff_msec(&rusage.ru_utime,
+                                    &last_rusage->ru_utime),
+                  timeval_diff_msec(&rusage.ru_stime,
+                                    &last_rusage->ru_stime));
+        if (rusage.ru_minflt > last_rusage->ru_minflt
+            || rusage.ru_majflt > last_rusage->ru_majflt) {
+            VLOG_WARN("faults: %ld minor, %ld major",
+                      rusage.ru_minflt - last_rusage->ru_minflt,
+                      rusage.ru_majflt - last_rusage->ru_majflt);
+        }
+        if (rusage.ru_inblock > last_rusage->ru_inblock
+            || rusage.ru_oublock > last_rusage->ru_oublock) {
+            VLOG_WARN("disk: %ld reads, %ld writes",
+                      rusage.ru_inblock - last_rusage->ru_inblock,
+                      rusage.ru_oublock - last_rusage->ru_oublock);
+        }
+        if (rusage.ru_nvcsw > last_rusage->ru_nvcsw
+            || rusage.ru_nivcsw > last_rusage->ru_nivcsw) {
+            VLOG_WARN("context switches: %ld voluntary, %ld involuntary",
+                      rusage.ru_nvcsw - last_rusage->ru_nvcsw,
+                      rusage.ru_nivcsw - last_rusage->ru_nivcsw);
         }
         coverage_log();
-    }
-
-    /* Update exponentially weighted moving average.  With these parameters, a
-     * given value decays to 1% of its value in about 100 time steps.  */
-    if (n_samples++) {
-        mean_interval = (mean_interval * 122 + interval * 6 + 64) / 128;
-    } else {
-        mean_interval = interval;
     }
 }
 
@@ -584,6 +602,89 @@ get_cpu_usage(void)
 {
     return cpu_usage;
 }
+
+static uint32_t
+hash_trace(struct trace *trace)
+{
+    return hash_bytes(trace->backtrace,
+                      trace->n_frames * sizeof *trace->backtrace, 0);
+}
+
+static struct trace *
+trace_map_lookup(struct hmap *trace_map, struct trace *key)
+{
+    struct trace *value;
+
+    HMAP_FOR_EACH_WITH_HASH (value, node, hash_trace(key), trace_map) {
+        if (key->n_frames == value->n_frames
+            && !memcmp(key->backtrace, value->backtrace,
+                       key->n_frames * sizeof *key->backtrace)) {
+            return value;
+        }
+    }
+    return NULL;
+}
+
+/*  Appends a string to 'ds' representing backtraces recorded at regular
+ *  intervals in the recent past.  This information can be used to get a sense
+ *  of what the process has been spending the majority of time doing.  Will
+ *  ommit any backtraces which have not occurred at least 'min_count' times. */
+void
+format_backtraces(struct ds *ds, size_t min_count)
+{
+    time_init();
+
+    if (HAVE_EXECINFO_H && CACHE_TIME) {
+        struct hmap trace_map = HMAP_INITIALIZER(&trace_map);
+        struct trace *trace, *next;
+        sigset_t oldsigs;
+        size_t i;
+
+        block_sigalrm(&oldsigs);
+
+        for (i = 0; i < MAX_TRACES; i++) {
+            struct trace *trace = &traces[i];
+            struct trace *map_trace;
+
+            if (!trace->n_frames) {
+                continue;
+            }
+
+            map_trace = trace_map_lookup(&trace_map, trace);
+            if (map_trace) {
+                map_trace->count++;
+            } else {
+                hmap_insert(&trace_map, &trace->node, hash_trace(trace));
+                trace->count = 1;
+            }
+        }
+
+        HMAP_FOR_EACH_SAFE (trace, next, node, &trace_map) {
+            char **frame_strs;
+            size_t j;
+
+            hmap_remove(&trace_map, &trace->node);
+
+            if (trace->count < min_count) {
+                continue;
+            }
+
+            frame_strs = backtrace_symbols(trace->backtrace, trace->n_frames);
+
+            ds_put_format(ds, "Count %zu\n", trace->count);
+            for (j = 0; j < trace->n_frames; j++) {
+                ds_put_format(ds, "%s\n", frame_strs[j]);
+            }
+            ds_put_cstr(ds, "\n");
+
+            free(frame_strs);
+        }
+        hmap_destroy(&trace_map);
+
+        ds_chomp(ds, '\n');
+        unblock_sigalrm(&oldsigs);
+    }
+}
 
 /* Unixctl interface. */
 
@@ -621,6 +722,19 @@ timeval_warp_cb(struct unixctl_conn *conn,
     timespec_add(&warp_offset, &warp_offset, &ts);
     timespec_add(&monotonic_time, &monotonic_time, &ts);
     unixctl_command_reply(conn, "warped");
+}
+
+static void
+backtrace_cb(struct unixctl_conn *conn,
+             int argc OVS_UNUSED, const char *argv[] OVS_UNUSED,
+             void *aux OVS_UNUSED)
+{
+    struct ds ds = DS_EMPTY_INITIALIZER;
+
+    assert(HAVE_EXECINFO_H && CACHE_TIME);
+    format_backtraces(&ds, 0);
+    unixctl_command_reply(conn, ds_cstr(&ds));
+    ds_destroy(&ds);
 }
 
 void

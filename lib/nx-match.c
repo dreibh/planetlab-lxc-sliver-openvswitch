@@ -643,7 +643,8 @@ nx_put_raw(struct ofpbuf *b, bool oxm, const struct match *match,
     }
 
     /* Tunnel ID. */
-    nxm_put_64m(b, NXM_NX_TUN_ID, flow->tun_id, match->wc.masks.tun_id);
+    nxm_put_64m(b, NXM_NX_TUN_ID, flow->tunnel.tun_id,
+                match->wc.masks.tunnel.tun_id);
 
     /* Registers. */
     for (i = 0; i < FLOW_N_REGS; i++) {
@@ -1119,12 +1120,7 @@ nxm_reg_load_from_openflow12_set_field(
         return OFPERR_OFPBAC_BAD_ARGUMENT;
     }
     load = ofpact_put_REG_LOAD(ofpacts);
-    load->ofpact.compat = OFPUTIL_OFPAT12_SET_FIELD;
-    load->dst.field = mf;
-    load->dst.ofs = 0;
-    load->dst.n_bits = mf->n_bits;
-    bitwise_copy(oasf + 1, mf->n_bytes, load->dst.ofs,
-                 &load->subvalue, sizeof load->subvalue, 0, mf->n_bits);
+    ofpact_set_field_init(load, mf, oasf + 1);
 
     return nxm_reg_load_check(load, NULL);
 }

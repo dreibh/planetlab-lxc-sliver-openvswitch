@@ -925,7 +925,7 @@ dpif_netdev_execute(struct dpif *dpif, const struct dpif_execute *execute)
     ofpbuf_reserve(&copy, DP_NETDEV_HEADROOM);
     ofpbuf_put(&copy, execute->packet->data, execute->packet->size);
 
-    flow_extract(&copy, 0, 0, -1, &key);
+    flow_extract(&copy, 0, NULL, -1, &key);
     error = dpif_netdev_flow_from_nlattrs(execute->key, execute->key_len,
                                           &key);
     if (!error) {
@@ -1005,13 +1005,12 @@ dpif_netdev_recv_purge(struct dpif *dpif)
 }
 
 static void
-dp_netdev_flow_used(struct dp_netdev_flow *flow, struct flow *key,
-                    const struct ofpbuf *packet)
+dp_netdev_flow_used(struct dp_netdev_flow *flow, const struct ofpbuf *packet)
 {
     flow->used = time_msec();
     flow->packet_count++;
     flow->byte_count += packet->size;
-    flow->tcp_flags |= packet_get_tcp_flags(packet, key);
+    flow->tcp_flags |= packet_get_tcp_flags(packet, &flow->key);
 }
 
 static void
@@ -1024,10 +1023,10 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
     if (packet->size < ETH_HEADER_LEN) {
         return;
     }
-    flow_extract(packet, 0, 0, odp_port_to_ofp_port(port->port_no), &key);
+    flow_extract(packet, 0, NULL, odp_port_to_ofp_port(port->port_no), &key);
     flow = dp_netdev_lookup_flow(dp, &key);
     if (flow) {
-        dp_netdev_flow_used(flow, &key, packet);
+        dp_netdev_flow_used(flow, packet);
         dp_netdev_execute_actions(dp, packet, &key,
                                   flow->actions, flow->actions_len);
         dp->n_hit++;
@@ -1189,6 +1188,7 @@ execute_set_action(struct ofpbuf *packet, const struct nlattr *a)
     case OVS_KEY_ATTR_TUN_ID:
     case OVS_KEY_ATTR_PRIORITY:
     case OVS_KEY_ATTR_IPV6:
+    case OVS_KEY_ATTR_IPV4_TUNNEL:
         /* not implemented */
         break;
 

@@ -36,7 +36,7 @@ enum ofperr ofputil_port_from_ofp11(ovs_be32 ofp11_port, uint16_t *ofp10_port);
 ovs_be32 ofputil_port_to_ofp11(uint16_t ofp10_port);
 
 enum ofperr ofputil_check_output_port(uint16_t ofp_port, int max_ports);
-uint16_t ofputil_port_from_string(const char *);
+bool ofputil_port_from_string(const char *, uint16_t *portp);
 void ofputil_format_port(uint16_t port, struct ds *);
 
 /* Converting OFPFW10_NW_SRC_MASK and OFPFW10_NW_DST_MASK wildcard bit counts
@@ -131,7 +131,8 @@ ovs_be16 ofputil_dl_type_from_openflow(ovs_be16 ofp_dl_type);
 bool ofputil_packet_in_format_is_valid(enum nx_packet_in_format);
 int ofputil_packet_in_format_from_string(const char *);
 const char *ofputil_packet_in_format_to_string(enum nx_packet_in_format);
-struct ofpbuf *ofputil_make_set_packet_in_format(enum nx_packet_in_format);
+struct ofpbuf *ofputil_make_set_packet_in_format(enum ofp_version,
+                                                 enum nx_packet_in_format);
 
 /* NXT_FLOW_MOD_TABLE_ID extension. */
 struct ofpbuf *ofputil_make_flow_mod_table_id(bool flow_mod_table_id);
@@ -243,6 +244,7 @@ struct ofputil_flow_removed {
     uint16_t priority;
     ovs_be64 cookie;
     uint8_t reason;             /* One of OFPRR_*. */
+    uint8_t table_id;           /* 255 if message didn't include table ID. */
     uint32_t duration_sec;
     uint32_t duration_nsec;
     uint16_t idle_timeout;
@@ -538,6 +540,7 @@ bool ofputil_frag_handling_from_string(const char *, enum ofp_config_flags *);
  * OFPUTIL_OFPAT10_ENQUEUE
  * OFPUTIL_NXAST_RESUBMIT
  * OFPUTIL_NXAST_SET_TUNNEL
+ * OFPUTIL_NXAST_SET_METADATA
  * OFPUTIL_NXAST_SET_QUEUE
  * OFPUTIL_NXAST_POP_QUEUE
  * OFPUTIL_NXAST_REG_MOVE
@@ -558,19 +561,17 @@ bool ofputil_frag_handling_from_string(const char *, enum ofp_config_flags *);
  */
 enum OVS_PACKED_ENUM ofputil_action_code {
     OFPUTIL_ACTION_INVALID,
-#define OFPAT10_ACTION(ENUM, STRUCT, NAME)           OFPUTIL_##ENUM,
-#define OFPAT11_ACTION(ENUM, STRUCT, NAME)           OFPUTIL_##ENUM,
-#define OFPAT12_ACTION(ENUM, STRUCT, NAME)           OFPUTIL_##ENUM,
-#define NXAST_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME) OFPUTIL_##ENUM,
+#define OFPAT10_ACTION(ENUM, STRUCT, NAME)             OFPUTIL_##ENUM,
+#define OFPAT11_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME) OFPUTIL_##ENUM,
+#define NXAST_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME)   OFPUTIL_##ENUM,
 #include "ofp-util.def"
 };
 
 /* The number of values of "enum ofputil_action_code". */
 enum {
-#define OFPAT10_ACTION(ENUM, STRUCT, NAME)           + 1
-#define OFPAT11_ACTION(ENUM, STRUCT, NAME)           + 1
-#define OFPAT12_ACTION(ENUM, STRUCT, NAME)           + 1
-#define NXAST_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME) + 1
+#define OFPAT10_ACTION(ENUM, STRUCT, NAME)             + 1
+#define OFPAT11_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME) + 1
+#define NXAST_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME)   + 1
     OFPUTIL_N_ACTIONS = 1
 #include "ofp-util.def"
 };
@@ -596,10 +597,7 @@ void *ofputil_put_action(enum ofputil_action_code, struct ofpbuf *buf);
 #define OFPAT10_ACTION(ENUM, STRUCT, NAME)              \
     void ofputil_init_##ENUM(struct STRUCT *);          \
     struct STRUCT *ofputil_put_##ENUM(struct ofpbuf *);
-#define OFPAT11_ACTION(ENUM, STRUCT, NAME)              \
-    void ofputil_init_##ENUM(struct STRUCT *);          \
-    struct STRUCT *ofputil_put_##ENUM(struct ofpbuf *);
-#define OFPAT12_ACTION(ENUM, STRUCT, NAME)              \
+#define OFPAT11_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME)  \
     void ofputil_init_##ENUM(struct STRUCT *);          \
     struct STRUCT *ofputil_put_##ENUM(struct ofpbuf *);
 #define NXAST_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME)    \
@@ -622,5 +620,44 @@ union ofp_action *ofputil_actions_clone(const union ofp_action *, size_t n);
 
 /* Handy utility for parsing flows and actions. */
 bool ofputil_parse_key_value(char **stringp, char **keyp, char **valuep);
+
+struct ofpbuf *ofputlil_dump_ports(enum ofp_version ofp_version, int16_t port);
+
+struct ofputil_port_stats {
+    uint16_t port_no;
+    struct netdev_stats stats;
+};
+
+struct ofpbuf *ofputil_encode_dump_ports_request(enum ofp_version ofp_version,
+                                                 int16_t port);
+void ofputil_append_port_stat(struct list *replies,
+                              const struct ofputil_port_stats *ops);
+size_t ofputil_count_port_stats(const struct ofp_header *);
+int ofputil_decode_port_stats(struct ofputil_port_stats *, struct ofpbuf *msg);
+enum ofperr ofputil_decode_port_stats_request(const struct ofp_header *request,
+                                              uint16_t *ofp10_port);
+
+struct ofputil_queue_stats_request {
+    uint16_t port_no;
+    uint32_t queue_id;
+};
+
+enum ofperr
+ofputil_decode_queue_stats_request(const struct ofp_header *request,
+                                   struct ofputil_queue_stats_request *oqsr);
+struct ofpbuf *
+ofputil_encode_queue_stats_request(enum ofp_version ofp_version,
+                                   const struct ofputil_queue_stats_request *oqsr);
+
+struct ofputil_queue_stats {
+    uint16_t port_no;
+    uint32_t queue_id;
+    struct netdev_queue_stats stats;
+};
+
+size_t ofputil_count_queue_stats(const struct ofp_header *);
+int ofputil_decode_queue_stats(struct ofputil_queue_stats *qs, struct ofpbuf *msg);
+void ofputil_append_queue_stat(struct list *replies,
+                               const struct ofputil_queue_stats *oqs);
 
 #endif /* ofp-util.h */

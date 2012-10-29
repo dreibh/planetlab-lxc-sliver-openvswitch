@@ -3106,18 +3106,19 @@ handle_miss_upcalls(struct ofproto_dpif *ofproto, struct dpif_upcall *upcalls,
     for (upcall = upcalls; upcall < &upcalls[n_upcalls]; upcall++) {
         struct flow_miss *miss = &misses[n_misses];
         struct flow_miss *existing_miss;
+        struct flow flow;
         uint32_t hash;
 
         /* Obtain metadata and check userspace/kernel agreement on flow match,
          * then set 'flow''s header pointers. */
         miss->key_fitness = ofproto_dpif_extract_flow_key(
             ofproto, upcall->key, upcall->key_len,
-            &miss->flow, &miss->initial_tci, upcall->packet);
+            &flow, &miss->initial_tci, upcall->packet);
         if (miss->key_fitness == ODP_FIT_ERROR) {
             continue;
         }
-        flow_extract(upcall->packet, miss->flow.skb_priority,
-                     miss->flow.tun_id, miss->flow.in_port, &miss->flow);
+        flow_extract(upcall->packet, flow.skb_priority,
+                     &flow.tunnel, flow.in_port, &miss->flow);
 
         /* Add other packets to a to-do list. */
         hash = flow_hash(&miss->flow, 0);
@@ -4763,7 +4764,7 @@ send_packet(const struct ofport_dpif *ofport, struct ofpbuf *packet)
     struct flow flow;
     int error;
 
-    flow_extract(packet, 0, 0, 0, &flow);
+    flow_extract(packet, 0, NULL, 0, &flow);
     odp_port = vsp_realdev_to_vlandev(ofproto, ofport->odp_port,
                                       flow.vlan_tci);
     if (odp_port != ofport->odp_port) {
@@ -4957,8 +4958,11 @@ compose_output_action__(struct action_xlate_ctx *ctx, uint16_t ofp_port,
     if (ofport) {
         struct priority_to_dscp *pdscp;
 
-        if (ofport->up.pp.config & OFPUTIL_PC_NO_FWD
-            || (check_stp && !stp_forward_in_state(ofport->stp_state))) {
+        if (ofport->up.pp.config & OFPUTIL_PC_NO_FWD) {
+            xlate_report(ctx, "OFPPC_NO_FWD set, skipping output");
+            return;
+        } else if (check_stp && !stp_forward_in_state(ofport->stp_state)) {
+            xlate_report(ctx, "STP not in forwarding state, skipping output");
             return;
         }
 
@@ -5232,6 +5236,8 @@ xlate_output_action(struct action_xlate_ctx *ctx,
     default:
         if (port != ctx->flow.in_port) {
             compose_output_action(ctx, port);
+        } else {
+            xlate_report(ctx, "skipping output to input port");
         }
         break;
     }
@@ -5454,6 +5460,7 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
     }
     OFPACT_FOR_EACH (a, ofpacts, ofpacts_len) {
         struct ofpact_controller *controller;
+        const struct ofpact_metadata *metadata;
 
         if (ctx->exit) {
             break;
@@ -5491,6 +5498,11 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
 
         case OFPACT_STRIP_VLAN:
             ctx->flow.vlan_tci = htons(0);
+            break;
+
+        case OFPACT_PUSH_VLAN:
+            /* TODO:XXX 802.1AD(QinQ) */
+            ctx->flow.vlan_tci = htons(VLAN_CFI);
             break;
 
         case OFPACT_SET_ETH_SRC:
@@ -5532,7 +5544,7 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             break;
 
         case OFPACT_SET_TUNNEL:
-            ctx->flow.tun_id = htonll(ofpact_get_SET_TUNNEL(a)->tun_id);
+            ctx->flow.tunnel.tun_id = htonll(ofpact_get_SET_TUNNEL(a)->tun_id);
             break;
 
         case OFPACT_SET_QUEUE:
@@ -5593,6 +5605,29 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             ctx->has_fin_timeout = true;
             xlate_fin_timeout(ctx, ofpact_get_FIN_TIMEOUT(a));
             break;
+
+        case OFPACT_CLEAR_ACTIONS:
+            /* TODO:XXX
+             * Nothing to do because writa-actions is not supported for now.
+             * When writa-actions is supported, clear-actions also must
+             * be supported at the same time.
+             */
+            break;
+
+        case OFPACT_WRITE_METADATA:
+            metadata = ofpact_get_WRITE_METADATA(a);
+            ctx->flow.metadata &= ~metadata->mask;
+            ctx->flow.metadata |= metadata->metadata & metadata->mask;
+            break;
+
+        case OFPACT_GOTO_TABLE: {
+            /* TODO:XXX remove recursion */
+            /* It is assumed that goto-table is last action */
+            struct ofpact_goto_table *ogt = ofpact_get_GOTO_TABLE(a);
+            assert(ctx->table_id < ogt->table_id);
+            xlate_table_action(ctx, ctx->flow.in_port, ogt->table_id, true);
+            break;
+        }
         }
     }
 
@@ -5617,7 +5652,7 @@ action_xlate_ctx_init(struct action_xlate_ctx *ctx,
     ctx->ofproto = ofproto;
     ctx->flow = *flow;
     ctx->base_flow = ctx->flow;
-    ctx->base_flow.tun_id = 0;
+    memset(&ctx->base_flow.tunnel, 0, sizeof ctx->base_flow.tunnel);
     ctx->base_flow.vlan_tci = initial_tci;
     ctx->rule = rule;
     ctx->packet = packet;
@@ -6776,7 +6811,8 @@ ofproto_unixctl_trace(struct unixctl_conn *conn, int argc, const char *argv[],
         ds_put_cstr(&result, s);
         free(s);
 
-        flow_extract(packet, priority, tun_id, in_port, &flow);
+        flow_extract(packet, priority, NULL, in_port, &flow);
+        flow.tunnel.tun_id = tun_id;
         initial_tci = flow.vlan_tci;
     } else {
         unixctl_command_reply_error(conn, "Bad command syntax");
