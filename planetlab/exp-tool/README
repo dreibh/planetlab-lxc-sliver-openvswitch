@@ -43,7 +43,7 @@ experimenter box
 $ mkdir work
 $ cp /path/to/Makefile work
 $ cd work
-$ mkdir init 
+$ make init 
 
 The last command creates some subdirectories that are later used by the Makefile.
 
