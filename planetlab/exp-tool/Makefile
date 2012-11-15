@@ -315,7 +315,7 @@ update-%: FORCE
 	@[ -n "$(SLIVER_OVS)" ] || { echo "SLIVER_OVS not set" >&2; exit 1; }
 	@[ -f "$(SLIVER_OVS)" ] || { echo "$(SLIVER_OVS) not found" >&2; exit 1; }
 	@echo "Sending $(SLIVER_OVS) to $(call display,$*)"
-	@scp -q $(SLIVER_OVS) $(SLICE)@$(call solve,$*):
+	@scp $(SSH_KEY_OPTION) -q $(SLIVER_OVS) $(SLICE)@$(call solve,$*):
 	@$(SSH) $(call solve,$*) $(SUDO) mv $(notdir $(SLIVER_OVS)) /usr/sbin/sliver-ovs
 
 .SECONDEXPANSION:
