@@ -2,7 +2,7 @@
 # to check for any change:
 # grep AC_INIT configure.ac 
 %define version 1.8.90
-%define taglevel 5
+%define taglevel 6
 
 %define debug_package %{nil}
 
@@ -49,6 +49,9 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Fri Nov 23 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.8.90-6
+- fixes in the exp-tool makefile (bash redirections, scp with key..)
+
 * Tue Oct 16 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.8.90-5
 - numerous additional make targets for finer control (use make help)
 - including gprobe for reporting traffic to an ndnmap instance
