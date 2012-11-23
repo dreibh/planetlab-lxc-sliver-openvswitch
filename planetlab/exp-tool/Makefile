@@ -3,6 +3,9 @@
 # HOST_<id> and IP_<id> for all nodes involved, as well as 
 # LINKS as a list of <node_id>-<node_id> elements
 
+# should work with any shell, but we have only tested bash
+SHELL=/bin/bash
+
 # run make CONF=anotherconfig.mk if you need several configs
 
 CONF ?= conf.mk
