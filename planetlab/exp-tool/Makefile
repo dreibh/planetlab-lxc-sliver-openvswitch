@@ -142,7 +142,7 @@ del-controllers: $(foreach id,$(ALL_NODE_IDS),del-controller-$(id))
 ### node-oriented targets
 # check ssh connectivity
 sshcheck-%: FORCE
-	@if $(SSH) $(HOST_$*) hostname &> /dev/null; then echo "ssh on" $(call display,$*) "OK" ; \
+	@if $(SSH) $(HOST_$*) hostname > /dev/null 2>&1; then echo "ssh on" $(call display,$*) "OK" ; \
 	 else echo "ssh on" $(call display,$*) "KO !!!"; fi
 
 ovsversion-%: FORCE
@@ -172,21 +172,21 @@ cache/host.%:
 
 cache/db.%:
 	@echo "Starting db server on $(call display,$*) - logs in $(call log,$@)"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-db &> $(call log,$@) && touch $@
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-db > $(call log,$@) 2>&1 && touch $@
 
 cache/switch.%: | cache/db.%
 	@echo "Starting vswitchd on $(call display,$*) - logs in $(call log,$@)"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-switch &> $(call log,$@) && touch $@
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-switch > $(call log,$@) 2>&1 && touch $@
 
 cache/bridge.%: | cache/db.%
 	@echo "Creating bridge on $(call display,$*) - logs in $(call log,$@)"
 	@$(SSH) $(HOST_$*) $(SUDO) \
-		sliver-ovs create-bridge $(BRIDGE) $(IP_$*) $(call default,BROPTIONS,$*) &> $(call log,$@) \
+		sliver-ovs create-bridge $(BRIDGE) $(IP_$*) $(call default,BROPTIONS,$*) > $(call log,$@) 2>&1 \
 	 && { echo "IP_$*=$(IP_$*)"; echo "BROPTIONS_$*=$(call default,BROPTIONS,$*)"; } > $@
 
 cache/controller.%: cache/bridge.%
 	@echo "Setting controller $(call default,CONTROLLER,$*) on $(call display,$*) - logs in $(call log,$@)"
-	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl set-controller $(BRIDGE) $(call default,CONTROLLER,$*) &> $(call log,$@) \
+	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl set-controller $(BRIDGE) $(call default,CONTROLLER,$*) > $(call log,$@) 2>&1 \
 	 && echo "CONTROLLER_$*=$(call default,CONTROLLER,$*)" > $@
 
 # xxx this probably needs a more thorough cleanup in cache/
@@ -355,7 +355,7 @@ del-iface.%: | cache/db.$$(call get,%)
 cache/iface.%: cache/bridge.$$(call get,%) | cache/db.$$(call get,%)
 	@echo "Creating interface for link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs create-port $(BRIDGE) \
-		L$(call linkpart,$(*F)) &> $(call log,$@) \
+		L$(call linkpart,$(*F)) > $(call log,$@) 2>&1 \
 	 && touch $@
 
 # cache/port.<node_id1>-<node_id2>@<endpoint>:
