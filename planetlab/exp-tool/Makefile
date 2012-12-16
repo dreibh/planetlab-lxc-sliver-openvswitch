@@ -6,6 +6,8 @@
 # should work with any shell, but we have only tested bash
 SHELL=/bin/bash
 
+.DELETE_ON_ERROR:
+
 # run make CONF=anotherconfig.mk if you need several configs
 
 CONF ?= conf.mk
@@ -175,22 +177,24 @@ cache/host.%:
 
 cache/db.%:
 	@echo "Starting db server on $(call display,$*) - logs in $(call log,$@)"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-db > $(call log,$@) 2>&1 && touch $@
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-db > $(call log,$@) 2>&1
+	@touch $@
 
 cache/switch.%: | cache/db.%
 	@echo "Starting vswitchd on $(call display,$*) - logs in $(call log,$@)"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-switch > $(call log,$@) 2>&1 && touch $@
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs start-switch > $(call log,$@) 2>&1
+	@touch $@
 
 cache/bridge.%: | cache/db.%
 	@echo "Creating bridge on $(call display,$*) - logs in $(call log,$@)"
 	@$(SSH) $(HOST_$*) $(SUDO) \
-		sliver-ovs create-bridge $(BRIDGE) $(IP_$*) $(call default,BROPTIONS,$*) > $(call log,$@) 2>&1 \
-	 && { echo "IP_$*=$(IP_$*)"; echo "BROPTIONS_$*=$(call default,BROPTIONS,$*)"; } > $@
+		sliver-ovs create-bridge $(BRIDGE) $(IP_$*) $(call default,BROPTIONS,$*) > $(call log,$@) 2>&1
+	@{ echo "IP_$*=$(IP_$*)"; echo "BROPTIONS_$*=$(call default,BROPTIONS,$*)"; } > $@
 
 cache/controller.%: cache/bridge.%
 	@echo "Setting controller $(call default,CONTROLLER,$*) on $(call display,$*) - logs in $(call log,$@)"
-	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl set-controller $(BRIDGE) $(call default,CONTROLLER,$*) > $(call log,$@) 2>&1 \
-	 && echo "CONTROLLER_$*=$(call default,CONTROLLER,$*)" > $@
+	@$(SSH) $(HOST_$*) $(SUDO) ovs-vsctl set-controller $(BRIDGE) $(call default,CONTROLLER,$*) > $(call log,$@) 2>&1
+	@echo "CONTROLLER_$*=$(call default,CONTROLLER,$*)" > $@
 
 # xxx this probably needs a more thorough cleanup in cache/
 cache/stop.%: del-bridge.%
@@ -224,7 +228,7 @@ U/%: del-iface.%@1 del-iface.%@2
 # We invalidate the cache accordingly.
 del-bridge.%: | cache/db.%
 	@echo "Deleting bridge on $(call display,$*)"
-	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-bridge $(BRIDGE);
+	@$(SSH) $(HOST_$*) $(SUDO) sliver-ovs del-bridge $(BRIDGE)
 	@rm -f cache/bridge.$* \
 	      cache/iface.$*$(SEP)*@1 cache/iface.*$(SEP)$*@2 \
 	      cache/port.$*$(SEP)*@1  cache/port.*$(SEP)$*@2  \
@@ -302,13 +306,11 @@ remote-snapshot-links: $(addprefix cache/rsnap.links.,$(CONF_NODE_IDS))
 
 cache/rsnap.ip.%: FORCE
 	@$(SSH) $(HOST_$*) $(SUDO) \
-		sliver-ovs get-local-ip $(BRIDGE) | sed 's/^/IP_$*=/' > $@ \
-	 || { rm $@; exit 1; }
+		sliver-ovs get-local-ip $(BRIDGE) | sed 's/^/IP_$*=/' > $@ 
 
 cache/rsnap.links.%: FORCE
 	@$(SSH) $(HOST_$*) $(SUDO) \
-		sliver-ovs get-local-links $(BRIDGE) | sed -n 's/^L/LINKS += /p' > $@ \
-	 || { rm $@; exit 1; }
+		sliver-ovs get-local-links $(BRIDGE) | sed -n 's/^L/LINKS += /p' > $@
 
 ### update sliver-ovs
 update: $(addprefix update-,$(CONF_NODE_IDS))
@@ -358,8 +360,8 @@ del-iface.%: | cache/db.$$(call get,%)
 cache/iface.%: cache/bridge.$$(call get,%) | cache/db.$$(call get,%)
 	@echo "Creating interface for link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs create-port $(BRIDGE) \
-		L$(call linkpart,$(*F)) > $(call log,$@) 2>&1 \
-	 && touch $@
+		L$(call linkpart,$(*F)) > $(call log,$@) 2>&1
+	@touch $@
 
 # cache/port.<node_id1>-<node_id2>@<endpoint>:
 # 	Retrieves the local port of link <node_id1>-<node_id2> on
@@ -372,8 +374,7 @@ cache/iface.%: cache/bridge.$$(call get,%) | cache/db.$$(call get,%)
 cache/port.%: cache/iface.% cache/switch.$$(call get,%)
 	@echo "Getting port number for link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) \
-		sliver-ovs get-local-endpoint L$(call linkpart,$(*F)) > $@ 2> $(call log,$@) \
-	 || { rm $@; exit 1; }
+		sliver-ovs get-local-endpoint L$(call linkpart,$(*F)) > $@ 2> $(call log,$@)
 
 
 # linkid=$(call linkpart,%)
@@ -391,8 +392,8 @@ cache/endpoint.%: cache/host.$$(call rget,%) cache/port.$$(call opp,%) cache/ifa
 	@echo "Setting port number of link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs set-remote-endpoint L$(call linkpart,$(*F)) \
 			$$(cat cache/host.$(call rget,$(*F))) \
-			$$(cat cache/port.$(call opp,$(*F))) 2> $(call log,$@) \
-	 && touch $@
+			$$(cat cache/port.$(call opp,$(*F))) 2> $(call log,$@)
+	@touch $@
 
 ####################
 CLEANTARGETS=$(addprefix del-,$(notdir $(wildcard cache/bridge.*)))
