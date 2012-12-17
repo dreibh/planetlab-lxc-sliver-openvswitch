@@ -57,12 +57,18 @@ struct netdev_dev_pltap {
     bool valid_local_ip;
     bool valid_local_netmask;
     bool finalized;
+    bool sync_flags_needed;
+    struct list sync_list;
     unsigned int change_seq;
 };
 
+static struct list sync_list;
+
 struct netdev_pltap {
     struct netdev netdev;
-} ;
+};
+
+static int af_inet_sock = -1;
 
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
@@ -74,6 +80,7 @@ static int netdev_pltap_create(const struct netdev_class *, const char *,
 static struct shash pltap_creating = SHASH_INITIALIZER(&pltap_creating);
 
 static void netdev_pltap_update_seq(struct netdev_dev_pltap *);
+static int get_flags(struct netdev_dev_pltap *dev, enum netdev_flags *flags);
 
 static bool
 is_pltap_class(const struct netdev_class *class)
@@ -96,6 +103,25 @@ netdev_pltap_cast(const struct netdev *netdev)
     return CONTAINER_OF(netdev, struct netdev_pltap, netdev);
 }
 
+static void sync_needed(struct netdev_dev_pltap *dev)
+{
+    if (dev->sync_flags_needed)
+        return;
+
+    dev->sync_flags_needed = true;
+    list_insert(&sync_list, &dev->sync_list);
+	
+}
+
+static void sync_done(struct netdev_dev_pltap *dev)
+{
+    if (!dev->sync_flags_needed)
+        return;
+
+    (void) list_remove(&dev->sync_list);
+    dev->sync_flags_needed = false;
+}
+
 static int
 netdev_pltap_create(const struct netdev_class *class OVS_UNUSED, const char *name,
                     struct netdev_dev **netdev_devp)
@@ -111,6 +137,9 @@ netdev_pltap_create(const struct netdev_class *class OVS_UNUSED, const char *nam
     netdev_dev->valid_local_ip = false;
     netdev_dev->valid_local_netmask = false;
     netdev_dev->finalized = false;
+    netdev_dev->flags = 0;
+    netdev_dev->sync_flags_needed = false;
+    list_init(&netdev_dev->sync_list);
 
 
     /* Open tap device. */
@@ -170,45 +199,39 @@ netdev_pltap_close(struct netdev *netdev_)
     free(netdev);
 }
 
-static int
-netdev_pltap_create_finalize(struct netdev_dev_pltap *dev)
+static int vsys_transaction(const char *script,
+	const char *msg, char *reply, size_t reply_size)
 {
     int ifd = -1, ofd = -1, maxfd;
-    size_t bytes_to_write, bytes_to_read = 1024,
+    size_t bytes_to_write, bytes_to_read,
            bytes_written = 0, bytes_read = 0;
     int error = 0;
-    char *msg = NULL, *reply = NULL;
+    char *ofname = NULL, *ifname = NULL;
 
-    if (dev->finalized)
-        return 0;
-    if (!dev->valid_local_ip || !dev->valid_local_netmask)
-        return 0;
-    
-    ofd = open("/vsys/vif_up.out", O_RDONLY | O_NONBLOCK);
+    ofname = xasprintf("/vsys/%s.out", script);
+    ifname = xasprintf("/vsys/%s.in", script);
+    if (!ofname || !ifname) {
+    	VLOG_ERR("Out of memory");
+	error = ENOMEM;
+	goto cleanup;
+    }
+
+    ofd = open(ofname, O_RDONLY | O_NONBLOCK);
     if (ofd < 0) {
-        VLOG_ERR("Cannot open vif_up.out: %s", strerror(errno));
+        VLOG_ERR("Cannot open %s: %s", ofname, strerror(errno));
 	error = errno;
 	goto cleanup;
     }
-    ifd = open("/vsys/vif_up.in", O_WRONLY | O_NONBLOCK);
+    ifd = open(ifname, O_WRONLY | O_NONBLOCK);
     if (ifd < 0) {
-        VLOG_ERR("Cannot open vif_up.in: %s", strerror(errno));
+        VLOG_ERR("Cannot open %s: %s", ifname, strerror(errno));
 	error = errno;
 	goto cleanup;
     }
     maxfd = (ifd < ofd) ? ofd : ifd;
 
-    msg = xasprintf("%s\n"IP_FMT"\n%d\n",
-       dev->real_name,
-       IP_ARGS(&dev->local_addr.sin_addr),
-       dev->local_netmask);
-    reply = (char*)xmalloc(bytes_to_read);
-    if (!msg || !reply) {
-        VLOG_ERR("Out of memory");
-	error = ENOMEM;
-	goto cleanup;
-    }
     bytes_to_write = strlen(msg);
+    bytes_to_read = reply_size;
     while (bytes_to_write || bytes_to_read) {
         fd_set readset, writeset, errorset;
 
@@ -236,7 +259,7 @@ netdev_pltap_create_finalize(struct netdev_dev_pltap *dev)
 	    ssize_t n = write(ifd, msg + bytes_written, bytes_to_write);    
 	    if (n < 0) {
 	    	if (errno != EAGAIN && errno != EINTR) {
-	            VLOG_ERR("write on vif_up.in: %s", strerror(errno));
+	            VLOG_ERR("write on %s: %s", ifname, strerror(errno));
 		    error = errno;
 		    goto cleanup;
 		}
@@ -251,7 +274,7 @@ netdev_pltap_create_finalize(struct netdev_dev_pltap *dev)
 	    ssize_t n = read(ofd, reply + bytes_read, bytes_to_read);    
 	    if (n < 0) {
 	    	if (errno != EAGAIN && errno != EINTR) {
-	            VLOG_ERR("read on vif_up.out: %s", strerror(errno));
+	            VLOG_ERR("read on %s: %s", ofname, strerror(errno));
 		    error = errno;
 		    goto cleanup;
 		}
@@ -265,13 +288,105 @@ netdev_pltap_create_finalize(struct netdev_dev_pltap *dev)
     }
     if (bytes_read) {
     	reply[bytes_read] = '\0';
-        VLOG_ERR("vif_up returned: %s", reply);
-	dev->error = reply;
-	reply = NULL;
+        VLOG_ERR("%s returned: %s", script, reply);
 	error = EAGAIN;
 	goto cleanup;
     }
+
+cleanup:
+    free(ofname);
+    free(ifname);
+    close(ifd);
+    close(ofd);
+    return error;
+}
+
+static int
+netdev_pltap_sync_flags(struct netdev_dev_pltap *dev)
+{
+    int error = 0;
+    char *msg = NULL, *reply = NULL;
+    const size_t reply_size = 1024;
+    enum netdev_flags flags = 0;
+
+
+    if (dev->fd < 0 || !dev->finalized) {
+    	/* pretend we have synchronized, we will do it later */
+	sync_needed(dev);
+        return 0;
+    }
+
+    error = get_flags(dev, &flags);
+    if (error) {
+    	VLOG_ERR("get_flags(%s): %s", dev->real_name, strerror(error));
+	goto cleanup;
+    }
+    VLOG_DBG("sync_flags(%s): current: %s %s",
+        dev->real_name,
+    	(flags & NETDEV_UP ? "UP" : "-"),
+    	(flags & NETDEV_PROMISC ? "PROMISC" : "-"));
+
+    if ((dev->flags & NETDEV_PROMISC) ^ (flags & NETDEV_PROMISC)) {
+	    msg = xasprintf("%s\n%s",
+	       dev->real_name,
+	       (dev->flags & NETDEV_PROMISC ? "" : "-\n"));
+	    reply = (char*)xmalloc(reply_size);
+	    if (!msg || !reply) {
+		VLOG_ERR("Out of memory\n");
+		error = ENOMEM;
+		goto cleanup;
+	    }
+	    error = vsys_transaction("promisc", msg, reply, reply_size);
+	    if (error) {
+		dev->error = reply;
+		reply = NULL; /* prevent free of reply msg */
+		goto cleanup;
+	    }
+	    netdev_pltap_update_seq(dev);
+    }
+
+cleanup:
+
+    sync_done(dev);
+    free(msg);
+    free(reply);
+
+    return error;
+}
+
+static int
+netdev_pltap_create_finalize(struct netdev_dev_pltap *dev)
+{
+    int error = 0;
+    char *msg = NULL, *reply = NULL;
+    const size_t reply_size = 1024;
+
+    if (dev->finalized)
+        return 0;
+    if (!dev->valid_local_ip || !dev->valid_local_netmask)
+        return 0;
+    
+    msg = xasprintf("%s\n"IP_FMT"\n%d\n",
+       dev->real_name,
+       IP_ARGS(&dev->local_addr.sin_addr),
+       dev->local_netmask);
+    reply = (char*)xmalloc(reply_size);
+    if (!msg || !reply) {
+        VLOG_ERR("Out of memory");
+	error = ENOMEM;
+	goto cleanup;
+    }
+    error = vsys_transaction("vif_up", msg, reply, reply_size);
+    if (error) {
+	dev->error = reply;
+	reply = NULL; /* prevent free of reply msg */
+	goto cleanup;
+    }
     dev->finalized = true;
+    error = netdev_pltap_sync_flags(dev);
+    if (error) {
+    	goto cleanup;
+    }
     free(dev->error);
     dev->error = NULL;
     netdev_pltap_update_seq(dev);
@@ -279,8 +394,6 @@ netdev_pltap_create_finalize(struct netdev_dev_pltap *dev)
 cleanup:
     free(msg);
     free(reply);
-    close(ifd);
-    close(ofd);
     return error;
 }
 
@@ -382,7 +495,7 @@ netdev_pltap_send(struct netdev *netdev_, const void *buffer, size_t size)
     char prefix[4] = { 0, 0, 8, 6 };
     struct iovec iov[2] = {
         { .iov_base = prefix, .iov_len = 4 },
-	{ .iov_base = buffer, .iov_len = size }
+	{ .iov_base = (char*) buffer, .iov_len = size }
     };
     if (dev->fd < 0 || !dev->finalized)
         return EAGAIN;
@@ -444,39 +557,48 @@ netdev_pltap_set_etheraddr(struct netdev *netdevi OVS_UNUSED,
     return ENOTSUP;
 }
 
+
 // XXX from netdev-linux.c
 static int
-get_etheraddr(const char *netdev_name, uint8_t ea[ETH_ADDR_LEN])
+get_etheraddr(struct netdev_dev_pltap *dev, uint8_t ea[ETH_ADDR_LEN])
 {
     struct ifreq ifr;
     int hwaddr_family;
-    int af_inet_sock;
-
-    /* Create AF_INET socket. */
-    af_inet_sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (af_inet_sock < 0) {
-        VLOG_ERR("failed to create inet socket: %s", strerror(errno));
-    }
 
     memset(&ifr, 0, sizeof ifr);
-    ovs_strzcpy(ifr.ifr_name, netdev_name, sizeof ifr.ifr_name);
+    ovs_strzcpy(ifr.ifr_name, dev->real_name, sizeof ifr.ifr_name);
     if (ioctl(af_inet_sock, SIOCGIFHWADDR, &ifr) < 0) {
         /* ENODEV probably means that a vif disappeared asynchronously and
          * hasn't been removed from the database yet, so reduce the log level
          * to INFO for that case. */
         VLOG(errno == ENODEV ? VLL_INFO : VLL_ERR,
              "ioctl(SIOCGIFHWADDR) on %s device failed: %s",
-             netdev_name, strerror(errno));
-	close(af_inet_sock);
+             dev->real_name, strerror(errno));
         return errno;
     }
     hwaddr_family = ifr.ifr_hwaddr.sa_family;
     if (hwaddr_family != AF_UNSPEC && hwaddr_family != ARPHRD_ETHER) {
         VLOG_WARN("%s device has unknown hardware address family %d",
-                  netdev_name, hwaddr_family);
+                  dev->real_name, hwaddr_family);
     }
     memcpy(ea, ifr.ifr_hwaddr.sa_data, ETH_ADDR_LEN);
-    close(af_inet_sock);
+    return 0;
+}
+
+static int
+get_flags(struct netdev_dev_pltap *dev, enum netdev_flags *flags)
+{
+    struct ifreq ifr;
+
+    memset(&ifr, 0, sizeof ifr);
+    ovs_strzcpy(ifr.ifr_name, dev->real_name, sizeof ifr.ifr_name);
+    if (ioctl(af_inet_sock, SIOCGIFFLAGS, &ifr) < 0)
+    	return errno;
+    *flags = 0;
+    if (ifr.ifr_flags & IFF_UP)
+    	*flags |= NETDEV_UP;
+    if (ifr.ifr_flags & IFF_PROMISC)
+        *flags |= NETDEV_PROMISC;
     return 0;
 }
 
@@ -488,7 +610,7 @@ netdev_pltap_get_etheraddr(const struct netdev *netdev,
     	netdev_dev_pltap_cast(netdev_get_dev(netdev));
     if (dev->fd < 0 || !dev->finalized)
         return EAGAIN;
-    return get_etheraddr(dev->real_name, mac);
+    return get_etheraddr(dev, mac);
 }
 
 
@@ -505,6 +627,7 @@ netdev_pltap_set_stats(struct netdev *netdev OVS_UNUSED, const struct netdev_sta
     return ENOTSUP;
 }
 
+
 static int
 netdev_pltap_update_flags(struct netdev *netdev,
                           enum netdev_flags off, enum netdev_flags on,
@@ -517,13 +640,14 @@ netdev_pltap_update_flags(struct netdev *netdev,
         return EINVAL;
     }
 
-    // XXX should we actually do something with these flags?
     *old_flagsp = dev->flags;
     dev->flags |= on;
     dev->flags &= ~off;
     if (*old_flagsp != dev->flags) {
-        netdev_pltap_update_seq(dev);
+	/* we cannot sync here, since we may be in a signal handler */
+        sync_needed(dev);
     }
+
     return 0;
 }
 
@@ -566,16 +690,37 @@ netdev_pltap_get_real_name(struct unixctl_conn *conn,
 static int
 netdev_pltap_init(void)
 {
+    list_init(&sync_list);
+    af_inet_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (af_inet_sock < 0) {
+        VLOG_ERR("failed to create inet socket: %s", strerror(errno));
+    }
     unixctl_command_register("netdev-pltap/get-tapname", "port",
                              1, 1, netdev_pltap_get_real_name, NULL);
     return 0;
 }
 
+static void
+netdev_pltap_run(void)
+{
+    struct netdev_dev_pltap *iter, *next;
+    LIST_FOR_EACH_SAFE(iter, next, sync_list, &sync_list) {
+        netdev_pltap_sync_flags(iter);
+    }
+}
+
+static void
+netdev_pltap_wait(void)
+{
+    if (!list_is_empty(&sync_list))
+        poll_immediate_wake();
+}
+
 const struct netdev_class netdev_pltap_class = {
     "pltap",
     netdev_pltap_init,
-    NULL,  
-    NULL,            
+    netdev_pltap_run,  
+    netdev_pltap_wait,            
 
     netdev_pltap_create,
     netdev_pltap_destroy,
