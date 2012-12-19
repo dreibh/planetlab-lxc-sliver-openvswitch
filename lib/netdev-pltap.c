@@ -77,8 +77,6 @@ static struct shash pltap_netdev_devs = SHASH_INITIALIZER(&pltap_netdev_devs);
 static int netdev_pltap_create(const struct netdev_class *, const char *,
                                struct netdev_dev **);
 
-static struct shash pltap_creating = SHASH_INITIALIZER(&pltap_creating);
-
 static void netdev_pltap_update_seq(struct netdev_dev_pltap *);
 static int get_flags(struct netdev_dev_pltap *dev, enum netdev_flags *flags);
 
