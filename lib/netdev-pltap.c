@@ -668,7 +668,9 @@ netdev_pltap_update_flags(struct netdev *netdev,
         return EINVAL;
     }
 
-    error = get_flags(dev, &dev->flags);
+    if (netdev_pltap_finalized(dev)) {
+        error = get_flags(dev, &dev->flags);
+    }
     *old_flagsp = dev->flags;
     dev->new_flags |= on;
     dev->new_flags &= ~off;
