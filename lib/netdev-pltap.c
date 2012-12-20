@@ -338,6 +338,37 @@ cleanup:
     return error;
 }
 
+static int
+netdev_pltap_down(struct netdev_dev_pltap *dev)
+{
+    int error;
+    char *msg = NULL, *reply = NULL;
+    const size_t reply_size = 1024;
+
+    if (!netdev_pltap_finalized(dev)) {
+        return 0;
+    }
+    
+    msg = xasprintf("%s\n", dev->real_name);
+    reply = (char*)xmalloc(reply_size);
+    if (!msg || !reply) {
+        VLOG_ERR("Out of memory\n");
+        error = ENOMEM;
+	goto cleanup;
+    }
+    error = vsys_transaction("vif_down", msg, reply, reply_size);
+    if (error) {
+	goto cleanup;
+    }
+    netdev_pltap_update_seq(dev);
+
+cleanup:
+    free(msg);
+    free(reply);
+
+    return error;
+}
+
 static void
 netdev_pltap_sync_flags(struct netdev_dev_pltap *dev)
 {
@@ -357,7 +388,9 @@ netdev_pltap_sync_flags(struct netdev_dev_pltap *dev)
 
     if ((dev->new_flags & NETDEV_UP) && !(dev->flags & NETDEV_UP)) {
         (void) netdev_pltap_up(dev);
-    } /* TODO: implement the down case */
+    } else if (!(dev->new_flags & NETDEV_UP) && (dev->flags & NETDEV_UP)) {
+        (void) netdev_pltap_down(dev);
+    }
 
     if ((dev->new_flags & NETDEV_PROMISC) ^ (dev->flags & NETDEV_PROMISC)) {
 	msg = xasprintf("%s\n%s",
