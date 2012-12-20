@@ -369,12 +369,41 @@ cleanup:
     return error;
 }
 
-static void
-netdev_pltap_sync_flags(struct netdev_dev_pltap *dev)
+static int
+netdev_pltap_promisc(struct netdev_dev_pltap *dev, bool promisc)
 {
     int error = 0;
     char *msg = NULL, *reply = NULL;
     const size_t reply_size = 1024;
+
+    if (!netdev_pltap_finalized(dev)) {
+        return 0;
+    }
+
+    msg = xasprintf("%s\n%s",
+       dev->real_name,
+       (promisc ? "" : "-\n"));
+    reply = (char*)xmalloc(reply_size);
+    if (!msg || !reply) {
+        VLOG_ERR("Out of memory\n");
+        goto cleanup;
+    }
+    error = vsys_transaction("promisc", msg, reply, reply_size);
+    if (error) {
+        goto cleanup;
+    }
+    netdev_pltap_update_seq(dev);
+
+cleanup:
+    free(msg);
+    free(reply);
+
+    return error;
+}
+
+static void
+netdev_pltap_sync_flags(struct netdev_dev_pltap *dev)
+{
 
     if (dev->fd < 0 || !netdev_pltap_finalized(dev))
     	return;
@@ -393,28 +422,10 @@ netdev_pltap_sync_flags(struct netdev_dev_pltap *dev)
     }
 
     if ((dev->new_flags & NETDEV_PROMISC) ^ (dev->flags & NETDEV_PROMISC)) {
-	msg = xasprintf("%s\n%s",
-	   dev->real_name,
-	   (dev->new_flags & NETDEV_PROMISC ? "" : "-\n"));
-	reply = (char*)xmalloc(reply_size);
-	if (!msg || !reply) {
-	    VLOG_ERR("Out of memory\n");
-	    goto cleanup;
-	}
-	error = vsys_transaction("promisc", msg, reply, reply_size);
-	if (error) {
-	    goto cleanup;
-	}
-	netdev_pltap_update_seq(dev);
+        (void) netdev_pltap_promisc(dev, dev->new_flags & NETDEV_PROMISC);
     }
 
-cleanup:
-
     sync_done(dev);
-    free(msg);
-    free(reply);
-
-    return error;
 }
 
 
