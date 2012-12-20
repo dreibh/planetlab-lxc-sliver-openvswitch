@@ -203,13 +203,26 @@ netdev_pltap_close(struct netdev *netdev_)
 }
 
 static int vsys_transaction(const char *script,
-	const char *msg, char *reply, size_t reply_size)
+	const char **preply, char *format, ...)
 {
+    char *msg = NULL, *reply = NULL;
+    const size_t reply_size = 1024;
     int ifd = -1, ofd = -1, maxfd;
     size_t bytes_to_write, bytes_to_read,
            bytes_written = 0, bytes_read = 0;
     int error = 0;
     char *ofname = NULL, *ifname = NULL;
+    va_list args;
+
+    va_start(args, format);
+    msg = xvasprintf(format, args);
+    va_end(args);
+    reply = (char*)xmalloc(reply_size);
+    if (!msg || !reply) {
+    	VLOG_ERR("Out of memory");
+	error = ENOMEM;
+	goto cleanup;
+    }
 
     ofname = xasprintf("/vsys/%s.out", script);
     ifname = xasprintf("/vsys/%s.in", script);
@@ -291,12 +304,19 @@ static int vsys_transaction(const char *script,
     }
     if (bytes_read) {
     	reply[bytes_read] = '\0';
-        VLOG_ERR("%s returned: %s", script, reply);
+	if (preply) {
+		*preply = reply;
+		reply = NULL; /* prevent freeing the reply msg */
+	} else {
+		VLOG_ERR("%s returned: %s", script, reply);
+	}
 	error = EAGAIN;
 	goto cleanup;
     }
 
 cleanup:
+    free(msg);
+    free(reply);
     free(ofname);
     free(ifname);
     close(ifd);
@@ -307,98 +327,36 @@ cleanup:
 static int
 netdev_pltap_up(struct netdev_dev_pltap *dev)
 {
-    int error;
-    char *msg = NULL, *reply = NULL;
-    const size_t reply_size = 1024;
-
     if (!netdev_pltap_finalized(dev)) {
         return 0;
     }
     
-    msg = xasprintf("%s\n"IP_FMT"\n%d\n",
-       dev->real_name,
-       IP_ARGS(&dev->local_addr.sin_addr),
-       dev->local_netmask);
-    reply = (char*)xmalloc(reply_size);
-    if (!msg || !reply) {
-        VLOG_ERR("Out of memory\n");
-        error = ENOMEM;
-	goto cleanup;
-    }
-    error = vsys_transaction("vif_up", msg, reply, reply_size);
-    if (error) {
-	goto cleanup;
-    }
-    netdev_pltap_update_seq(dev);
-
-cleanup:
-    free(msg);
-    free(reply);
-
-    return error;
+    return vsys_transaction("vif_up", NULL, "%s\n"IP_FMT"\n%d\n",
+	       dev->real_name,
+	       IP_ARGS(&dev->local_addr.sin_addr),
+	       dev->local_netmask);
 }
 
 static int
 netdev_pltap_down(struct netdev_dev_pltap *dev)
 {
-    int error;
-    char *msg = NULL, *reply = NULL;
-    const size_t reply_size = 1024;
-
     if (!netdev_pltap_finalized(dev)) {
         return 0;
     }
     
-    msg = xasprintf("%s\n", dev->real_name);
-    reply = (char*)xmalloc(reply_size);
-    if (!msg || !reply) {
-        VLOG_ERR("Out of memory\n");
-        error = ENOMEM;
-	goto cleanup;
-    }
-    error = vsys_transaction("vif_down", msg, reply, reply_size);
-    if (error) {
-	goto cleanup;
-    }
-    netdev_pltap_update_seq(dev);
-
-cleanup:
-    free(msg);
-    free(reply);
-
-    return error;
+    return vsys_transaction("vif_down", NULL, "%s\n", dev->real_name);
 }
 
 static int
 netdev_pltap_promisc(struct netdev_dev_pltap *dev, bool promisc)
 {
-    int error = 0;
-    char *msg = NULL, *reply = NULL;
-    const size_t reply_size = 1024;
-
     if (!netdev_pltap_finalized(dev)) {
         return 0;
     }
 
-    msg = xasprintf("%s\n%s",
-       dev->real_name,
-       (promisc ? "" : "-\n"));
-    reply = (char*)xmalloc(reply_size);
-    if (!msg || !reply) {
-        VLOG_ERR("Out of memory\n");
-        goto cleanup;
-    }
-    error = vsys_transaction("promisc", msg, reply, reply_size);
-    if (error) {
-        goto cleanup;
-    }
-    netdev_pltap_update_seq(dev);
-
-cleanup:
-    free(msg);
-    free(reply);
-
-    return error;
+    return vsys_transaction("promisc", NULL, "%s\n%s",
+	       dev->real_name,
+	       (promisc ? "" : "-\n"));
 }
 
 static void
@@ -425,6 +383,7 @@ netdev_pltap_sync_flags(struct netdev_dev_pltap *dev)
         (void) netdev_pltap_promisc(dev, dev->new_flags & NETDEV_PROMISC);
     }
 
+    netdev_pltap_update_seq(dev);
     sync_done(dev);
 }
 
