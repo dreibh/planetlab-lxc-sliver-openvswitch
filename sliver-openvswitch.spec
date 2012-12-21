@@ -2,7 +2,7 @@
 # to check for any change:
 # grep AC_INIT configure.ac 
 %define version 1.9.90
-%define taglevel 1
+%define taglevel 2
 
 %define debug_package %{nil}
 
@@ -49,6 +49,11 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Fri Dec 21 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.9.90-2
+- merged with upstream
+- handling of promisc &up/down flags for tap devices
+- small improvements to the Makefile
+
 * Fri Nov 23 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.8.90-6
 - fixes in the exp-tool makefile (bash redirections, scp with key..)
 
