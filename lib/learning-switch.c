@@ -200,15 +200,19 @@ lswitch_handshake(struct lswitch *sw)
                 error = rconn_send(sw->rconn, msg, NULL);
             }
         }
+        if (protocol & usable_protocols) {
+            for (i = 0; !error && i < sw->n_default_flows; i++) {
+                msg = ofputil_encode_flow_mod(&sw->default_flows[i], protocol);
+                error = rconn_send(sw->rconn, msg, NULL);
+            }
 
-        for (i = 0; !error && i < sw->n_default_flows; i++) {
-            msg = ofputil_encode_flow_mod(&sw->default_flows[i], protocol);
-            error = rconn_send(sw->rconn, msg, NULL);
-        }
-
-        if (error) {
-            VLOG_INFO_RL(&rl, "%s: failed to queue default flows (%s)",
-                         rconn_get_name(sw->rconn), strerror(error));
+            if (error) {
+                VLOG_INFO_RL(&rl, "%s: failed to queue default flows (%s)",
+                             rconn_get_name(sw->rconn), strerror(error));
+            }
+        } else {
+            VLOG_INFO_RL(&rl, "%s: failed to set usable protocol",
+                         rconn_get_name(sw->rconn));
         }
     }
     sw->protocol = protocol;
@@ -342,6 +346,8 @@ lswitch_process_packet(struct lswitch *sw, const struct ofpbuf *msg)
     case OFPTYPE_PORT_MOD:
     case OFPTYPE_BARRIER_REQUEST:
     case OFPTYPE_BARRIER_REPLY:
+    case OFPTYPE_QUEUE_GET_CONFIG_REQUEST:
+    case OFPTYPE_QUEUE_GET_CONFIG_REPLY:
     case OFPTYPE_DESC_STATS_REQUEST:
     case OFPTYPE_DESC_STATS_REPLY:
     case OFPTYPE_FLOW_STATS_REQUEST:
@@ -362,13 +368,30 @@ lswitch_process_packet(struct lswitch *sw, const struct ofpbuf *msg)
     case OFPTYPE_FLOW_MOD_TABLE_ID:
     case OFPTYPE_SET_PACKET_IN_FORMAT:
     case OFPTYPE_FLOW_AGE:
-    case OFPTYPE_SET_ASYNC_CONFIG:
     case OFPTYPE_SET_CONTROLLER_ID:
     case OFPTYPE_FLOW_MONITOR_STATS_REQUEST:
     case OFPTYPE_FLOW_MONITOR_STATS_REPLY:
     case OFPTYPE_FLOW_MONITOR_CANCEL:
     case OFPTYPE_FLOW_MONITOR_PAUSED:
     case OFPTYPE_FLOW_MONITOR_RESUMED:
+    case OFPTYPE_GET_ASYNC_REQUEST:
+    case OFPTYPE_GET_ASYNC_REPLY:
+    case OFPTYPE_SET_ASYNC_CONFIG:
+    case OFPTYPE_METER_MOD:
+    case OFPTYPE_GROUP_REQUEST:
+    case OFPTYPE_GROUP_REPLY:
+    case OFPTYPE_GROUP_DESC_REQUEST:
+    case OFPTYPE_GROUP_DESC_REPLY:
+    case OFPTYPE_GROUP_FEATURES_REQUEST:
+    case OFPTYPE_GROUP_FEATURES_REPLY:
+    case OFPTYPE_METER_REQUEST:
+    case OFPTYPE_METER_REPLY:
+    case OFPTYPE_METER_CONFIG_REQUEST:
+    case OFPTYPE_METER_CONFIG_REPLY:
+    case OFPTYPE_METER_FEATURES_REQUEST:
+    case OFPTYPE_METER_FEATURES_REPLY:
+    case OFPTYPE_TABLE_FEATURES_REQUEST:
+    case OFPTYPE_TABLE_FEATURES_REPLY:
     default:
         if (VLOG_IS_DBG_ENABLED()) {
             char *s = ofp_to_string(msg->data, msg->size, 2);
@@ -535,7 +558,7 @@ process_packet_in(struct lswitch *sw, const struct ofp_header *oh)
 
     /* Extract flow data from 'opi' into 'flow'. */
     ofpbuf_use_const(&pkt, pi.packet, pi.packet_len);
-    flow_extract(&pkt, 0, NULL, pi.fmd.in_port, &flow);
+    flow_extract(&pkt, 0, 0, NULL, pi.fmd.in_port, &flow);
     flow.tunnel.tun_id = pi.fmd.tun_id;
 
     /* Choose output port. */

@@ -272,16 +272,12 @@ struct vlan_eth_header {
 } __attribute__((packed));
 BUILD_ASSERT_DECL(VLAN_ETH_HEADER_LEN == sizeof(struct vlan_eth_header));
 
-/* The "(void) (ip)[0]" below has no effect on the value, since it's the first
- * argument of a comma expression, but it makes sure that 'ip' is a pointer.
- * This is useful since a common mistake is to pass an integer instead of a
- * pointer to IP_ARGS. */
-#define IP_FMT "%"PRIu8".%"PRIu8".%"PRIu8".%"PRIu8
+#define IP_FMT "%"PRIu32".%"PRIu32".%"PRIu32".%"PRIu32
 #define IP_ARGS(ip)                             \
-        ((void) (ip)[0], ((uint8_t *) ip)[0]),  \
-        ((uint8_t *) ip)[1],                    \
-        ((uint8_t *) ip)[2],                    \
-        ((uint8_t *) ip)[3]
+    ntohl(ip) >> 24,                            \
+    (ntohl(ip) >> 16) & 0xff,                   \
+    (ntohl(ip) >> 8) & 0xff,                    \
+    ntohl(ip) & 0xff
 
 /* Example:
  *
@@ -490,6 +486,9 @@ void *snap_compose(struct ofpbuf *, const uint8_t eth_dst[ETH_ADDR_LEN],
                    unsigned int oui, uint16_t snap_type, size_t size);
 void packet_set_ipv4(struct ofpbuf *, ovs_be32 src, ovs_be32 dst, uint8_t tos,
                      uint8_t ttl);
+void packet_set_ipv6(struct ofpbuf *, uint8_t proto, const ovs_be32 src[4],
+                     const ovs_be32 dst[4], uint8_t tc,
+                     ovs_be32 fl, uint8_t hlmit);
 void packet_set_tcp_port(struct ofpbuf *, ovs_be16 src, ovs_be16 dst);
 void packet_set_udp_port(struct ofpbuf *, ovs_be16 src, ovs_be16 dst);
 

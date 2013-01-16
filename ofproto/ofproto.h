@@ -132,17 +132,25 @@ struct ofproto_controller {
     uint8_t dscp;               /* DSCP value for controller connection. */
 };
 
-#define DEFAULT_MFR_DESC "Nicira, Inc."
-#define DEFAULT_HW_DESC "Open vSwitch"
-#define DEFAULT_SW_DESC VERSION
-#define DEFAULT_SERIAL_DESC "None"
-#define DEFAULT_DP_DESC "None"
-
 void ofproto_enumerate_types(struct sset *types);
 const char *ofproto_normalize_type(const char *);
 
 int ofproto_enumerate_names(const char *type, struct sset *names);
 void ofproto_parse_name(const char *name, char **dp_name, char **dp_type);
+
+/* An interface hint element, which is used by ofproto_init() to
+ * describe the caller's understanding of the startup state. */
+struct iface_hint {
+    char *br_name;              /* Name of owning bridge. */
+    char *br_type;              /* Type of owning bridge. */
+    uint16_t ofp_port;          /* OpenFlow port number. */
+};
+
+void ofproto_init(const struct shash *iface_hints);
+
+int ofproto_type_run(const char *datapath_type);
+int ofproto_type_run_fast(const char *datapath_type);
+void ofproto_type_wait(const char *datapath_type);
 
 int ofproto_create(const char *datapath, const char *datapath_type,
                    struct ofproto **ofprotop);
@@ -193,6 +201,8 @@ int ofproto_port_dump_done(struct ofproto_port_dump *);
 #define OFPROTO_FLOW_EVICTION_THRESHOLD_DEFAULT  1000
 #define OFPROTO_FLOW_EVICTION_THRESHOLD_MIN 100
 
+const char *ofproto_port_open_type(const char *datapath_type,
+                                   const char *port_type);
 int ofproto_port_add(struct ofproto *, struct netdev *, uint16_t *ofp_portp);
 int ofproto_port_del(struct ofproto *, uint16_t ofp_port);
 int ofproto_port_get_stats(const struct ofport *, struct netdev_stats *stats);
@@ -204,7 +214,8 @@ int ofproto_port_query_by_name(const struct ofproto *, const char *devname,
 uint64_t ofproto_get_datapath_id(const struct ofproto *);
 void ofproto_set_datapath_id(struct ofproto *, uint64_t datapath_id);
 void ofproto_set_controllers(struct ofproto *,
-                             const struct ofproto_controller *, size_t n);
+                             const struct ofproto_controller *, size_t n,
+                             uint32_t allowed_versions);
 void ofproto_set_fail_mode(struct ofproto *, enum ofproto_fail_mode fail_mode);
 void ofproto_reconnect_controllers(struct ofproto *);
 void ofproto_set_extra_in_band_remotes(struct ofproto *,
@@ -212,11 +223,9 @@ void ofproto_set_extra_in_band_remotes(struct ofproto *,
 void ofproto_set_in_band_queue(struct ofproto *, int queue_id);
 void ofproto_set_flow_eviction_threshold(struct ofproto *, unsigned threshold);
 void ofproto_set_forward_bpdu(struct ofproto *, bool forward_bpdu);
-void ofproto_set_mac_idle_time(struct ofproto *, unsigned idle_time);
-void ofproto_set_desc(struct ofproto *,
-                      const char *mfr_desc, const char *hw_desc,
-                      const char *sw_desc, const char *serial_desc,
-                      const char *dp_desc);
+void ofproto_set_mac_table_config(struct ofproto *, unsigned idle_time,
+                                  size_t max_entries);
+void ofproto_set_dp_desc(struct ofproto *, const char *dp_desc);
 int ofproto_set_snoops(struct ofproto *, const struct sset *snoops);
 int ofproto_set_netflow(struct ofproto *,
                         const struct netflow_options *nf_options);

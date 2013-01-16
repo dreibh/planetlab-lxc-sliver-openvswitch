@@ -1208,9 +1208,10 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
  *     value, called "nxm_mask".  For each 1-bit in position J in nxm_mask, the
  *     nx_match matches only packets for which bit J in the given field's value
  *     matches bit J in nxm_value.  A 0-bit in nxm_mask causes the
- *     corresponding bits in nxm_value and the field's value to be ignored.
- *     (The sense of the nxm_mask bits is the opposite of that used by the
- *     "wildcards" member of struct ofp10_match.)
+ *     corresponding bit in nxm_value is ignored (it should be 0; Open vSwitch
+ *     may enforce this someday), as is the corresponding bit in the field's
+ *     value.  (The sense of the nxm_mask bits is the opposite of that used by
+ *     the "wildcards" member of struct ofp10_match.)
  *
  *     When nxm_hasmask is 1, nxm_length is always even.
  *
@@ -1516,7 +1517,7 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
  * otherwise.  Only ARP opcodes between 1 and 255 should be specified for
  * matching.
  *
- * Prereqs: NXM_OF_ETH_TYPE must match 0x0806 exactly.
+ * Prereqs: NXM_OF_ETH_TYPE must match either 0x0806 or 0x8035.
  *
  * Format: 16-bit integer in network byte order.
  *
@@ -1526,7 +1527,7 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
 /* For an Ethernet+IP ARP packet, the source or target protocol address
  * in the ARP header.  Always 0 otherwise.
  *
- * Prereqs: NXM_OF_ETH_TYPE must match 0x0806 exactly.
+ * Prereqs: NXM_OF_ETH_TYPE must match either 0x0806 or 0x8035.
  *
  * Format: 32-bit integer in network byte order.
  *
@@ -1578,9 +1579,11 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
 
 /* Tunnel ID.
  *
- * For a packet received via GRE tunnel including a (32-bit) key, the key is
- * stored in the low 32-bits and the high bits are zeroed.  For other packets,
- * the value is 0.
+ * For a packet received via a GRE or VXLAN tunnel including a (32-bit) key, the
+ * key is stored in the low 32-bits and the high bits are zeroed.  For other
+ * packets, the value is 0.
+ *
+ * All zero bits, for packets not received via a keyed tunnel.
  *
  * Prereqs: None.
  *
@@ -1593,7 +1596,7 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
 /* For an Ethernet+IP ARP packet, the source or target hardware address
  * in the ARP header.  Always 0 otherwise.
  *
- * Prereqs: NXM_OF_ETH_TYPE must match 0x0806 exactly.
+ * Prereqs: NXM_OF_ETH_TYPE must match either 0x0806 or 0x8035.
  *
  * Format: 48-bit Ethernet MAC address.
  *
@@ -1767,8 +1770,7 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
 
 enum nx_flow_format {
     NXFF_OPENFLOW10 = 0,         /* Standard OpenFlow 1.0 compatible. */
-    NXFF_NXM = 2,                /* Nicira extended match. */
-    NXFF_OPENFLOW12 = 3          /* OpenFlow 1.2 format. */
+    NXFF_NXM = 2                 /* Nicira extended match. */
 };
 
 /* NXT_SET_FLOW_FORMAT request. */

@@ -28,6 +28,7 @@
 #include <linux/if_arp.h>
 #include <linux/if_vlan.h>
 #include <net/ip.h>
+#include <net/ipv6.h>
 #include <net/checksum.h>
 #include <net/dsfield.h>
 
@@ -166,6 +167,54 @@ static void set_ip_addr(struct sk_buff *skb, struct iphdr *nh,
 	*addr = new_addr;
 }
 
+static void update_ipv6_checksum(struct sk_buff *skb, u8 l4_proto,
+				 __be32 addr[4], const __be32 new_addr[4])
+{
+	int transport_len = skb->len - skb_transport_offset(skb);
+
+	if (l4_proto == IPPROTO_TCP) {
+		if (likely(transport_len >= sizeof(struct tcphdr)))
+			inet_proto_csum_replace16(&tcp_hdr(skb)->check, skb,
+						  addr, new_addr, 1);
+	} else if (l4_proto == IPPROTO_UDP) {
+		if (likely(transport_len >= sizeof(struct udphdr))) {
+			struct udphdr *uh = udp_hdr(skb);
+
+			if (uh->check ||
+			    get_ip_summed(skb) == OVS_CSUM_PARTIAL) {
+				inet_proto_csum_replace16(&uh->check, skb,
+							  addr, new_addr, 1);
+				if (!uh->check)
+					uh->check = CSUM_MANGLED_0;
+			}
+		}
+	}
+}
+
+static void set_ipv6_addr(struct sk_buff *skb, u8 l4_proto,
+			  __be32 addr[4], const __be32 new_addr[4],
+			  bool recalculate_csum)
+{
+	if (recalculate_csum)
+		update_ipv6_checksum(skb, l4_proto, addr, new_addr);
+
+	skb_clear_rxhash(skb);
+	memcpy(addr, new_addr, sizeof(__be32[4]));
+}
+
+static void set_ipv6_tc(struct ipv6hdr *nh, u8 tc)
+{
+	nh->priority = tc >> 4;
+	nh->flow_lbl[0] = (nh->flow_lbl[0] & 0x0F) | ((tc & 0x0F) << 4);
+}
+
+static void set_ipv6_fl(struct ipv6hdr *nh, u32 fl)
+{
+	nh->flow_lbl[0] = (nh->flow_lbl[0] & 0xF0) | (fl & 0x000F0000) >> 16;
+	nh->flow_lbl[1] = (fl & 0x0000FF00) >> 8;
+	nh->flow_lbl[2] = fl & 0x000000FF;
+}
+
 static void set_ip_ttl(struct sk_buff *skb, struct iphdr *nh, u8 new_ttl)
 {
 	csum_replace2(&nh->check, htons(nh->ttl << 8), htons(new_ttl << 8));
@@ -195,6 +244,47 @@ static int set_ipv4(struct sk_buff *skb, const struct ovs_key_ipv4 *ipv4_key)
 
 	if (ipv4_key->ipv4_ttl != nh->ttl)
 		set_ip_ttl(skb, nh, ipv4_key->ipv4_ttl);
+
+	return 0;
+}
+
+static int set_ipv6(struct sk_buff *skb, const struct ovs_key_ipv6 *ipv6_key)
+{
+	struct ipv6hdr *nh;
+	int err;
+	__be32 *saddr;
+	__be32 *daddr;
+
+	err = make_writable(skb, skb_network_offset(skb) +
+			    sizeof(struct ipv6hdr));
+	if (unlikely(err))
+		return err;
+
+	nh = ipv6_hdr(skb);
+	saddr = (__be32 *)&nh->saddr;
+	daddr = (__be32 *)&nh->daddr;
+
+	if (memcmp(ipv6_key->ipv6_src, saddr, sizeof(ipv6_key->ipv6_src)))
+		set_ipv6_addr(skb, ipv6_key->ipv6_proto, saddr,
+			      ipv6_key->ipv6_src, true);
+
+	if (memcmp(ipv6_key->ipv6_dst, daddr, sizeof(ipv6_key->ipv6_dst))) {
+		unsigned int offset = 0;
+		int flags = OVS_IP6T_FH_F_SKIP_RH;
+		bool recalc_csum = true;
+
+		if (ipv6_ext_hdr(nh->nexthdr))
+			recalc_csum = ipv6_find_hdr(skb, &offset,
+						    NEXTHDR_ROUTING, NULL,
+						    &flags) != NEXTHDR_ROUTING;
+
+		set_ipv6_addr(skb, ipv6_key->ipv6_proto, daddr,
+			      ipv6_key->ipv6_dst, recalc_csum);
+	}
+
+	set_ipv6_tc(nh, ipv6_key->ipv6_tclass);
+	set_ipv6_fl(nh, ntohl(ipv6_key->ipv6_label));
+	nh->hop_limit = ipv6_key->ipv6_hlimit;
 
 	return 0;
 }
@@ -290,7 +380,7 @@ static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 	upcall.cmd = OVS_PACKET_CMD_ACTION;
 	upcall.key = &OVS_CB(skb)->flow->key;
 	upcall.userdata = NULL;
-	upcall.pid = 0;
+	upcall.portid = 0;
 
 	for (a = nla_data(attr), rem = nla_len(attr); rem > 0;
 		 a = nla_next(a, &rem)) {
@@ -300,7 +390,7 @@ static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 			break;
 
 		case OVS_USERSPACE_ATTR_PID:
-			upcall.pid = nla_get_u32(a);
+			upcall.portid = nla_get_u32(a);
 			break;
 		}
 	}
@@ -345,16 +435,22 @@ static int execute_set_action(struct sk_buff *skb,
 		skb->priority = nla_get_u32(nested_attr);
 		break;
 
+	case OVS_KEY_ATTR_SKB_MARK:
+		skb_set_mark(skb, nla_get_u32(nested_attr));
+		break;
+
 	case OVS_KEY_ATTR_TUN_ID:
-		if (!OVS_CB(skb)->tun_key) {
-			/* If tun_key is NULL for this skb, assign it to
-			 * a value the caller passed in for action processing
-			 * and output. This can disappear once we drop support
-			 * for setting tun_id outside of tun_key.
-			 */
-			memset(tun_key, 0, sizeof(struct ovs_key_ipv4_tunnel));
-			OVS_CB(skb)->tun_key = tun_key;
-		}
+		/* If we're only using the TUN_ID action, store the value in a
+		 * temporary instance of struct ovs_key_ipv4_tunnel on the stack.
+		 * If both IPV4_TUNNEL and TUN_ID are being used together we
+		 * can't write into the IPV4_TUNNEL action, so make a copy and
+		 * write into that version.
+		 */
+		if (!OVS_CB(skb)->tun_key)
+			memset(tun_key, 0, sizeof(*tun_key));
+		else if (OVS_CB(skb)->tun_key != tun_key)
+			memcpy(tun_key, OVS_CB(skb)->tun_key, sizeof(*tun_key));
+		OVS_CB(skb)->tun_key = tun_key;
 
 		OVS_CB(skb)->tun_key->tun_id = nla_get_be64(nested_attr);
 		break;
@@ -369,6 +465,10 @@ static int execute_set_action(struct sk_buff *skb,
 
 	case OVS_KEY_ATTR_IPV4:
 		err = set_ipv4(skb, nla_data(nested_attr));
+		break;
+
+	case OVS_KEY_ATTR_IPV6:
+		err = set_ipv6(skb, nla_data(nested_attr));
 		break;
 
 	case OVS_KEY_ATTR_TCP:

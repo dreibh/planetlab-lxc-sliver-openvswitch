@@ -32,33 +32,7 @@ struct nlattr;
 struct ofpbuf;
 struct simap;
 
-#define OVSP_NONE UINT16_MAX
-
-static inline uint16_t
-ofp_port_to_odp_port(uint16_t ofp_port)
-{
-    switch (ofp_port) {
-    case OFPP_LOCAL:
-        return OVSP_LOCAL;
-    case OFPP_NONE:
-        return OVSP_NONE;
-    default:
-        return ofp_port;
-    }
-}
-
-static inline uint16_t
-odp_port_to_ofp_port(uint16_t odp_port)
-{
-    switch (odp_port) {
-    case OVSP_LOCAL:
-        return OFPP_LOCAL;
-    case OVSP_NONE:
-        return OFPP_NONE;
-    default:
-        return odp_port;
-    }
-}
+#define OVSP_NONE UINT32_MAX
 
 void format_odp_actions(struct ds *, const struct nlattr *odp_actions,
                         size_t actions_len);
@@ -82,6 +56,7 @@ int odp_actions_from_string(const char *, const struct simap *port_names,
  *  OVS_KEY_ATTR_TUN_ID        8    --     4     12
  *  OVS_KEY_ATTR_IPV4_TUNNEL  24    --     4     28
  *  OVS_KEY_ATTR_IN_PORT       4    --     4      8
+ *  OVS_KEY_ATTR_SKB_MARK      4    --     4      8
  *  OVS_KEY_ATTR_ETHERNET     12    --     4     16
  *  OVS_KEY_ATTR_ETHERTYPE     2     2     4      8  (outer VLAN ethertype)
  *  OVS_KEY_ATTR_8021Q         4    --     4      8
@@ -91,12 +66,12 @@ int odp_actions_from_string(const char *, const struct simap *port_names,
  *  OVS_KEY_ATTR_ICMPV6        2     2     4      8
  *  OVS_KEY_ATTR_ND           28    --     4     32
  *  -------------------------------------------------
- *  total                                       184
+ *  total                                       192
  *
  * We include some slack space in case the calculation isn't quite right or we
  * add another field and forget to adjust this value.
  */
-#define ODPUTIL_FLOW_KEY_BYTES 200
+#define ODPUTIL_FLOW_KEY_BYTES 256
 
 /* A buffer with sufficient size and alignment to hold an nlattr-formatted flow
  * key.  An array of "struct nlattr" might not, in theory, be sufficiently
@@ -109,7 +84,8 @@ void odp_flow_key_format(const struct nlattr *, size_t, struct ds *);
 int odp_flow_key_from_string(const char *s, const struct simap *port_names,
                              struct ofpbuf *);
 
-void odp_flow_key_from_flow(struct ofpbuf *, const struct flow *);
+void odp_flow_key_from_flow(struct ofpbuf *, const struct flow *,
+                            uint32_t odp_in_port);
 
 uint32_t odp_flow_key_hash(const struct nlattr *, size_t);
 

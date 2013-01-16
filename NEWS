@@ -1,5 +1,24 @@
 post-v1.9.0
 --------------------
+    - The maximum size of the MAC learning table is now configurable.
+    - New support for the VXLAN tunnel protocol (see the IETF draft here:
+      http://tools.ietf.org/html/draft-mahalingam-dutt-dcops-vxlan-02).
+    - With the Linux datapath, packets for new flows are now queued
+      separately on a per-port basis, so it should no longer be
+      possible for a large number of new flows arriving on one port to
+      prevent new flows from being processed on other ports.
+    - New "vlog/disable-rate-limit" and "vlog/enable-rate-limit" commands
+      available through ovs-appctl allow control over logging rate limits.
+    - The OpenFlow "dp_desc" may now be configured by setting the value of 
+      other-config:dp-desc in the Bridge table.
+    - Path MTU discovery is no longer supported.
+    - Backward-incompatible changes:
+      - Earlier Open vSwitch versions treated ANY as a wildcard in flow
+        syntax.  OpenFlow 1.1 adds a port named ANY, which introduces a
+        conflict.  ANY was rarely used in flow syntax, so we chose to
+        retire that meaning of ANY in favor of the OpenFlow 1.1 meaning.
+    - Inheritance of the Don't Fragment bit in IP tunnels (df_inherit) is
+      no longer supported.
 
 
 v1.9.0 - xx xxx xxxx
@@ -7,6 +26,10 @@ v1.9.0 - xx xxx xxxx
     - The tunneling code no longer assumes input and output keys are symmetric.
       If they are not, PMTUD needs to be disabled for tunneling to work. Note
       this only applies to flow-based keys.
+    - Datapath:
+      - Support for ipv6 set action.
+      - SKB mark matching and setting.
+      - support for Linux kernels up to 3.7
     - FreeBSD is now a supported platform, thanks to code contributions from
       Gaetano Catalli, Ed Maste, and Giuseppe Lettieri.
     - ovs-bugtool: New --ovs option to report only OVS related information.
@@ -17,6 +40,8 @@ v1.9.0 - xx xxx xxxx
       - Allow bitwise masking for SHA and THA fields in ARP, SLL and TLL
         fields in IPv6 neighbor discovery messages, and IPv6 flow label.
       - Adds support for writing to the metadata field for a flow.
+      - It is possible to request the OpenFlow port number with the
+        "ofport_request" column in the Interface table.
     - ovs-ofctl:
       - Commands and actions that accept port numbers now also accept keywords
         that represent those ports (such as LOCAL, NONE, and ALL).  This is
@@ -26,23 +51,43 @@ v1.9.0 - xx xxx xxxx
     - ovs-dpctl:
       - Support requesting the port number with the "port_no" option in
         the "add-if" command.
+      - The "dump-flows" and "del-flows" no longer require an argument
+        if only one datapath exists.
+    - ovs-appctl:
+      - New "dpif/dump-dps", "dpif/show", and "dpif/dump-flows" command
+        that mimic the equivalent ovs-dpctl commands.
     - ovs-pki: The "online PKI" features have been removed, along with
       the ovs-pki-cgi program that facilitated it, because of some
       alarmist insecurity claims.  We do not believe that these claims
       are true, but because we do not know of any users for this
       feature it seems better on balance to remove it.  (The ovs-pki-cgi
       program was not included in distribution packaging.)
-    - Tunnel Path MTU Discovery default value was set to 'disabled'.
+    - Tunnel Path MTU Discovery default value was set to 'disabled'.  This
+      feature is deprecated and will be removed soon.
     - ovsdb-server now enforces the immutability of immutable columns.  This
       was not enforced in earlier versions due to an oversight.
     - New support for a nonstandard form of GRE that supports a 64-bit key.
+    - The ofproto library is now responsible for assigning OpenFlow port
+      numbers.  An ofproto implementation should assign them when
+      port_construct() is called.
+    - All dpif-based bridges of a particular type share a common
+      datapath called "ovs-<type>", e.g. "ovs-system".  The ovs-dpctl
+      commands will now return information on that shared datapath.  To
+      get the equivalent bridge-specific information, use the new
+      "ovs-appctl dpif/*" commands.
+    - Tunnel header caching removed.
     - The following features are now deprecated.  They will be removed no
       earlier than February 2013.  Please email dev@openvswitch.org with
       concerns.
+        - Bridge compatibility.
         - Stable bond mode.
         - The autopath action.
         - Interface type "null".
         - Numeric values for reserved ports (see "ovs-ofctl" note above).
+        - Tunnel Path MTU Discovery.
+        - CAPWAP tunnel support.
+    - The data in the RARP packets can now be matched in the same way as the
+      data in ARP packets.
 
 
 v1.8.0 - xx xxx xxxx

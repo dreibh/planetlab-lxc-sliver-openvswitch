@@ -32,8 +32,15 @@ struct match;
 enum mf_field_id {
     /* Metadata. */
     MFF_TUN_ID,                 /* be64 */
+    MFF_TUN_SRC,                /* be32 */
+    MFF_TUN_DST,                /* be32 */
+    MFF_TUN_FLAGS,              /* be16 */
+    MFF_TUN_TTL,                /* u8 */
+    MFF_TUN_TOS,                /* u8 */
     MFF_METADATA,               /* be64 */
     MFF_IN_PORT,                /* be16 */
+    MFF_SKB_PRIORITY,           /* be32 */
+    MFF_SKB_MARK,               /* be32 */
 
 #if FLOW_N_REGS > 0
     MFF_REG0,                   /* be32 */
@@ -195,7 +202,8 @@ enum mf_string {
     MFS_IPV4,
     MFS_IPV6,
     MFS_OFP_PORT,               /* An OpenFlow port number or name. */
-    MFS_FRAG                    /* no, yes, first, later, not_later */
+    MFS_FRAG,                   /* no, yes, first, later, not_later */
+    MFS_TNL_FLAGS,              /* FLOW_TNL_F_* flags */
 };
 
 struct mf_field {

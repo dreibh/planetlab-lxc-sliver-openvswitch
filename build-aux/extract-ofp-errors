@@ -151,7 +151,8 @@ def extract_ofp_errors(filenames):
     names = []
     domain = {}
     reverse = {}
-    for domain_name in ("OF1.0", "OF1.1", "OF1.2", "NX1.0", "NX1.1"):
+    for domain_name in ("OF1.0", "OF1.1", "OF1.2", "OF1.3",
+                        "NX1.0", "NX1.1", "NX1.2", "NX1.3"):
         domain[domain_name] = {}
         reverse[domain_name] = {}
 
@@ -225,17 +226,22 @@ def extract_ofp_errors(filenames):
                 else:
                     code = None
 
-                target_map = {"OF1.0+": ("OF1.0", "OF1.1", "OF1.2"),
-                              "OF1.1+": ("OF1.1", "OF1.2"),
-                              "OF1.2+": ("OF1.2",),
+                target_map = {"OF1.0+": ("OF1.0", "OF1.1", "OF1.2", "OF1.3"),
+                              "OF1.1+": ("OF1.1", "OF1.2", "OF1.3"),
+                              "OF1.2+": ("OF1.2", "OF1.3"),
+                              "OF1.3+": ("OF1.3",),
                               "OF1.0":  ("OF1.0",),
                               "OF1.1":  ("OF1.1",),
                               "OF1.2":  ("OF1.2",),
-                              "NX1.0+": ("OF1.0", "OF1.1", "OF1.2"),
+                              "OF1.3":  ("OF1.3",),
+                              "NX1.0+": ("OF1.0", "OF1.1", "OF1.2", "OF1.3"),
+                              "NX1.1+": ("OF1.1", "OF1.2", "OF1.3"),
+                              "NX1.2+": ("OF1.2", "OF1.3"),
+                              "NX1.3+": ("OF1.3",),
                               "NX1.0":  ("OF1.0",),
                               "NX1.1":  ("OF1.1",),
-                              "NX1.1+": ("OF1.1",),
-                              "NX1.2":  ("OF1.2",)}
+                              "NX1.2":  ("OF1.2",),
+                              "NX1.3":  ("OF1.3",)}
                 if targets not in target_map:
                     fatal("%s: unknown error domain" % targets)
                 if targets.startswith('NX') and code < 0x100:
@@ -288,7 +294,6 @@ struct ofperr_domain {
     const char *name;
     uint8_t version;
     enum ofperr (*decode)(uint16_t type, uint16_t code);
-    enum ofperr (*decode_type)(uint16_t type);
     struct pair errors[OFPERR_N_ERRORS];
 };
 
@@ -327,24 +332,6 @@ static enum ofperr
     }
 
     return 0;
-}
-
-static enum ofperr
-%s_decode_type(uint16_t type)
-{
-    switch (type) {""" % name
-        for enum in names:
-            if enum not in map:
-                continue
-            type_, code = map[enum]
-            if code is not None:
-                continue
-            print "    case %d:" % type_
-            print "        return OFPERR_%s;" % enum
-        print """\
-    }
-
-    return 0;
 }"""
 
         print """
@@ -352,8 +339,7 @@ static const struct ofperr_domain %s = {
     "%s",
     %d,
     %s_decode,
-    %s_decode_type,
-    {""" % (name, description, version, name, name)
+    {""" % (name, description, version, name)
         for enum in names:
             if enum in map:
                 type_, code = map[enum]
@@ -369,6 +355,7 @@ static const struct ofperr_domain %s = {
     output_domain(reverse["OF1.0"], "ofperr_of10", "OpenFlow 1.0", 0x01)
     output_domain(reverse["OF1.1"], "ofperr_of11", "OpenFlow 1.1", 0x02)
     output_domain(reverse["OF1.2"], "ofperr_of12", "OpenFlow 1.2", 0x03)
+    output_domain(reverse["OF1.3"], "ofperr_of13", "OpenFlow 1.3", 0x04)
 
 if __name__ == '__main__':
     if '--help' in sys.argv:

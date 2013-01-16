@@ -14,7 +14,6 @@
 
 import errno
 import os
-import select
 import socket
 
 import ovs.poller
@@ -162,15 +161,17 @@ class Stream(object):
         is complete, returns 0 if the connection was successful or a positive
         errno value if it failed.  If the connection is still in progress,
         returns errno.EAGAIN."""
-        last_state = -1         # Always differs from initial self.state
-        while self.state != last_state:
-            last_state = self.state
-            if self.state == Stream.__S_CONNECTING:
-                self.__scs_connecting()
-            elif self.state == Stream.__S_CONNECTED:
-                return 0
-            elif self.state == Stream.__S_DISCONNECTED:
-                return self.error
+
+        if self.state == Stream.__S_CONNECTING:
+            self.__scs_connecting()
+
+        if self.state == Stream.__S_CONNECTING:
+            return errno.EAGAIN
+        elif self.state == Stream.__S_CONNECTED:
+            return 0
+        else:
+            assert self.state == Stream.__S_DISCONNECTED
+            return self.error
 
     def recv(self, n):
         """Tries to receive up to 'n' bytes from this stream.  Returns a
@@ -236,9 +237,9 @@ class Stream(object):
         if self.state == Stream.__S_CONNECTING:
             wait = Stream.W_CONNECT
         if wait == Stream.W_RECV:
-            poller.fd_wait(self.socket, select.POLLIN)
+            poller.fd_wait(self.socket, ovs.poller.POLLIN)
         else:
-            poller.fd_wait(self.socket, select.POLLOUT)
+            poller.fd_wait(self.socket, ovs.poller.POLLOUT)
 
     def connect_wait(self, poller):
         self.wait(poller, Stream.W_CONNECT)
@@ -324,7 +325,7 @@ class PassiveStream(object):
                 return error, None
 
     def wait(self, poller):
-        poller.fd_wait(self.socket, select.POLLIN)
+        poller.fd_wait(self.socket, ovs.poller.POLLIN)
 
     def __del__(self):
         # Don't delete the file: we might have forked.

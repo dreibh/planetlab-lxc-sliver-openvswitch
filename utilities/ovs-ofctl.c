@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,6 +44,7 @@
 #include "ofp-parse.h"
 #include "ofp-print.h"
 #include "ofp-util.h"
+#include "ofp-version-opt.h"
 #include "ofpbuf.h"
 #include "ofproto/ofproto.h"
 #include "openflow/nicira-ext.h"
@@ -52,6 +53,7 @@
 #include "poll-loop.h"
 #include "random.h"
 #include "stream-ssl.h"
+#include "socket-util.h"
 #include "timeval.h"
 #include "unixctl.h"
 #include "util.h"
@@ -146,6 +148,7 @@ parse_options(int argc, char *argv[])
         OPT_SORT,
         OPT_RSORT,
         DAEMON_OPTION_ENUMS,
+        OFP_VERSION_OPTION_ENUMS,
         VLOG_OPTION_ENUMS
     };
     static struct option long_options[] = {
@@ -159,13 +162,15 @@ parse_options(int argc, char *argv[])
         {"sort", optional_argument, NULL, OPT_SORT},
         {"rsort", optional_argument, NULL, OPT_RSORT},
         {"help", no_argument, NULL, 'h'},
-        {"version", no_argument, NULL, 'V'},
         DAEMON_LONG_OPTIONS,
+        OFP_VERSION_LONG_OPTIONS,
         VLOG_LONG_OPTIONS,
         STREAM_SSL_LONG_OPTIONS,
         {NULL, 0, NULL, 0},
     };
     char *short_options = long_options_to_short_options(long_options);
+    uint32_t versions;
+    enum ofputil_protocol version_protocols;
 
     for (;;) {
         unsigned long int timeout;
@@ -209,10 +214,6 @@ parse_options(int argc, char *argv[])
         case 'h':
             usage();
 
-        case 'V':
-            ovs_print_version(OFP10_VERSION, OFP10_VERSION);
-            exit(EXIT_SUCCESS);
-
         case OPT_STRICT:
             strict = true;
             break;
@@ -234,6 +235,7 @@ parse_options(int argc, char *argv[])
             break;
 
         DAEMON_OPTION_HANDLERS
+        OFP_VERSION_OPTION_HANDLERS
         VLOG_OPTION_HANDLERS
         STREAM_SSL_OPTION_HANDLERS
 
@@ -251,6 +253,22 @@ parse_options(int argc, char *argv[])
     }
 
     free(short_options);
+
+    versions = get_allowed_ofp_versions();
+    version_protocols = ofputil_protocols_from_version_bitmap(versions);
+    if (!(allowed_protocols & version_protocols)) {
+        char *protocols = ofputil_protocols_to_string(allowed_protocols);
+        struct ds version_s = DS_EMPTY_INITIALIZER;
+
+        ofputil_format_version_bitmap_names(&version_s, versions);
+        ovs_fatal(0, "None of the enabled OpenFlow versions (%s) supports "
+                  "any of the enabled flow formats (%s).  (Use -O to enable "
+                  "additional OpenFlow versions or -F to enable additional "
+                  "flow formats.)", ds_cstr(&version_s), protocols);
+    }
+    allowed_protocols &= version_protocols;
+    mask_allowed_ofp_versions(ofputil_protocols_to_version_bitmap(
+                                  allowed_protocols));
 }
 
 static void
@@ -291,6 +309,7 @@ usage(void)
            program_name, program_name);
     vconn_usage(true, false, false);
     daemon_usage();
+    ofp_version_usage();
     vlog_usage();
     printf("\nOther options:\n"
            "  --strict                    use strict match for flow commands\n"
@@ -319,7 +338,8 @@ ofctl_exit(struct unixctl_conn *conn, int argc OVS_UNUSED,
 static void run(int retval, const char *message, ...)
     PRINTF_FORMAT(2, 3);
 
-static void run(int retval, const char *message, ...)
+static void
+run(int retval, const char *message, ...)
 {
     if (retval) {
         va_list args;
@@ -331,14 +351,21 @@ static void run(int retval, const char *message, ...)
 
 /* Generic commands. */
 
-static void
+static int
 open_vconn_socket(const char *name, struct vconn **vconnp)
 {
     char *vconn_name = xasprintf("unix:%s", name);
-    VLOG_DBG("connecting to %s", vconn_name);
-    run(vconn_open_block(vconn_name, OFP10_VERSION, vconnp),
-        "connecting to %s", vconn_name);
+    int error;
+
+    error = vconn_open(vconn_name, get_allowed_ofp_versions(), DSCP_DEFAULT,
+                       vconnp);
+    if (error && error != ENOENT) {
+        ovs_fatal(0, "%s: failed to open socket (%s)", name,
+                  strerror(error));
+    }
     free(vconn_name);
+
+    return error;
 }
 
 static enum ofputil_protocol
@@ -349,7 +376,7 @@ open_vconn__(const char *name, const char *default_suffix,
     enum ofputil_protocol protocol;
     char *bridge_path;
     int ofp_version;
-    struct stat s;
+    int error;
 
     bridge_path = xasprintf("%s/%s.%s", ovs_rundir(), name, default_suffix);
 
@@ -360,24 +387,28 @@ open_vconn__(const char *name, const char *default_suffix,
     free(datapath_type);
 
     if (strchr(name, ':')) {
-        run(vconn_open_block(name, OFP10_VERSION, vconnp),
+        run(vconn_open_block(name, get_allowed_ofp_versions(), DSCP_DEFAULT,
+                             vconnp),
             "connecting to %s", name);
-    } else if (!stat(name, &s) && S_ISSOCK(s.st_mode)) {
-        open_vconn_socket(name, vconnp);
-    } else if (!stat(bridge_path, &s) && S_ISSOCK(s.st_mode)) {
-        open_vconn_socket(bridge_path, vconnp);
-    } else if (!stat(socket_name, &s)) {
-        if (!S_ISSOCK(s.st_mode)) {
-            ovs_fatal(0, "cannot connect to %s: %s is not a socket",
-                      name, socket_name);
-        }
-        open_vconn_socket(socket_name, vconnp);
+    } else if (!open_vconn_socket(name, vconnp)) {
+        /* Fall Through. */
+    } else if (!open_vconn_socket(bridge_path, vconnp)) {
+        /* Fall Through. */
+    } else if (!open_vconn_socket(socket_name, vconnp)) {
+        /* Fall Through. */
     } else {
         ovs_fatal(0, "%s is not a bridge or a socket", name);
     }
 
     free(bridge_path);
     free(socket_name);
+
+    VLOG_DBG("connecting to %s", vconn_get_name(*vconnp));
+    error = vconn_connect_block(*vconnp);
+    if (error) {
+        ovs_fatal(0, "%s: failed to connect to socket (%s)", name,
+                  strerror(error));
+    }
 
     ofp_version = vconn_get_version(*vconnp);
     protocol = ofputil_protocol_from_ofp_version(ofp_version);
@@ -402,25 +433,27 @@ send_openflow_buffer(struct vconn *vconn, struct ofpbuf *buffer)
 }
 
 static void
-dump_transaction(const char *vconn_name, struct ofpbuf *request)
+dump_transaction(struct vconn *vconn, struct ofpbuf *request)
 {
-    struct vconn *vconn;
     struct ofpbuf *reply;
 
     ofpmsg_update_length(request);
-    open_vconn(vconn_name, &vconn);
-    run(vconn_transact(vconn, request, &reply), "talking to %s", vconn_name);
+    run(vconn_transact(vconn, request, &reply), "talking to %s",
+        vconn_get_name(vconn));
     ofp_print(stdout, reply->data, reply->size, verbosity + 1);
     ofpbuf_delete(reply);
-    vconn_close(vconn);
 }
 
 static void
 dump_trivial_transaction(const char *vconn_name, enum ofpraw raw)
 {
     struct ofpbuf *request;
-    request = ofpraw_alloc(raw, OFP10_VERSION, 0);
-    dump_transaction(vconn_name, request);
+    struct vconn *vconn;
+
+    open_vconn(vconn_name, &vconn);
+    request = ofpraw_alloc(raw, vconn_get_version(vconn), 0);
+    dump_transaction(vconn, request);
+    vconn_close(vconn);
 }
 
 static void
@@ -524,7 +557,8 @@ fetch_switch_config(struct vconn *vconn, struct ofp_switch_config *config_)
     struct ofpbuf *reply;
     enum ofptype type;
 
-    request = ofpraw_alloc(OFPRAW_OFPT_GET_CONFIG_REQUEST, OFP10_VERSION, 0);
+    request = ofpraw_alloc(OFPRAW_OFPT_GET_CONFIG_REQUEST,
+                           vconn_get_version(vconn), 0);
     run(vconn_transact(vconn, request, &reply),
         "talking to %s", vconn_get_name(vconn));
 
@@ -543,7 +577,7 @@ set_switch_config(struct vconn *vconn, const struct ofp_switch_config *config)
 {
     struct ofpbuf *request;
 
-    request = ofpraw_alloc(OFPRAW_OFPT_SET_CONFIG, OFP10_VERSION, 0);
+    request = ofpraw_alloc(OFPRAW_OFPT_SET_CONFIG, vconn_get_version(vconn), 0);
     ofpbuf_put(request, config, sizeof *config);
 
     transact_noreply(vconn, request);
@@ -558,15 +592,15 @@ ofctl_show(int argc OVS_UNUSED, char *argv[])
     struct ofpbuf *reply;
     bool trunc;
 
-    request = ofpraw_alloc(OFPRAW_OFPT_FEATURES_REQUEST, OFP10_VERSION, 0);
     open_vconn(vconn_name, &vconn);
+    request = ofpraw_alloc(OFPRAW_OFPT_FEATURES_REQUEST,
+                           vconn_get_version(vconn), 0);
     run(vconn_transact(vconn, request, &reply), "talking to %s", vconn_name);
 
     trunc = ofputil_switch_features_ports_trunc(reply);
     ofp_print(stdout, reply->data, reply->size, verbosity + 1);
 
     ofpbuf_delete(reply);
-    vconn_close(vconn);
 
     if (trunc) {
         /* The Features Reply may not contain all the ports, so send a
@@ -576,6 +610,7 @@ ofctl_show(int argc OVS_UNUSED, char *argv[])
                                        OFPRAW_OFPST_PORT_DESC_REQUEST);
     }
     dump_trivial_transaction(vconn_name, OFPRAW_OFPT_GET_CONFIG_REQUEST);
+    vconn_close(vconn);
 }
 
 static void
@@ -605,8 +640,9 @@ fetch_port_by_features(const char *vconn_name,
     bool found = false;
 
     /* Fetch the switch's ofp_switch_features. */
-    request = ofpraw_alloc(OFPRAW_OFPT_FEATURES_REQUEST, OFP10_VERSION, 0);
     open_vconn(vconn_name, &vconn);
+    request = ofpraw_alloc(OFPRAW_OFPT_FEATURES_REQUEST,
+                           vconn_get_version(vconn), 0);
     run(vconn_transact(vconn, request, &reply), "talking to %s", vconn_name);
     vconn_close(vconn);
 
@@ -763,7 +799,7 @@ try_set_protocol(struct vconn *vconn, enum ofputil_protocol want,
 
         request = ofputil_encode_set_protocol(*cur, want, &next);
         if (!request) {
-            return true;
+            return *cur == want;
         }
 
         run(vconn_transact_noreply(vconn, request, &reply),
@@ -958,7 +994,7 @@ ofctl_queue_stats(int argc, char *argv[])
     if (argc > 2 && argv[2][0] && strcasecmp(argv[2], "all")) {
         oqs.port_no = str_to_port_no(argv[1], argv[2]);
     } else {
-        oqs.port_no = OFPP_ALL;
+        oqs.port_no = OFPP_ANY;
     }
     if (argc > 3 && argv[3][0] && strcasecmp(argv[3], "all")) {
         oqs.queue_id = atoi(argv[3]);
@@ -1384,19 +1420,32 @@ ofctl_monitor(int argc, char *argv[])
     if (preferred_packet_in_format >= 0) {
         set_packet_in_format(vconn, preferred_packet_in_format);
     } else {
-        struct ofpbuf *spif, *reply;
+        enum ofp_version version = vconn_get_version(vconn);
 
-        spif = ofputil_make_set_packet_in_format(vconn_get_version(vconn),
-                                                 NXPIF_NXM);
-        run(vconn_transact_noreply(vconn, spif, &reply),
-            "talking to %s", vconn_get_name(vconn));
-        if (reply) {
-            char *s = ofp_to_string(reply->data, reply->size, 2);
-            VLOG_DBG("%s: failed to set packet in format to nxm, controller"
-                     " replied: %s. Falling back to the switch default.",
-                     vconn_get_name(vconn), s);
-            free(s);
-            ofpbuf_delete(reply);
+        switch (version) {
+        case OFP10_VERSION: {
+            struct ofpbuf *spif, *reply;
+
+            spif = ofputil_make_set_packet_in_format(vconn_get_version(vconn),
+                                                     NXPIF_NXM);
+            run(vconn_transact_noreply(vconn, spif, &reply),
+                "talking to %s", vconn_get_name(vconn));
+            if (reply) {
+                char *s = ofp_to_string(reply->data, reply->size, 2);
+                VLOG_DBG("%s: failed to set packet in format to nxm, controller"
+                        " replied: %s. Falling back to the switch default.",
+                        vconn_get_name(vconn), s);
+                free(s);
+                ofpbuf_delete(reply);
+            }
+            break;
+        }
+        case OFP11_VERSION:
+        case OFP12_VERSION:
+        case OFP13_VERSION:
+            break;
+        default:
+            NOT_REACHED();
         }
     }
 
@@ -1420,7 +1469,7 @@ ofctl_dump_ports(int argc, char *argv[])
     uint16_t port;
 
     open_vconn(argv[1], &vconn);
-    port = argc > 2 ? str_to_port_no(argv[1], argv[2]) : OFPP_NONE;
+    port = argc > 2 ? str_to_port_no(argv[1], argv[2]) : OFPP_ANY;
     request = ofputil_encode_dump_ports_request(vconn_get_version(vconn), port);
     dump_stats_transaction(vconn, request);
     vconn_close(vconn);
@@ -1611,8 +1660,8 @@ ofctl_ping(int argc, char *argv[])
         const struct ofp_header *rpy_hdr;
         enum ofptype type;
 
-        request = ofpraw_alloc(OFPRAW_OFPT_ECHO_REQUEST, OFP10_VERSION,
-                               payload);
+        request = ofpraw_alloc(OFPRAW_OFPT_ECHO_REQUEST,
+                               vconn_get_version(vconn), payload);
         random_bytes(ofpbuf_put_uninit(request, payload), payload);
 
         xgettimeofday(&start);
@@ -1666,8 +1715,8 @@ ofctl_benchmark(int argc OVS_UNUSED, char *argv[])
     for (i = 0; i < count; i++) {
         struct ofpbuf *request, *reply;
 
-        request = ofpraw_alloc(OFPRAW_OFPT_ECHO_REQUEST, OFP10_VERSION,
-                               payload_size);
+        request = ofpraw_alloc(OFPRAW_OFPT_ECHO_REQUEST,
+                               vconn_get_version(vconn), payload_size);
         ofpbuf_put_zeros(request, payload_size);
         run(vconn_transact(vconn, request, &reply), "transact");
         ofpbuf_delete(reply);
@@ -1930,7 +1979,7 @@ read_flows_from_switch(struct vconn *vconn,
 
     fsr.aggregate = false;
     match_init_catchall(&fsr.match);
-    fsr.out_port = OFPP_NONE;
+    fsr.out_port = OFPP_ANY;
     fsr.table_id = 0xff;
     fsr.cookie = fsr.cookie_mask = htonll(0);
     request = ofputil_encode_flow_stats_request(&fsr, protocol);
@@ -1973,7 +2022,7 @@ fte_make_flow_mod(const struct fte *fte, int index, uint16_t command,
     fm.idle_timeout = version->idle_timeout;
     fm.hard_timeout = version->hard_timeout;
     fm.buffer_id = UINT32_MAX;
-    fm.out_port = OFPP_NONE;
+    fm.out_port = OFPP_ANY;
     fm.flags = version->flags;
     if (command == OFPFC_ADD || command == OFPFC_MODIFY ||
         command == OFPFC_MODIFY_STRICT) {
@@ -2703,6 +2752,40 @@ ofctl_print_error(int argc OVS_UNUSED, char *argv[])
     }
 }
 
+/* "encode-error-reply ENUM REQUEST": Encodes an error reply to REQUEST for the
+ * error named ENUM and prints the error reply in hex. */
+static void
+ofctl_encode_error_reply(int argc OVS_UNUSED, char *argv[])
+{
+    const struct ofp_header *oh;
+    struct ofpbuf request, *reply;
+    enum ofperr error;
+
+    error = ofperr_from_name(argv[1]);
+    if (!error) {
+        ovs_fatal(0, "unknown error \"%s\"", argv[1]);
+    }
+
+    ofpbuf_init(&request, 0);
+    if (ofpbuf_put_hex(&request, argv[2], NULL)[0] != '\0') {
+        ovs_fatal(0, "Trailing garbage in hex data");
+    }
+    if (request.size < sizeof(struct ofp_header)) {
+        ovs_fatal(0, "Request too short");
+    }
+
+    oh = request.data;
+    if (request.size != ntohs(oh->length)) {
+        ovs_fatal(0, "Request size inconsistent");
+    }
+
+    reply = ofperr_encode_reply(error, request.data);
+    ofpbuf_uninit(&request);
+
+    ovs_hex_dump(stdout, reply->data, reply->size, 0, false);
+    ofpbuf_delete(reply);
+}
+
 /* "ofp-print HEXSTRING [VERBOSITY]": Converts the hex digits in HEXSTRING into
  * binary data, interpreting them as an OpenFlow message, and prints the
  * OpenFlow message on stdout, at VERBOSITY (level 2 by default).  */
@@ -2717,6 +2800,20 @@ ofctl_ofp_print(int argc, char *argv[])
     }
     ofp_print(stdout, packet.data, packet.size, argc > 2 ? atoi(argv[2]) : 2);
     ofpbuf_uninit(&packet);
+}
+
+/* "encode-hello BITMAP...": Encodes each BITMAP as an OpenFlow hello message
+ * and dumps each message in hex.  */
+static void
+ofctl_encode_hello(int argc OVS_UNUSED, char *argv[])
+{
+    uint32_t bitmap = strtol(argv[1], NULL, 0);
+    struct ofpbuf *hello;
+
+    hello = ofputil_encode_hello(bitmap);
+    ovs_hex_dump(stdout, hello->data, hello->size, 0, false);
+    ofp_print(stdout, hello->data, hello->size, verbosity);
+    ofpbuf_delete(hello);
 }
 
 static const struct command all_commands[] = {
@@ -2758,7 +2855,9 @@ static const struct command all_commands[] = {
     { "parse-ofp11-instructions", 0, 0, ofctl_parse_ofp11_instructions },
     { "check-vlan", 2, 2, ofctl_check_vlan },
     { "print-error", 1, 1, ofctl_print_error },
+    { "encode-error-reply", 2, 2, ofctl_encode_error_reply },
     { "ofp-print", 1, 2, ofctl_ofp_print },
+    { "encode-hello", 1, 1, ofctl_encode_hello },
 
     { NULL, 0, 0, NULL },
 };

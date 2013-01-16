@@ -4,7 +4,7 @@
 .  ns
 .  IP "\\$1"
 ..
-.TH ovs\-vswitchd 8 "June 2009" "Open vSwitch" "Open vSwitch Manual"
+.TH ovs\-vswitchd 8 "@VERSION@" "Open vSwitch" "Open vSwitch Manual"
 .\" This program's name:
 .ds PN ovs\-vswitchd
 .\" SSL peer program's name:
@@ -204,6 +204,7 @@ information, and partner information.  If \fIport\fR is not specified,
 then displays detailed information about all interfaces with CFM
 enabled.
 .
+.so ofproto/ofproto-dpif-unixctl.man
 .so ofproto/ofproto-unixctl.man
 .so lib/vlog-unixctl.man
 .so lib/memory-unixctl.man
@@ -253,6 +254,5 @@ time linear in the number of flows.
 .
 .SH "SEE ALSO"
 .BR ovs\-appctl (8),
-.BR ovs\-brcompatd (8),
 .BR ovsdb\-server (1),
 \fBINSTALL.Linux\fR in the Open vSwitch distribution.

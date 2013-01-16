@@ -1,6 +1,6 @@
 {"name": "Open_vSwitch",
- "version": "6.10.0",
- "cksum": "3699312094 16958",
+ "version": "6.11.3",
+ "cksum": "2234602985 17310",
  "tables": {
    "Open_vSwitch": {
      "columns": {
@@ -74,6 +74,10 @@
          "type": {"key": {"type": "uuid",
                           "refTable": "Controller"},
                   "min": 0, "max": "unlimited"}},
+       "protocols": {
+         "type": {"key": {"type": "string",
+           "enum": ["set", ["OpenFlow10", "OpenFlow12", "OpenFlow13"]]},
+	   "min": 0, "max": "unlimited"}},
        "fail_mode": {
          "type": {"key": {"type": "string",
                           "enum": ["set", ["standalone", "secure"]]},
@@ -176,8 +180,14 @@
        "external_ids": {
          "type": {"key": "string", "value": "string", "min": 0, "max": "unlimited"}},
        "ofport": {
-         "type": {"key": "integer", "min": 0, "max": 1},
-         "ephemeral": true},
+         "type": {"key": "integer", "min": 0, "max": 1}},
+       "ofport_request": {
+         "type": {
+           "key": {"type": "integer",
+                   "minInteger": 1,
+                   "maxInteger": 65279},
+           "min": 0,
+           "max": 1}},
        "cfm_mpid": {
          "type": {
            "key": {"type": "integer"},

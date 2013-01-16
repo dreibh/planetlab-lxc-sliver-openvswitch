@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,7 +49,7 @@ output_from_openflow10(const struct ofp10_action_output *oao,
 }
 
 static enum ofperr
-enqueue_from_openflow10(const struct ofp_action_enqueue *oae,
+enqueue_from_openflow10(const struct ofp10_action_enqueue *oae,
                         struct ofpbuf *out)
 {
     struct ofpact_enqueue *enqueue;
@@ -479,7 +479,7 @@ ofpact_from_openflow10(const union ofp_action *a, struct ofpbuf *out)
         break;
 
     case OFPUTIL_OFPAT10_ENQUEUE:
-        error = enqueue_from_openflow10((const struct ofp_action_enqueue *) a,
+        error = enqueue_from_openflow10((const struct ofp10_action_enqueue *) a,
                                         out);
         break;
 
@@ -717,14 +717,19 @@ ofpact_from_openflow11(const union ofp_action *a, struct ofpbuf *out)
     case OFPUTIL_OFPAT11_PUSH_VLAN:
         if (((const struct ofp11_action_push *)a)->ethertype !=
             htons(ETH_TYPE_VLAN_8021Q)) {
-            /* TODO:XXX 802.1AD(QinQ) isn't supported at the moment */
-            return OFPERR_OFPET_BAD_ACTION;
+            /* XXX 802.1AD(QinQ) isn't supported at the moment */
+            return OFPERR_OFPBAC_BAD_ARGUMENT;
         }
         ofpact_put_PUSH_VLAN(out);
         break;
 
     case OFPUTIL_OFPAT11_POP_VLAN:
         ofpact_put_STRIP_VLAN(out);
+        break;
+
+    case OFPUTIL_OFPAT11_SET_QUEUE:
+        ofpact_put_SET_QUEUE(out)->queue_id =
+            ntohl(((const struct ofp11_action_set_queue *)a)->queue_id);
         break;
 
     case OFPUTIL_OFPAT11_SET_DL_SRC:
@@ -912,7 +917,9 @@ decode_openflow11_instructions(const struct ofp11_instruction insts[],
         }
 
         if (out[type]) {
-            return OFPERR_OFPIT_BAD_INSTRUCTION;
+            return OFPERR_OFPBAC_UNSUPPORTED_ORDER; /* No specific code for
+                                                     * a duplicate instruction
+                                                     * exist */
         }
         out[type] = inst;
     }
@@ -1009,7 +1016,7 @@ ofpacts_pull_openflow11_instructions(struct ofpbuf *openflow,
             insts[OVSINST_OFPIT11_CLEAR_ACTIONS]);
         ofpact_put_CLEAR_ACTIONS(ofpacts);
     }
-    /* TODO:XXX Write-Actions */
+    /* XXX Write-Actions */
     if (insts[OVSINST_OFPIT11_WRITE_METADATA]) {
         const struct ofp11_instruction_write_metadata *oiwm;
         struct ofpact_metadata *om;
@@ -1146,24 +1153,38 @@ enum ofperr
 ofpacts_verify(const struct ofpact ofpacts[], size_t ofpacts_len)
 {
     const struct ofpact *a;
-    const struct ofpact_metadata *om = NULL;
+    enum ovs_instruction_type inst;
 
+    inst = OVSINST_OFPIT11_APPLY_ACTIONS;
     OFPACT_FOR_EACH (a, ofpacts, ofpacts_len) {
-        if (om) {
-            if (a->type == OFPACT_WRITE_METADATA) {
-                VLOG_WARN("duplicate write_metadata instruction specified");
-                /* should be OFPERR_OFPET_BAD_ACTION? */
-                return OFPERR_OFPBAC_UNSUPPORTED_ORDER;
-            } else {
-                VLOG_WARN("write_metadata instruction must be specified after "
-                          "other instructions/actions");
-                return OFPERR_OFPBAC_UNSUPPORTED_ORDER;
-            }
+        enum ovs_instruction_type next;
+
+        if (a->type == OFPACT_CLEAR_ACTIONS) {
+            next = OVSINST_OFPIT11_CLEAR_ACTIONS;
+        } else if (a->type == OFPACT_WRITE_METADATA) {
+            next = OVSINST_OFPIT11_WRITE_METADATA;
+        } else if (a->type == OFPACT_GOTO_TABLE) {
+            next = OVSINST_OFPIT11_GOTO_TABLE;
+        } else {
+            next = OVSINST_OFPIT11_APPLY_ACTIONS;
         }
 
-        if (a->type == OFPACT_WRITE_METADATA) {
-            om = (const struct ofpact_metadata *) a;
+        if (inst != OVSINST_OFPIT11_APPLY_ACTIONS && next <= inst) {
+            const char *name = ofpact_instruction_name_from_type(inst);
+            const char *next_name = ofpact_instruction_name_from_type(next);
+
+            if (next == inst) {
+                VLOG_WARN("duplicate %s instruction not allowed, for OpenFlow "
+                          "1.1+ compatibility", name);
+            } else {
+                VLOG_WARN("invalid instruction ordering: %s must appear "
+                          "before %s, for OpenFlow 1.1+ compatibility",
+                          next_name, name);
+            }
+            return OFPERR_OFPBAC_UNSUPPORTED_ORDER;
         }
+
+        inst = next;
     }
 
     return 0;
@@ -1399,7 +1420,7 @@ static void
 ofpact_enqueue_to_openflow10(const struct ofpact_enqueue *enqueue,
                              struct ofpbuf *out)
 {
-    struct ofp_action_enqueue *oae;
+    struct ofp10_action_enqueue *oae;
 
     oae = ofputil_put_OFPAT10_ENQUEUE(out);
     oae->port = htons(enqueue->port);
@@ -1470,7 +1491,7 @@ ofpact_to_openflow10(const struct ofpact *a, struct ofpbuf *out)
     case OFPACT_PUSH_VLAN:
     case OFPACT_CLEAR_ACTIONS:
     case OFPACT_GOTO_TABLE:
-        /* TODO:XXX */
+        /* XXX */
         break;
 
     case OFPACT_CONTROLLER:
@@ -1561,9 +1582,14 @@ ofpact_to_openflow11(const struct ofpact *a, struct ofpbuf *out)
         break;
 
     case OFPACT_PUSH_VLAN:
-        /* TODO:XXX ETH_TYPE_VLAN_8021AD case */
+        /* XXX ETH_TYPE_VLAN_8021AD case */
         ofputil_put_OFPAT11_PUSH_VLAN(out)->ethertype =
             htons(ETH_TYPE_VLAN_8021Q);
+        break;
+
+    case OFPACT_SET_QUEUE:
+        ofputil_put_OFPAT11_SET_QUEUE(out)->queue_id
+            = htonl(ofpact_get_SET_QUEUE(a)->queue_id);
         break;
 
     case OFPACT_SET_ETH_SRC:
@@ -1619,7 +1645,6 @@ ofpact_to_openflow11(const struct ofpact *a, struct ofpbuf *out)
     case OFPACT_REG_MOVE:
     case OFPACT_REG_LOAD:
     case OFPACT_SET_TUNNEL:
-    case OFPACT_SET_QUEUE:
     case OFPACT_POP_QUEUE:
     case OFPACT_FIN_TIMEOUT:
     case OFPACT_RESUBMIT:
@@ -1672,7 +1697,7 @@ ofpacts_put_openflow11_instructions(const struct ofpact ofpacts[],
     const struct ofpact *a;
 
     OFPACT_FOR_EACH (a, ofpacts, ofpacts_len) {
-        /* TODO:XXX Write-Actions */
+        /* XXX Write-Actions */
 
         if (a->type == OFPACT_CLEAR_ACTIONS) {
             instruction_put_OFPIT11_CLEAR_ACTIONS(openflow);
@@ -1914,7 +1939,7 @@ ofpact_format(const struct ofpact *a, struct ds *s)
         break;
 
     case OFPACT_PUSH_VLAN:
-        /* TODO:XXX 802.1AD case*/
+        /* XXX 802.1AD case*/
         ds_put_format(s, "push_vlan:%#"PRIx16, ETH_TYPE_VLAN_8021Q);
         break;
 
@@ -1930,12 +1955,12 @@ ofpact_format(const struct ofpact *a, struct ds *s)
 
     case OFPACT_SET_IPV4_SRC:
         ds_put_format(s, "mod_nw_src:"IP_FMT,
-                      IP_ARGS(&ofpact_get_SET_IPV4_SRC(a)->ipv4));
+                      IP_ARGS(ofpact_get_SET_IPV4_SRC(a)->ipv4));
         break;
 
     case OFPACT_SET_IPV4_DST:
         ds_put_format(s, "mod_nw_dst:"IP_FMT,
-                      IP_ARGS(&ofpact_get_SET_IPV4_DST(a)->ipv4));
+                      IP_ARGS(ofpact_get_SET_IPV4_DST(a)->ipv4));
         break;
 
     case OFPACT_SET_IPV4_DSCP:
@@ -2069,7 +2094,7 @@ ofpacts_format(const struct ofpact *ofpacts, size_t ofpacts_len,
                 ds_put_cstr(string, ",");
             }
 
-            /* TODO:XXX write-actions */
+            /* XXX write-actions */
             ofpact_format(a, string);
         }
     }

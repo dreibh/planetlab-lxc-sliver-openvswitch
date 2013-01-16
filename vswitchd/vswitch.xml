@@ -439,6 +439,12 @@
         value.  May not be all-zero.
       </column>
 
+      <column name="other_config" key="dp-desc">
+        Human readable description of datapath.  It it a maximum 256
+        byte-long free-form string to describe the datapath for
+        debugging purposes, e.g. <code>switch3 in room 3120</code>.
+      </column>
+
       <column name="other_config" key="disable-in-band"
               type='{"type": "boolean"}'>
         If set to <code>true</code>, disable in-band control on the bridge
@@ -452,6 +458,12 @@
         If unset, or if the port used by an in-band control flow does not have
         QoS configured, or if the port does not have a queue with the specified
         ID, the default queue is used instead.
+      </column>
+
+      <column name="protocols">
+        List of OpenFlow protocols that may be used when negotiating a
+        connection with a controller.  A default value of
+        <code>OpenFlow10</code> will be used if this column is empty.
       </column>
     </group>
 
@@ -615,6 +627,15 @@
           reduce the incidence of unnecessary flooding, use a MAC aging time
           longer than the maximum interval at which a host will ordinarily
           transmit packets.
+        </p>
+      </column>
+
+      <column name="other_config" key="mac-table-size"
+              type='{"type": "integer", "minInteger": 1}'>
+        <p>
+          The maximum number of MAC addresses to learn.  The default is
+          currently 2048.  The value, if specified, is forced into a reasonable
+          range, currently 10 to 1,000,000.
         </p>
       </column>
     </group>
@@ -1158,6 +1179,20 @@
         port number for the OpenFlow ``local port'').  If the interface
         cannot be added then Open vSwitch sets this column
         to -1.</p>
+        <p>When <ref column="ofport_request"/> is not set, Open vSwitch picks
+        an appropriate value for this column and then tries to keep the value
+        constant across restarts.</p>
+      </column>
+
+      <column name="ofport_request">
+        <p>Requested OpenFlow port number for this interface.  The port
+        number must be between 1 and 65279, inclusive.  Some datapaths
+        cannot satisfy all requests for particular port numbers.  When
+        this column is empty or the request cannot be fulfilled, the
+        system will choose a free port.  The <ref column="ofport"/>
+        column reports the assigned OpenFlow port number.</p>
+        <p>The port number must be requested in the same transaction
+        that creates the port.</p>
       </column>
     </group>
 
@@ -1189,8 +1224,7 @@
           <dt><code>gre</code></dt>
           <dd>
             An Ethernet over RFC 2890 Generic Routing Encapsulation over IPv4
-            tunnel.  See <ref group="Tunnel Options"/> for information on
-            configuring GRE tunnels.
+            tunnel.
           </dd>
 
           <dt><code>ipsec_gre</code></dt>
@@ -1222,6 +1256,26 @@
             implemented.  UDP ports 58881 and 58882 are used as the source and
             destination ports respectively.  CAPWAP is currently supported only
             with the Linux kernel datapath with kernel version 2.6.26 or later.
+
+            CAPWAP support is deprecated and will be removed no earlier than
+            February 2013.
+          </dd>
+
+          <dt><code>vxlan</code></dt>
+          <dd>
+	    <p>
+	      An Ethernet tunnel over the experimental, UDP-based VXLAN
+	      protocol described at
+	      <code>http://tools.ietf.org/html/draft-mahalingam-dutt-dcops-vxlan-02</code>.
+	      VXLAN is currently supported only with the Linux kernel datapath
+	      with kernel version 2.6.26 or later.
+	    </p>
+	    <p>
+	      As an experimental protocol, VXLAN has no officially assigned UDP
+	      port.  Open vSwitch currently uses UDP destination port 8472.
+	      The source port used for VXLAN traffic varies on a per-flow basis
+	      and is in the ephemeral port range.
+	    </p>
           </dd>
 
           <dt><code>patch</code></dt>
@@ -1240,7 +1294,8 @@
       <p>
         These options apply to interfaces with <ref column="type"/> of
         <code>gre</code>, <code>ipsec_gre</code>, <code>gre64</code>,
-        <code>ipsec_gre64</code>, and <code>capwap</code>.
+        <code>ipsec_gre64</code>, <code>capwap</code>, and
+        <code>vxlan</code>.
       </p>
 
       <p>
@@ -1283,8 +1338,9 @@
             key="in_key"/> at all.
           </li>
           <li>
-            A positive 32-bit (for GRE) or 64-bit (for CAPWAP) number.  The
-            tunnel receives only packets with the specified key.
+            A positive 24-bit (for VXLAN), 32-bit (for GRE) or 64-bit (for
+            CAPWAP) number.  The tunnel receives only packets with the
+            specified key.
           </li>
           <li>
             The word <code>flow</code>.  The tunnel accepts packets with any
@@ -1309,8 +1365,9 @@
             key="out_key"/> at all.
           </li>
           <li>
-            A positive 32-bit (for GRE) or 64-bit (for CAPWAP) number.  Packets
-            sent through the tunnel will have the specified key.
+            A positive 24-bit (for VXLAN), 32-bit (for GRE) or 64-bit (for
+            CAPWAP) number.  Packets sent through the tunnel will have the
+            specified key.
           </li>
           <li>
             The word <code>flow</code>.  Packets sent through the tunnel will
@@ -1343,47 +1400,12 @@
         system default, typically 64).  Default is the system default TTL.
       </column>
 
-      <column name="options" key="df_inherit" type='{"type": "boolean"}'>
-        Optional.  If enabled, the Don't Fragment bit will be copied from the
-        inner IP headers (those of the encapsulated traffic) to the outer
-        (tunnel) headers.  Default is disabled; set to <code>true</code> to
-        enable.
-      </column>
-
       <column name="options" key="df_default"
               type='{"type": "boolean"}'>
-        Optional.  If enabled, the Don't Fragment bit will be set by default on
-        tunnel headers if the <code>df_inherit</code> option is not set, or if
-        the encapsulated packet is not IP.  Default is enabled; set to
-        <code>false</code> to disable.
+        Optional.  If enabled, the Don't Fragment bit will be set on tunnel
+        outer headers to allow path MTU discovery. Default is enabled; set
+        to <code>false</code> to disable.
       </column>
-
-      <column name="options" key="pmtud" type='{"type": "boolean"}'>
-        Optional.  Enable tunnel path MTU discovery.  If enabled ``ICMP
-        Destination Unreachable - Fragmentation Needed'' messages will be
-        generated for IPv4 packets with the DF bit set and IPv6 packets above
-        the minimum MTU if the packet size exceeds the path MTU minus the size
-        of the tunnel headers.  Note that this option causes behavior that is
-        typically reserved for routers and therefore is not entirely in
-        compliance with the IEEE 802.1D specification for bridges.  Default is
-        disabled; set to <code>true</code> to enable.
-      </column>
-
-      <group title="Tunnel Options: gre only">
-        <p>
-          Only <code>gre</code> interfaces support these options.
-        </p>
-
-        <column name="options" key="header_cache" type='{"type": "boolean"}'>
-          Enable caching of tunnel headers and the output path.  This can lead
-          to a significant performance increase without changing behavior.  In
-          general it should not be necessary to adjust this setting.  However,
-          the caching can bypass certain components of the IP stack (such as
-          <code>iptables</code>) and it may be useful to disable it if these
-          features are required or as a debugging measure.  Default is enabled,
-          set to <code>false</code> to disable.
-        </column>
-      </group>
 
       <group title="Tunnel Options: gre and ipsec_gre only">
         <p>

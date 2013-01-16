@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -138,6 +138,13 @@ struct netdev_class {
      * If this netdev class does not support configuration, this may be a null
      * pointer. */
     int (*set_config)(struct netdev_dev *netdev_dev, const struct smap *args);
+
+    /* Returns the tunnel configuration of 'netdev_dev'.  If 'netdev_dev' is
+     * not a tunnel, returns null.
+     *
+     * If this function would always return null, it may be null instead. */
+    const struct netdev_tunnel_config *
+        (*get_tunnel_config)(const struct netdev_dev *netdev_dev);
 
     /* Attempts to open a network device.  On success, sets 'netdevp'
      * to the new network device. */
@@ -546,16 +553,16 @@ struct netdev_class {
 
     /* Retrieves driver information of the device.
      *
-     * Populates 'sh' with key-value pairs representing the status of the
-     * device.  Driver info is a set of key-value string pairs
-     * representing netdev type specific information.  For more information see
+     * Populates 'smap' with key-value pairs representing the status of the
+     * device.  'smap' is a set of key-value string pairs representing netdev
+     * type specific information.  For more information see
      * ovs-vswitchd.conf.db(5).
      *
      * The caller is responsible for destroying 'smap' and its data.
      *
      * This function may be set to null if it would always return EOPNOTSUPP
      * anyhow. */
-    int (*get_drv_info)(const struct netdev *netdev, struct smap *smap);
+    int (*get_status)(const struct netdev *netdev, struct smap *smap);
 
     /* Looks up the ARP table entry for 'ip' on 'netdev' and stores the
      * corresponding MAC address in 'mac'.  A return value of ENXIO, in

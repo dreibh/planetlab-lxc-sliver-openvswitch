@@ -24,14 +24,15 @@ in_port(1),eth(src=00:01:02:03:04:05,dst=10:11:12:13:14:15),eth_type(0x86dd),ipv
 in_port(1),eth(src=00:01:02:03:04:05,dst=10:11:12:13:14:15),eth_type(0x86dd),ipv6(src=::1,dst=::2,label=0,proto=58,tclass=0,hlimit=128,frag=no),icmpv6(type=136,code=0),nd(target=::3,tll=00:0a:0b:0c:0d:0e)
 in_port(1),eth(src=00:01:02:03:04:05,dst=10:11:12:13:14:15),eth_type(0x86dd),ipv6(src=::1,dst=::2,label=0,proto=58,tclass=0,hlimit=128,frag=no),icmpv6(type=136,code=0),nd(target=::3,sll=00:05:06:07:08:09,tll=00:0a:0b:0c:0d:0e)
 in_port(1),eth(src=00:01:02:03:04:05,dst=10:11:12:13:14:15),eth_type(0x0806),arp(sip=1.2.3.4,tip=5.6.7.8,op=1,sha=00:0f:10:11:12:13,tha=00:14:15:16:17:18)
+skb_mark(0x1234),in_port(1),eth(src=00:01:02:03:04:05,dst=10:11:12:13:14:15),eth_type(0x86dd),ipv6(src=::1,dst=::2,label=0,proto=58,tclass=0,hlimit=128,frag=no),icmpv6(type=136,code=0),nd(target=::3,sll=00:05:06:07:08:09,tll=00:0a:0b:0c:0d:0e)
 ])
 
 (echo '# Valid forms without tun_id or VLAN header.'
  cat odp-base.txt
 
  echo
- echo '# Valid forms with tun_id header.'
- sed 's/^/tun_id(0x7f10354),/' odp-base.txt
+ echo '# Valid forms with tunnel header.'
+ sed 's/^/ipv4_tunnel(tun_id=0x7f10354,src=10.10.10.10,dst=20.20.20.20,tos=0x0,ttl=64,flags(csum,key)),/' odp-base.txt
 
  echo
  echo '# Valid forms with VLAN header.'
@@ -40,17 +41,17 @@ s/$/)/' odp-base.txt
 
  echo
  echo '# Valid forms with QoS priority.'
- sed 's/^/priority(1234),/' odp-base.txt
+ sed 's/^/skb_priority(0x1234),/' odp-base.txt
 
  echo
- echo '# Valid forms with tun_id and VLAN headers.'
- sed 's/^/tun_id(0xfedcba9876543210),/
+ echo '# Valid forms with tunnel and VLAN headers.'
+ sed 's/^/ipv4_tunnel(tun_id=0xfedcba9876543210,src=10.0.0.1,dst=10.0.0.2,tos=0x8,ttl=128,flags()),/
 s/\(eth([[^)]]*)\),*/\1,eth_type(0x8100),vlan(vid=99,pcp=7),encap(/
 s/$/)/' odp-base.txt
 
  echo
- echo '# Valid forms with QOS priority, tun_id, and VLAN headers.'
- sed 's/^/priority(1234),tun_id(0xfedcba9876543210),/
+ echo '# Valid forms with QOS priority, tunnel, and VLAN headers.'
+ sed 's/^/skb_priority(0x1234),ipv4_tunnel(tun_id=0xfedcba9876543210,src=10.10.10.10,dst=20.20.20.20,tos=0x8,ttl=64,flags(key)),/
 s/\(eth([[^)]]*)\),*/\1,eth_type(0x8100),vlan(vid=99,pcp=7),encap(/
 s/$/)/' odp-base.txt
 
@@ -91,6 +92,9 @@ push_vlan(tpid=0x9100,vid=13,pcp=5)
 push_vlan(tpid=0x9100,vid=13,pcp=5,cfi=0)
 pop_vlan
 sample(sample=9.7%,actions(1,2,3,push_vlan(vid=1,pcp=2)))
+set(ipv4_tunnel(tun_id=0xabcdef1234567890,src=1.1.1.1,dst=2.2.2.2,tos=0x0,ttl=64,flags(df,csum,key)))
+set(ipv4_tunnel(tun_id=0xabcdef1234567890,src=1.1.1.1,dst=2.2.2.2,tos=0x0,ttl=64,flags(df,csum,key,0x20)))
+set(ipv4_tunnel(tun_id=0xabcdef1234567890,src=1.1.1.1,dst=2.2.2.2,tos=0x0,ttl=64,flags()))
 ])
 AT_CHECK_UNQUOTED([test-odp parse-actions < actions.txt], [0],
   [`cat actions.txt`

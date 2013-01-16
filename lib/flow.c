@@ -335,7 +335,7 @@ invalid:
  *      present and has a correct length, and otherwise NULL.
  */
 void
-flow_extract(struct ofpbuf *packet, uint32_t skb_priority,
+flow_extract(struct ofpbuf *packet, uint32_t skb_priority, uint32_t skb_mark,
              const struct flow_tnl *tnl, uint16_t ofp_in_port,
              struct flow *flow)
 {
@@ -352,6 +352,7 @@ flow_extract(struct ofpbuf *packet, uint32_t skb_priority,
     }
     flow->in_port = ofp_in_port;
     flow->skb_priority = skb_priority;
+    flow->skb_mark = skb_mark;
 
     packet->l2 = b.data;
     packet->l3 = NULL;
@@ -374,9 +375,33 @@ flow_extract(struct ofpbuf *packet, uint32_t skb_priority,
     }
     flow->dl_type = parse_ethertype(&b);
 
-    /* Network layer. */
     packet->l3 = b.data;
-    if (flow->dl_type == htons(ETH_TYPE_IP)) {
+    flow_extract_l3_onwards(packet, flow, flow->dl_type);
+}
+
+/* Initializes l3 and higher 'flow' members from 'packet'
+ *
+ * This should be called by or after flow_extract()
+ *
+ * Initializes 'packet' header pointers as follows:
+ *
+ *    - packet->l4 to just past the IPv4 header, if one is present and has a
+ *      correct length, and otherwise NULL.
+ *
+ *    - packet->l7 to just past the TCP or UDP or ICMP header, if one is
+ *      present and has a correct length, and otherwise NULL.
+ */
+void
+flow_extract_l3_onwards(struct ofpbuf *packet, struct flow *flow,
+                        ovs_be16 dl_type)
+{
+    struct ofpbuf b;
+
+    ofpbuf_use_const(&b, packet->l3, packet->size -
+                     (size_t)((char *)packet->l3 - (char *)packet->l2));
+
+    /* Network layer. */
+    if (dl_type == htons(ETH_TYPE_IP)) {
         const struct ip_header *nh = pull_ip(&b);
         if (nh) {
             packet->l4 = b.data;
@@ -409,7 +434,7 @@ flow_extract(struct ofpbuf *packet, uint32_t skb_priority,
                 }
             }
         }
-    } else if (flow->dl_type == htons(ETH_TYPE_IPV6)) {
+    } else if (dl_type == htons(ETH_TYPE_IPV6)) {
         if (parse_ipv6(&b, flow)) {
             return;
         }
@@ -424,7 +449,8 @@ flow_extract(struct ofpbuf *packet, uint32_t skb_priority,
                 packet->l7 = b.data;
             }
         }
-    } else if (flow->dl_type == htons(ETH_TYPE_ARP)) {
+    } else if (dl_type == htons(ETH_TYPE_ARP) ||
+               dl_type == htons(ETH_TYPE_RARP)) {
         const struct arp_eth_header *arp = pull_arp(&b);
         if (arp && arp->ar_hrd == htons(1)
             && arp->ar_pro == htons(ETH_TYPE_IP)
@@ -461,7 +487,7 @@ flow_zero_wildcards(struct flow *flow, const struct flow_wildcards *wildcards)
 void
 flow_get_metadata(const struct flow *flow, struct flow_metadata *fmd)
 {
-    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 17);
+    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 18);
 
     fmd->tun_id = flow->tunnel.tun_id;
     fmd->metadata = flow->metadata;
@@ -477,13 +503,57 @@ flow_to_string(const struct flow *flow)
     return ds_cstr(&ds);
 }
 
+const char *
+flow_tun_flag_to_string(uint32_t flags)
+{
+    switch (flags) {
+    case FLOW_TNL_F_DONT_FRAGMENT:
+        return "df";
+    case FLOW_TNL_F_CSUM:
+        return "csum";
+    case FLOW_TNL_F_KEY:
+        return "key";
+    default:
+        return NULL;
+    }
+}
+
+void
+format_flags(struct ds *ds, const char *(*bit_to_string)(uint32_t),
+             uint32_t flags, char del)
+{
+    uint32_t bad = 0;
+
+    if (!flags) {
+        return;
+    }
+    while (flags) {
+        uint32_t bit = rightmost_1bit(flags);
+        const char *s;
+
+        s = bit_to_string(bit);
+        if (s) {
+            ds_put_format(ds, "%s%c", s, del);
+        } else {
+            bad |= bit;
+        }
+
+        flags &= ~bit;
+    }
+
+    if (bad) {
+        ds_put_format(ds, "0x%"PRIx32"%c", bad, del);
+    }
+    ds_chomp(ds, del);
+}
+
 void
 flow_format(struct ds *ds, const struct flow *flow)
 {
     struct match match;
 
     match_wc_init(&match, flow);
-    match_format(&match, ds, flow->skb_priority);
+    match_format(&match, ds, OFP_DEFAULT_PRIORITY);
 }
 
 void
@@ -550,7 +620,7 @@ flow_wildcards_combine(struct flow_wildcards *dst,
 uint32_t
 flow_wildcards_hash(const struct flow_wildcards *wc, uint32_t basis)
 {
-    return flow_hash(&wc->masks, basis);;
+    return flow_hash(&wc->masks, basis);
 }
 
 /* Returns true if 'a' and 'b' represent the same wildcards, false if they are
@@ -767,6 +837,7 @@ flow_compose(struct ofpbuf *b, const struct flow *flow)
         b->l3 = ip = ofpbuf_put_zeros(b, sizeof *ip);
         ip->ip_ihl_ver = IP_IHL_VER(5, 4);
         ip->ip_tos = flow->nw_tos;
+        ip->ip_ttl = flow->nw_ttl;
         ip->ip_proto = flow->nw_proto;
         ip->ip_src = flow->nw_src;
         ip->ip_dst = flow->nw_dst;
@@ -808,7 +879,8 @@ flow_compose(struct ofpbuf *b, const struct flow *flow)
         ip->ip_csum = csum(ip, sizeof *ip);
     } else if (flow->dl_type == htons(ETH_TYPE_IPV6)) {
         /* XXX */
-    } else if (flow->dl_type == htons(ETH_TYPE_ARP)) {
+    } else if (flow->dl_type == htons(ETH_TYPE_ARP) ||
+               flow->dl_type == htons(ETH_TYPE_RARP)) {
         struct arp_eth_header *arp;
 
         b->l3 = arp = ofpbuf_put_zeros(b, sizeof *arp);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -75,6 +75,32 @@ struct netdev_stats {
     uint64_t tx_window_errors;
 };
 
+/* Configuration specific to tunnels. */
+struct netdev_tunnel_config {
+    bool in_key_present;
+    bool in_key_flow;
+    ovs_be64 in_key;
+
+    bool out_key_present;
+    bool out_key_flow;
+    ovs_be64 out_key;
+
+    ovs_be16 dst_port;
+
+    ovs_be32 ip_src;
+    ovs_be32 ip_dst;
+
+    uint8_t ttl;
+    bool ttl_inherit;
+
+    uint8_t tos;
+    bool tos_inherit;
+
+    bool csum;
+    bool ipsec;
+    bool dont_fragment;
+};
+
 struct netdev;
 struct netdev_class;
 
@@ -95,6 +121,8 @@ void netdev_parse_name(const char *netdev_name, char **name, char **type);
 /* Options. */
 int netdev_set_config(struct netdev *, const struct smap *args);
 int netdev_get_config(const struct netdev *, struct smap *);
+const struct netdev_tunnel_config *
+    netdev_get_tunnel_config(const struct netdev *);
 
 /* Basic properties. */
 const char *netdev_get_name(const struct netdev *);
@@ -146,7 +174,8 @@ int netdev_get_features(const struct netdev *,
                         enum netdev_features *advertised,
                         enum netdev_features *supported,
                         enum netdev_features *peer);
-uint64_t netdev_features_to_bps(enum netdev_features features);
+uint64_t netdev_features_to_bps(enum netdev_features features,
+                                uint64_t default_bps);
 bool netdev_features_is_full_duplex(enum netdev_features features);
 int netdev_set_advertisements(struct netdev *, enum netdev_features advertise);
 
@@ -159,7 +188,7 @@ int netdev_get_in6(const struct netdev *, struct in6_addr *);
 int netdev_add_router(struct netdev *, struct in_addr router);
 int netdev_get_next_hop(const struct netdev *, const struct in_addr *host,
                         struct in_addr *next_hop, char **);
-int netdev_get_drv_info(const struct netdev *, struct smap *);
+int netdev_get_status(const struct netdev *, struct smap *);
 int netdev_arp_lookup(const struct netdev *, ovs_be32 ip, uint8_t mac[6]);
 
 int netdev_get_flags(const struct netdev *, enum netdev_flags *);

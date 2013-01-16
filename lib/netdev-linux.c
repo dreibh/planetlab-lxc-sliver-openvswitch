@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -497,28 +497,6 @@ netdev_linux_wait(void)
     netdev_linux_miimon_wait();
 }
 
-static int
-netdev_linux_get_drvinfo(struct netdev_dev_linux *netdev_dev)
-{
-
-    int error;
-
-    if (netdev_dev->cache_valid & VALID_DRVINFO) {
-        return 0;
-    }
-
-    COVERAGE_INC(netdev_get_ethtool);
-    memset(&netdev_dev->drvinfo, 0, sizeof netdev_dev->drvinfo);
-    error = netdev_linux_do_ethtool(netdev_dev->netdev_dev.name,
-                                    (struct ethtool_cmd *)&netdev_dev->drvinfo,
-                                    ETHTOOL_GDRVINFO,
-                                    "ETHTOOL_GDRVINFO");
-    if (!error) {
-        netdev_dev->cache_valid |= VALID_DRVINFO;
-    }
-    return error;
-}
-
 static void
 netdev_dev_linux_changed(struct netdev_dev_linux *dev,
                          unsigned int ifi_flags,
@@ -743,7 +721,6 @@ netdev_linux_destroy(struct netdev_dev *netdev_dev_)
 static int
 netdev_linux_open(struct netdev_dev *netdev_dev_, struct netdev **netdevp)
 {
-    struct netdev_dev_linux *netdev_dev = netdev_dev_linux_cast(netdev_dev_);
     struct netdev_linux *netdev;
     enum netdev_flags flags;
     int error;
@@ -766,17 +743,6 @@ netdev_linux_open(struct netdev_dev *netdev_dev_, struct netdev **netdevp)
         if (error == ENODEV) {
             goto error;
         }
-    }
-
-    if (!strcmp(netdev_dev_get_type(netdev_dev_), "tap") &&
-        !netdev_dev->state.tap.opened) {
-
-        /* We assume that the first user of the tap device is the primary user
-         * and give them the tap FD.  Subsequent users probably just expect
-         * this to be a system device so open it normally to avoid send/receive
-         * directions appearing to be reversed. */
-        netdev->fd = netdev_dev->state.tap.fd;
-        netdev_dev->state.tap.opened = true;
     }
 
     *netdevp = &netdev->netdev;
@@ -803,12 +769,21 @@ static int
 netdev_linux_listen(struct netdev *netdev_)
 {
     struct netdev_linux *netdev = netdev_linux_cast(netdev_);
+    struct netdev_dev_linux *netdev_dev =
+                                netdev_dev_linux_cast(netdev_get_dev(netdev_));
     struct sockaddr_ll sll;
     int ifindex;
     int error;
     int fd;
 
     if (netdev->fd >= 0) {
+        return 0;
+    }
+
+    if (!strcmp(netdev_get_type(netdev_), "tap")
+        && !netdev_dev->state.tap.opened) {
+        netdev->fd = netdev_dev->state.tap.fd;
+        netdev_dev->state.tap.opened = true;
         return 0;
     }
 
@@ -1028,6 +1003,7 @@ netdev_linux_set_etheraddr(struct netdev *netdev_,
     struct netdev_dev_linux *netdev_dev =
                                 netdev_dev_linux_cast(netdev_get_dev(netdev_));
     int error;
+    bool up_again = false;
 
     if (netdev_dev->cache_valid & VALID_ETHERADDR) {
         if (netdev_dev->ether_addr_error) {
@@ -1039,6 +1015,15 @@ netdev_linux_set_etheraddr(struct netdev *netdev_,
         netdev_dev->cache_valid &= ~VALID_ETHERADDR;
     }
 
+    /* Tap devices must be brought down before setting the address. */
+    if (!strcmp(netdev_get_type(netdev_), "tap")) {
+        enum netdev_flags flags;
+
+        if (!netdev_get_flags(netdev_, &flags) && (flags & NETDEV_UP)) {
+            netdev_turn_flags_off(netdev_, NETDEV_UP, false);
+            up_again = true;
+        }
+    }
     error = set_etheraddr(netdev_get_name(netdev_), mac);
     if (!error || error == ENODEV) {
         netdev_dev->ether_addr_error = error;
@@ -1046,6 +1031,10 @@ netdev_linux_set_etheraddr(struct netdev *netdev_,
         if (!error) {
             memcpy(netdev_dev->etheraddr, mac, ETH_ADDR_LEN);
         }
+    }
+
+    if (up_again) {
+        netdev_turn_flags_on(netdev_, NETDEV_UP, false);
     }
 
     return error;
@@ -1333,7 +1322,7 @@ get_stats_via_vport(const struct netdev *netdev_,
         int error;
 
         error = netdev_vport_get_stats(netdev_, stats);
-        if (error) {
+        if (error && error != ENOENT) {
             VLOG_WARN_RL(&rl, "%s: obtaining netdev stats via vport failed "
                          "(%s)", netdev_get_name(netdev_), strerror(error));
         }
@@ -1486,6 +1475,41 @@ netdev_internal_get_stats(const struct netdev *netdev_,
 
     get_stats_via_vport(netdev_, stats);
     return netdev_dev->vport_stats_error;
+}
+
+static int
+netdev_internal_set_stats(struct netdev *netdev,
+                          const struct netdev_stats *stats)
+{
+    struct ovs_vport_stats vport_stats;
+    struct dpif_linux_vport vport;
+    int err;
+
+    vport_stats.rx_packets = stats->rx_packets;
+    vport_stats.tx_packets = stats->tx_packets;
+    vport_stats.rx_bytes = stats->rx_bytes;
+    vport_stats.tx_bytes = stats->tx_bytes;
+    vport_stats.rx_errors = stats->rx_errors;
+    vport_stats.tx_errors = stats->tx_errors;
+    vport_stats.rx_dropped = stats->rx_dropped;
+    vport_stats.tx_dropped = stats->tx_dropped;
+
+    dpif_linux_vport_init(&vport);
+    vport.cmd = OVS_VPORT_CMD_SET;
+    vport.name = netdev_get_name(netdev);
+    vport.stats = &vport_stats;
+
+    err = dpif_linux_vport_transact(&vport, NULL, NULL);
+
+    /* If the vport layer doesn't know about the device, that doesn't mean it
+     * doesn't exist (after all were able to open it when netdev_open() was
+     * called), it just means that it isn't attached and we'll be getting
+     * stats a different way. */
+    if (err == ENODEV) {
+        err = EOPNOTSUPP;
+    }
+
+    return err;
 }
 
 static void
@@ -2277,13 +2301,26 @@ netdev_linux_get_next_hop(const struct in_addr *host, struct in_addr *next_hop,
 }
 
 static int
-netdev_linux_get_drv_info(const struct netdev *netdev, struct smap *smap)
+netdev_linux_get_status(const struct netdev *netdev, struct smap *smap)
 {
-    int error;
-    struct netdev_dev_linux *netdev_dev =
-                                netdev_dev_linux_cast(netdev_get_dev(netdev));
+    struct netdev_dev_linux *netdev_dev;
+    int error = 0;
 
-    error = netdev_linux_get_drvinfo(netdev_dev);
+    netdev_dev = netdev_dev_linux_cast(netdev_get_dev(netdev));
+    if (!(netdev_dev->cache_valid & VALID_DRVINFO)) {
+        struct ethtool_cmd *cmd = (struct ethtool_cmd *) &netdev_dev->drvinfo;
+
+        COVERAGE_INC(netdev_get_ethtool);
+        memset(&netdev_dev->drvinfo, 0, sizeof netdev_dev->drvinfo);
+        error = netdev_linux_do_ethtool(netdev_dev->netdev_dev.name,
+                                        cmd,
+                                        ETHTOOL_GDRVINFO,
+                                        "ETHTOOL_GDRVINFO");
+        if (!error) {
+            netdev_dev->cache_valid |= VALID_DRVINFO;
+        }
+    }
+
     if (!error) {
         smap_add(smap, "driver_name", netdev_dev->drvinfo.driver);
         smap_add(smap, "driver_version", netdev_dev->drvinfo.version);
@@ -2293,8 +2330,8 @@ netdev_linux_get_drv_info(const struct netdev *netdev, struct smap *smap)
 }
 
 static int
-netdev_internal_get_drv_info(const struct netdev *netdev OVS_UNUSED,
-                             struct smap *smap)
+netdev_internal_get_status(const struct netdev *netdev OVS_UNUSED,
+                           struct smap *smap)
 {
     smap_add(smap, "driver_name", "openvswitch");
     return 0;
@@ -2327,7 +2364,7 @@ netdev_linux_arp_lookup(const struct netdev *netdev,
         memcpy(mac, r.arp_ha.sa_data, ETH_ADDR_LEN);
     } else if (retval != ENXIO) {
         VLOG_WARN_RL(&rl, "%s: could not look up ARP entry for "IP_FMT": %s",
-                     netdev_get_name(netdev), IP_ARGS(&ip), strerror(retval));
+                     netdev_get_name(netdev), IP_ARGS(ip), strerror(retval));
     }
     return retval;
 }
@@ -2396,6 +2433,7 @@ netdev_linux_change_seq(const struct netdev *netdev)
     netdev_linux_destroy,                                       \
     NULL,                       /* get_config */                \
     NULL,                       /* set_config */                \
+    NULL,                       /* get_tunnel_config */         \
                                                                 \
     netdev_linux_open,                                          \
     netdev_linux_close,                                         \
@@ -2454,7 +2492,7 @@ const struct netdev_class netdev_linux_class =
         netdev_linux_get_stats,
         NULL,                    /* set_stats */
         netdev_linux_get_features,
-        netdev_linux_get_drv_info);
+        netdev_linux_get_status);
 
 const struct netdev_class netdev_tap_class =
     NETDEV_LINUX_CLASS(
@@ -2463,16 +2501,16 @@ const struct netdev_class netdev_tap_class =
         netdev_tap_get_stats,
         NULL,                   /* set_stats */
         netdev_linux_get_features,
-        netdev_linux_get_drv_info);
+        netdev_linux_get_status);
 
 const struct netdev_class netdev_internal_class =
     NETDEV_LINUX_CLASS(
         "internal",
         netdev_linux_create,
         netdev_internal_get_stats,
-        netdev_vport_set_stats,
+        netdev_internal_set_stats,
         NULL,                  /* get_features */
-        netdev_internal_get_drv_info);
+        netdev_internal_get_status);
 
 /* HTB traffic control class. */
 
@@ -2668,7 +2706,7 @@ htb_parse_qdisc_details__(struct netdev *netdev,
         enum netdev_features current;
 
         netdev_get_features(netdev, &current, NULL, NULL, NULL);
-        hc->max_rate = netdev_features_to_bps(current) / 8;
+        hc->max_rate = netdev_features_to_bps(current, 100 * 1000 * 1000) / 8;
     }
     hc->min_rate = hc->max_rate;
     hc->burst = 0;
@@ -3147,7 +3185,7 @@ hfsc_parse_qdisc_details__(struct netdev *netdev, const struct smap *details,
         enum netdev_features current;
 
         netdev_get_features(netdev, &current, NULL, NULL, NULL);
-        max_rate = netdev_features_to_bps(current) / 8;
+        max_rate = netdev_features_to_bps(current, 100 * 1000 * 1000) / 8;
     }
 
     class->min_rate = max_rate;

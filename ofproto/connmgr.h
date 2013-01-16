@@ -85,7 +85,8 @@ bool connmgr_has_controllers(const struct connmgr *);
 void connmgr_get_controller_info(struct connmgr *, struct shash *);
 void connmgr_free_controller_info(struct shash *);
 void connmgr_set_controllers(struct connmgr *,
-                             const struct ofproto_controller[], size_t n);
+                             const struct ofproto_controller[], size_t n,
+                             uint32_t allowed_versions);
 void connmgr_reconnect(const struct connmgr *);
 
 int connmgr_set_snoops(struct connmgr *, const struct sset *snoops);
@@ -95,10 +96,11 @@ void connmgr_get_snoops(const struct connmgr *, struct sset *snoops);
 /* Individual connections to OpenFlow controllers. */
 enum ofconn_type ofconn_get_type(const struct ofconn *);
 
+bool ofconn_set_master_election_id(struct ofconn *, uint64_t);
 enum nx_role ofconn_get_role(const struct ofconn *);
 void ofconn_set_role(struct ofconn *, enum nx_role);
 
-enum ofputil_protocol ofconn_get_protocol(struct ofconn *);
+enum ofputil_protocol ofconn_get_protocol(const struct ofconn *);
 void ofconn_set_protocol(struct ofconn *, enum ofputil_protocol);
 
 enum nx_packet_in_format ofconn_get_packet_in_format(struct ofconn *);
@@ -156,6 +158,7 @@ void connmgr_set_in_band_queue(struct connmgr *, int queue_id);
 bool connmgr_msg_in_hook(struct connmgr *, const struct flow *,
                          const struct ofpbuf *packet);
 bool connmgr_may_set_up_flow(struct connmgr *, const struct flow *,
+                             uint32_t local_odp_port,
                              const struct nlattr *odp_actions,
                              size_t actions_len);
 

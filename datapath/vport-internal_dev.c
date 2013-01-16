@@ -31,7 +31,6 @@
 #include "checksum.h"
 #include "datapath.h"
 #include "vlan.h"
-#include "vport-generic.h"
 #include "vport-internal_dev.h"
 #include "vport-netdev.h"
 
@@ -82,19 +81,6 @@ static struct net_device_stats *internal_dev_sys_stats(struct net_device *netdev
 	stats->tx_dropped	= vport_stats.rx_dropped;
 
 	return stats;
-}
-
-static int internal_dev_mac_addr(struct net_device *dev, void *p)
-{
-	struct sockaddr *addr = p;
-
-	if (!is_valid_ether_addr(addr->sa_data))
-		return -EADDRNOTAVAIL;
-#ifdef NET_ADDR_RANDOM
-	dev->addr_assign_type &= ~NET_ADDR_RANDOM;
-#endif
-	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
-	return 0;
 }
 
 /* Called with rcu_read_lock_bh. */
@@ -154,15 +140,6 @@ static int internal_dev_change_mtu(struct net_device *netdev, int new_mtu)
 	return 0;
 }
 
-static int internal_dev_do_ioctl(struct net_device *dev,
-				 struct ifreq *ifr, int cmd)
-{
-	if (ovs_dp_ioctl_hook)
-		return ovs_dp_ioctl_hook(dev, ifr, cmd);
-
-	return -EOPNOTSUPP;
-}
-
 static void internal_dev_destructor(struct net_device *dev)
 {
 	struct vport *vport = ovs_internal_dev_get_vport(dev);
@@ -176,8 +153,7 @@ static const struct net_device_ops internal_dev_netdev_ops = {
 	.ndo_open = internal_dev_open,
 	.ndo_stop = internal_dev_stop,
 	.ndo_start_xmit = internal_dev_xmit,
-	.ndo_set_mac_address = internal_dev_mac_addr,
-	.ndo_do_ioctl = internal_dev_do_ioctl,
+	.ndo_set_mac_address = eth_mac_addr,
 	.ndo_change_mtu = internal_dev_change_mtu,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)
 	.ndo_get_stats64 = internal_dev_get_stats,
@@ -194,7 +170,6 @@ static void do_setup(struct net_device *netdev)
 #ifdef HAVE_NET_DEVICE_OPS
 	netdev->netdev_ops = &internal_dev_netdev_ops;
 #else
-	netdev->do_ioctl = internal_dev_do_ioctl;
 	netdev->get_stats = internal_dev_sys_stats;
 	netdev->hard_start_xmit = internal_dev_xmit;
 	netdev->open = internal_dev_open;
@@ -204,6 +179,7 @@ static void do_setup(struct net_device *netdev)
 #endif
 
 	netdev->priv_flags &= ~IFF_TX_SKB_SHARING;
+	netdev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
 	netdev->destructor = internal_dev_destructor;
 	SET_ETHTOOL_OPS(netdev, &internal_dev_ethtool_ops);
 	netdev->tx_queue_len = 0;
@@ -319,12 +295,7 @@ const struct vport_ops ovs_internal_vport_ops = {
 	.set_addr	= ovs_netdev_set_addr,
 	.get_name	= ovs_netdev_get_name,
 	.get_addr	= ovs_netdev_get_addr,
-	.get_kobj	= ovs_netdev_get_kobj,
-	.get_dev_flags	= ovs_netdev_get_dev_flags,
-	.is_running	= ovs_netdev_is_running,
-	.get_operstate	= ovs_netdev_get_operstate,
 	.get_ifindex	= ovs_netdev_get_ifindex,
-	.get_mtu	= ovs_netdev_get_mtu,
 	.send		= internal_dev_recv,
 };
 

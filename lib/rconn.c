@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -131,7 +131,14 @@ struct rconn {
 #define MAX_MONITORS 8
     struct vconn *monitors[8];
     size_t n_monitors;
+
+    uint32_t allowed_versions;
 };
+
+uint32_t rconn_get_allowed_versions(const struct rconn *rconn)
+{
+    return rconn->allowed_versions;
+}
 
 static unsigned int elapsed_in_this_state(const struct rconn *);
 static unsigned int timeout(const struct rconn *);
@@ -163,9 +170,17 @@ static bool rconn_logging_connection_attempts__(const struct rconn *);
  * 8 seconds is used.
  *
  * The new rconn is initially unconnected.  Use rconn_connect() or
- * rconn_connect_unreliably() to connect it. */
+ * rconn_connect_unreliably() to connect it.
+ *
+ * Connections made by the rconn will automatically negotiate an OpenFlow
+ * protocol version acceptable to both peers on the connection.  The version
+ * negotiated will be one of those in the 'allowed_versions' bitmap: version
+ * 'x' is allowed if allowed_versions & (1 << x) is nonzero.  (The underlying
+ * vconn will treat an 'allowed_versions' of 0 as OFPUTIL_DEFAULT_VERSIONS.)
+ */
 struct rconn *
-rconn_create(int probe_interval, int max_backoff, uint8_t dscp)
+rconn_create(int probe_interval, int max_backoff, uint8_t dscp,
+             uint32_t allowed_versions)
 {
     struct rconn *rc = xzalloc(sizeof *rc);
 
@@ -203,6 +218,7 @@ rconn_create(int probe_interval, int max_backoff, uint8_t dscp)
     rconn_set_dscp(rc, dscp);
 
     rc->n_monitors = 0;
+    rc->allowed_versions = allowed_versions;
 
     return rc;
 }
@@ -354,7 +370,8 @@ reconnect(struct rconn *rc)
         VLOG_INFO("%s: connecting...", rc->name);
     }
     rc->n_attempted_connections++;
-    retval = vconn_open(rc->target, OFP10_VERSION, &rc->vconn, rc->dscp);
+    retval = vconn_open(rc->target, rc->allowed_versions, rc->dscp,
+                        &rc->vconn);
     if (!retval) {
         rc->remote_ip = vconn_get_remote_ip(rc->vconn);
         rc->local_ip = vconn_get_local_ip(rc->vconn);
@@ -632,14 +649,13 @@ int
 rconn_send_with_limit(struct rconn *rc, struct ofpbuf *b,
                       struct rconn_packet_counter *counter, int queue_limit)
 {
-    int retval;
-    retval = (counter->n_packets >= queue_limit
-              ? EAGAIN
-              : rconn_send(rc, b, counter));
-    if (retval) {
+    if (counter->n_packets < queue_limit) {
+        return rconn_send(rc, b, counter);
+    } else {
         COVERAGE_INC(rconn_overflow);
+        ofpbuf_delete(b);
+        return EAGAIN;
     }
-    return retval;
 }
 
 /* Returns the total number of packets successfully sent on the underlying
@@ -657,6 +673,14 @@ void
 rconn_add_monitor(struct rconn *rc, struct vconn *vconn)
 {
     if (rc->n_monitors < ARRAY_SIZE(rc->monitors)) {
+        int version = vconn_get_version(rc->vconn);
+
+        /* Override the allowed versions of the snoop vconn so that
+         * only the version of the controller connection is allowed.
+         * This is because the snoop will see the same messages as the
+         * controller */
+        vconn_set_allowed_versions(vconn, 1u << version);
+
         VLOG_INFO("new monitor connection from %s", vconn_get_name(vconn));
         rc->monitors[rc->n_monitors++] = vconn;
     } else {
@@ -1096,6 +1120,26 @@ is_admitted_msg(const struct ofpbuf *b)
     case OFPTYPE_GET_CONFIG_REQUEST:
     case OFPTYPE_GET_CONFIG_REPLY:
     case OFPTYPE_SET_CONFIG:
+        /* FIXME: Change the following once they are implemented: */
+    case OFPTYPE_QUEUE_GET_CONFIG_REQUEST:
+    case OFPTYPE_QUEUE_GET_CONFIG_REPLY:
+    case OFPTYPE_GET_ASYNC_REQUEST:
+    case OFPTYPE_GET_ASYNC_REPLY:
+    case OFPTYPE_METER_MOD:
+    case OFPTYPE_GROUP_REQUEST:
+    case OFPTYPE_GROUP_REPLY:
+    case OFPTYPE_GROUP_DESC_REQUEST:
+    case OFPTYPE_GROUP_DESC_REPLY:
+    case OFPTYPE_GROUP_FEATURES_REQUEST:
+    case OFPTYPE_GROUP_FEATURES_REPLY:
+    case OFPTYPE_METER_REQUEST:
+    case OFPTYPE_METER_REPLY:
+    case OFPTYPE_METER_CONFIG_REQUEST:
+    case OFPTYPE_METER_CONFIG_REPLY:
+    case OFPTYPE_METER_FEATURES_REQUEST:
+    case OFPTYPE_METER_FEATURES_REPLY:
+    case OFPTYPE_TABLE_FEATURES_REQUEST:
+    case OFPTYPE_TABLE_FEATURES_REPLY:
         return false;
 
     case OFPTYPE_PACKET_IN:

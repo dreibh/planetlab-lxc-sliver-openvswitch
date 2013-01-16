@@ -92,7 +92,8 @@ ovs_key_attr_to_string(enum ovs_key_attr attr)
     switch (attr) {
     case OVS_KEY_ATTR_UNSPEC: return "unspec";
     case OVS_KEY_ATTR_ENCAP: return "encap";
-    case OVS_KEY_ATTR_PRIORITY: return "priority";
+    case OVS_KEY_ATTR_PRIORITY: return "skb_priority";
+    case OVS_KEY_ATTR_SKB_MARK: return "skb_mark";
     case OVS_KEY_ATTR_TUN_ID: return "tun_id";
     case OVS_KEY_ATTR_IPV4_TUNNEL: return "ipv4_tunnel";
     case OVS_KEY_ATTR_IN_PORT: return "in_port";
@@ -167,8 +168,10 @@ format_odp_sample_action(struct ds *ds, const struct nlattr *attr)
 }
 
 static const char *
-slow_path_reason_to_string(enum slow_path_reason bit)
+slow_path_reason_to_string(uint32_t data)
 {
+    enum slow_path_reason bit = (enum slow_path_reason) data;
+
     switch (bit) {
     case SLOW_CFM:
         return "cfm";
@@ -187,29 +190,54 @@ slow_path_reason_to_string(enum slow_path_reason bit)
     }
 }
 
-static void
-format_slow_path_reason(struct ds *ds, uint32_t slow)
+static int
+parse_flags(const char *s, const char *(*bit_to_string)(uint32_t),
+            uint32_t *res)
 {
-    uint32_t bad = 0;
+    uint32_t result = 0;
+    int n = 0;
 
-    while (slow) {
-        uint32_t bit = rightmost_1bit(slow);
-        const char *s;
+    if (s[n] != '(') {
+        return -EINVAL;
+    }
+    n++;
 
-        s = slow_path_reason_to_string(bit);
-        if (s) {
-            ds_put_format(ds, "%s,", s);
-        } else {
-            bad |= bit;
+    while (s[n] != ')') {
+        unsigned long long int flags;
+        uint32_t bit;
+        int n0;
+
+        if (sscanf(&s[n], "%lli%n", &flags, &n0) > 0 && n0 > 0) {
+            n += n0 + (s[n + n0] == ',');
+            result |= flags;
+            continue;
         }
 
-        slow &= ~bit;
-    }
+        for (bit = 1; bit; bit <<= 1) {
+            const char *name = bit_to_string(bit);
+            size_t len;
 
-    if (bad) {
-        ds_put_format(ds, "0x%"PRIx32",", bad);
+            if (!name) {
+                continue;
+            }
+
+            len = strlen(name);
+            if (!strncmp(s + n, name, len) &&
+                (s[n + len] == ',' || s[n + len] == ')')) {
+                result |= bit;
+                n += len + (s[n + len] == ',');
+                break;
+            }
+        }
+
+        if (!bit) {
+            return -EINVAL;
+        }
     }
-    ds_chomp(ds, ',');
+    n++;
+
+    *res = result;
+    return n;
 }
 
 static void
@@ -246,10 +274,9 @@ format_odp_userspace_action(struct ds *ds, const struct nlattr *attr)
 
         case USER_ACTION_COOKIE_SLOW_PATH:
             ds_put_cstr(ds, ",slow_path(");
-            if (cookie.slow_path.reason) {
-                format_slow_path_reason(ds, cookie.slow_path.reason);
-            }
-            ds_put_char(ds, ')');
+            format_flags(ds, slow_path_reason_to_string,
+                         cookie.slow_path.reason, ',');
+            ds_put_format(ds, ")");
             break;
 
         case USER_ACTION_COOKIE_UNSPEC:
@@ -415,39 +442,25 @@ parse_odp_action(const char *s, const struct simap *port_names,
             cookie.sflow.output = output;
             odp_put_userspace_action(pid, &cookie, actions);
             return n;
-        } else if (sscanf(s, "userspace(pid=%lli,slow_path(%n", &pid, &n) > 0
+        } else if (sscanf(s, "userspace(pid=%lli,slow_path%n", &pid, &n) > 0
                    && n > 0) {
             union user_action_cookie cookie;
+            int res;
 
             cookie.type = USER_ACTION_COOKIE_SLOW_PATH;
             cookie.slow_path.unused = 0;
             cookie.slow_path.reason = 0;
 
-            while (s[n] != ')') {
-                uint32_t bit;
-
-                for (bit = 1; bit; bit <<= 1) {
-                    const char *reason = slow_path_reason_to_string(bit);
-                    size_t len = strlen(reason);
-
-                    if (reason
-                        && !strncmp(s + n, reason, len)
-                        && (s[n + len] == ',' || s[n + len] == ')'))
-                    {
-                        cookie.slow_path.reason |= bit;
-                        n += len + (s[n + len] == ',');
-                        break;
-                    }
-                }
-
-                if (!bit) {
-                    return -EINVAL;
-                }
+            res = parse_flags(&s[n], slow_path_reason_to_string,
+                              &cookie.slow_path.reason);
+            if (res < 0) {
+                return res;
             }
-            if (s[n + 1] != ')') {
+            n += res;
+            if (s[n] != ')') {
                 return -EINVAL;
             }
-            n += 2;
+            n++;
 
             odp_put_userspace_action(pid, &cookie, actions);
             return n;
@@ -602,6 +615,7 @@ odp_flow_key_attr_len(uint16_t type)
     switch ((enum ovs_key_attr) type) {
     case OVS_KEY_ATTR_ENCAP: return -2;
     case OVS_KEY_ATTR_PRIORITY: return 4;
+    case OVS_KEY_ATTR_SKB_MARK: return 4;
     case OVS_KEY_ATTR_TUN_ID: return 8;
     case OVS_KEY_ATTR_IPV4_TUNNEL: return sizeof(struct ovs_key_ipv4_tunnel);
     case OVS_KEY_ATTR_IN_PORT: return 4;
@@ -658,6 +672,21 @@ ovs_frag_type_to_string(enum ovs_frag_type type)
     }
 }
 
+static const char *
+odp_tun_flag_to_string(uint32_t flags)
+{
+    switch (flags) {
+    case OVS_TNL_F_DONT_FRAGMENT:
+        return "df";
+    case OVS_TNL_F_CSUM:
+        return "csum";
+    case OVS_TNL_F_KEY:
+        return "key";
+    default:
+        return NULL;
+    }
+}
+
 static void
 format_odp_key_attr(const struct nlattr *a, struct ds *ds)
 {
@@ -694,7 +723,11 @@ format_odp_key_attr(const struct nlattr *a, struct ds *ds)
         break;
 
     case OVS_KEY_ATTR_PRIORITY:
-        ds_put_format(ds, "(%"PRIu32")", nl_attr_get_u32(a));
+        ds_put_format(ds, "(%#"PRIx32")", nl_attr_get_u32(a));
+        break;
+
+    case OVS_KEY_ATTR_SKB_MARK:
+        ds_put_format(ds, "(%#"PRIx32")", nl_attr_get_u32(a));
         break;
 
     case OVS_KEY_ATTR_TUN_ID:
@@ -703,12 +736,16 @@ format_odp_key_attr(const struct nlattr *a, struct ds *ds)
 
     case OVS_KEY_ATTR_IPV4_TUNNEL:
         ipv4_tun_key = nl_attr_get(a);
-        ds_put_format(ds, "(tun_id=0x%"PRIx64",flags=0x%"PRIx32
-                      ",src="IP_FMT",dst="IP_FMT",tos=0x%"PRIx8",ttl=%"PRIu8")",
-                      ntohll(ipv4_tun_key->tun_id), ipv4_tun_key->tun_flags,
-                      IP_ARGS(&ipv4_tun_key->ipv4_src),
-                      IP_ARGS(&ipv4_tun_key->ipv4_dst),
+        ds_put_format(ds, "(tun_id=0x%"PRIx64",src="IP_FMT",dst="IP_FMT","
+                      "tos=0x%"PRIx8",ttl=%"PRIu8",flags(",
+                      ntohll(ipv4_tun_key->tun_id),
+                      IP_ARGS(ipv4_tun_key->ipv4_src),
+                      IP_ARGS(ipv4_tun_key->ipv4_dst),
                       ipv4_tun_key->ipv4_tos, ipv4_tun_key->ipv4_ttl);
+
+        format_flags(ds, odp_tun_flag_to_string,
+                     ipv4_tun_key->tun_flags, ',');
+        ds_put_format(ds, "))");
         break;
 
     case OVS_KEY_ATTR_IN_PORT:
@@ -737,8 +774,8 @@ format_odp_key_attr(const struct nlattr *a, struct ds *ds)
         ipv4_key = nl_attr_get(a);
         ds_put_format(ds, "(src="IP_FMT",dst="IP_FMT",proto=%"PRIu8
                       ",tos=%#"PRIx8",ttl=%"PRIu8",frag=%s)",
-                      IP_ARGS(&ipv4_key->ipv4_src),
-                      IP_ARGS(&ipv4_key->ipv4_dst),
+                      IP_ARGS(ipv4_key->ipv4_src),
+                      IP_ARGS(ipv4_key->ipv4_dst),
                       ipv4_key->ipv4_proto, ipv4_key->ipv4_tos,
                       ipv4_key->ipv4_ttl,
                       ovs_frag_type_to_string(ipv4_key->ipv4_frag));
@@ -789,7 +826,7 @@ format_odp_key_attr(const struct nlattr *a, struct ds *ds)
         arp_key = nl_attr_get(a);
         ds_put_format(ds, "(sip="IP_FMT",tip="IP_FMT",op=%"PRIu16","
                       "sha="ETH_ADDR_FMT",tha="ETH_ADDR_FMT")",
-                      IP_ARGS(&arp_key->arp_sip), IP_ARGS(&arp_key->arp_tip),
+                      IP_ARGS(arp_key->arp_sip), IP_ARGS(arp_key->arp_tip),
                       ntohs(arp_key->arp_op), ETH_ADDR_ARGS(arp_key->arp_sha),
                       ETH_ADDR_ARGS(arp_key->arp_tha));
         break;
@@ -906,8 +943,18 @@ parse_odp_key_attr(const char *s, const struct simap *port_names,
         unsigned long long int priority;
         int n = -1;
 
-        if (sscanf(s, "priority(%lli)%n", &priority, &n) > 0 && n > 0) {
+        if (sscanf(s, "skb_priority(%llx)%n", &priority, &n) > 0 && n > 0) {
             nl_msg_put_u32(key, OVS_KEY_ATTR_PRIORITY, priority);
+            return n;
+        }
+    }
+
+    {
+        unsigned long long int mark;
+        int n = -1;
+
+        if (sscanf(s, "skb_mark(%llx)%n", &mark, &n) > 0 && n > 0) {
+            nl_msg_put_u32(key, OVS_KEY_ATTR_SKB_MARK, mark);
             return n;
         }
     }
@@ -920,6 +967,42 @@ parse_odp_key_attr(const char *s, const struct simap *port_names,
                    tun_id_s, &n) > 0 && n > 0) {
             uint64_t tun_id = strtoull(tun_id_s, NULL, 0);
             nl_msg_put_be64(key, OVS_KEY_ATTR_TUN_ID, htonll(tun_id));
+            return n;
+        }
+    }
+
+    {
+        char tun_id_s[32];
+        int tos, ttl;
+        struct ovs_key_ipv4_tunnel tun_key;
+        int n = -1;
+
+        if (sscanf(s, "ipv4_tunnel(tun_id=%31[x0123456789abcdefABCDEF],"
+                   "src="IP_SCAN_FMT",dst="IP_SCAN_FMT
+                   ",tos=%i,ttl=%i,flags%n", tun_id_s,
+                    IP_SCAN_ARGS(&tun_key.ipv4_src),
+                    IP_SCAN_ARGS(&tun_key.ipv4_dst), &tos, &ttl,
+                    &n) > 0 && n > 0) {
+            int res;
+
+            tun_key.tun_id = htonll(strtoull(tun_id_s, NULL, 0));
+            tun_key.ipv4_tos = tos;
+            tun_key.ipv4_ttl = ttl;
+
+            res = parse_flags(&s[n], odp_tun_flag_to_string,
+                              &tun_key.tun_flags);
+            if (res < 0) {
+                return res;
+            }
+            n += res;
+            if (s[n] != ')') {
+                return -EINVAL;
+            }
+            n++;
+
+            memset(&tun_key.pad, 0, sizeof tun_key.pad);
+            nl_msg_put_unspec(key, OVS_KEY_ATTR_IPV4_TUNNEL, &tun_key,
+                              sizeof tun_key);
             return n;
         }
     }
@@ -1259,12 +1342,38 @@ ovs_to_odp_frag(uint8_t nw_frag)
           : OVS_FRAG_TYPE_LATER);
 }
 
+/* The set of kernel flags we understand. Used to detect if ODP_FIT_TOO_MUCH */
+#define OVS_TNL_F_KNOWN_MASK \
+    (OVS_TNL_F_DONT_FRAGMENT | OVS_TNL_F_CSUM | OVS_TNL_F_KEY)
+
+/* These allow the flow/kernel view of the flags to change in future */
+static uint32_t
+flow_to_odp_flags(uint16_t flags)
+{
+    return (flags & FLOW_TNL_F_DONT_FRAGMENT ? OVS_TNL_F_DONT_FRAGMENT : 0)
+        | (flags & FLOW_TNL_F_CSUM ? OVS_TNL_F_CSUM : 0)
+        | (flags & FLOW_TNL_F_KEY ? OVS_TNL_F_KEY : 0);
+}
+
+static uint16_t
+odp_to_flow_flags(uint32_t tun_flags)
+{
+    return (tun_flags & OVS_TNL_F_DONT_FRAGMENT ? FLOW_TNL_F_DONT_FRAGMENT : 0)
+        | (tun_flags & OVS_TNL_F_CSUM ? FLOW_TNL_F_CSUM : 0)
+        | (tun_flags & OVS_TNL_F_KEY ? FLOW_TNL_F_KEY : 0);
+}
+
 /* Appends a representation of 'flow' as OVS_KEY_ATTR_* attributes to 'buf'.
+ * 'flow->in_port' is ignored (since it is likely to be an OpenFlow port
+ * number rather than a datapath port number).  Instead, if 'odp_in_port'
+ * is anything other than OVSP_NONE, it is included in 'buf' as the input
+ * port.
  *
  * 'buf' must have at least ODPUTIL_FLOW_KEY_BYTES bytes of space, or be
  * capable of being expanded to allow for that much space. */
 void
-odp_flow_key_from_flow(struct ofpbuf *buf, const struct flow *flow)
+odp_flow_key_from_flow(struct ofpbuf *buf, const struct flow *flow,
+                       uint32_t odp_in_port)
 {
     struct ovs_key_ethernet *eth_key;
     size_t encap;
@@ -1273,13 +1382,29 @@ odp_flow_key_from_flow(struct ofpbuf *buf, const struct flow *flow)
         nl_msg_put_u32(buf, OVS_KEY_ATTR_PRIORITY, flow->skb_priority);
     }
 
-    if (flow->tunnel.tun_id != htonll(0)) {
+    if (flow->tunnel.ip_dst) {
+        struct ovs_key_ipv4_tunnel *ipv4_tun_key;
+
+        ipv4_tun_key = nl_msg_put_unspec_uninit(buf, OVS_KEY_ATTR_IPV4_TUNNEL,
+                                            sizeof *ipv4_tun_key);
+        /* layouts differ, flags has different size */
+        ipv4_tun_key->tun_id = flow->tunnel.tun_id;
+        ipv4_tun_key->tun_flags = flow_to_odp_flags(flow->tunnel.flags);
+        ipv4_tun_key->ipv4_src = flow->tunnel.ip_src;
+        ipv4_tun_key->ipv4_dst = flow->tunnel.ip_dst;
+        ipv4_tun_key->ipv4_tos = flow->tunnel.ip_tos;
+        ipv4_tun_key->ipv4_ttl = flow->tunnel.ip_ttl;
+        memset(ipv4_tun_key->pad, 0, sizeof ipv4_tun_key->pad);
+    } else if (flow->tunnel.tun_id != htonll(0)) {
         nl_msg_put_be64(buf, OVS_KEY_ATTR_TUN_ID, flow->tunnel.tun_id);
     }
 
-    if (flow->in_port != OFPP_NONE && flow->in_port != OFPP_CONTROLLER) {
-        nl_msg_put_u32(buf, OVS_KEY_ATTR_IN_PORT,
-                       ofp_port_to_odp_port(flow->in_port));
+    if (flow->skb_mark) {
+        nl_msg_put_u32(buf, OVS_KEY_ATTR_SKB_MARK, flow->skb_mark);
+    }
+
+    if (odp_in_port != OVSP_NONE) {
+        nl_msg_put_u32(buf, OVS_KEY_ATTR_IN_PORT, odp_in_port);
     }
 
     eth_key = nl_msg_put_unspec_uninit(buf, OVS_KEY_ATTR_ETHERNET,
@@ -1327,7 +1452,8 @@ odp_flow_key_from_flow(struct ofpbuf *buf, const struct flow *flow)
         ipv6_key->ipv6_tclass = flow->nw_tos;
         ipv6_key->ipv6_hlimit = flow->nw_ttl;
         ipv6_key->ipv6_frag = ovs_to_odp_frag(flow->nw_frag);
-    } else if (flow->dl_type == htons(ETH_TYPE_ARP)) {
+    } else if (flow->dl_type == htons(ETH_TYPE_ARP) ||
+               flow->dl_type == htons(ETH_TYPE_RARP)) {
         struct ovs_key_arp *arp_key;
 
         arp_key = nl_msg_put_unspec_uninit(buf, OVS_KEY_ATTR_ARP,
@@ -1583,7 +1709,8 @@ parse_l3_onward(const struct nlattr *attrs[OVS_KEY_ATTR_MAX + 1],
                 return ODP_FIT_ERROR;
             }
         }
-    } else if (flow->dl_type == htons(ETH_TYPE_ARP)) {
+    } else if (flow->dl_type == htons(ETH_TYPE_ARP) ||
+               flow->dl_type == htons(ETH_TYPE_RARP)) {
         expected_attrs |= UINT64_C(1) << OVS_KEY_ATTR_ARP;
         if (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_ARP)) {
             const struct ovs_key_arp *arp_key;
@@ -1733,6 +1860,10 @@ parse_8021q_onward(const struct nlattr *attrs[OVS_KEY_ATTR_MAX + 1],
  * structure in 'flow'.  Returns an ODP_FIT_* value that indicates how well
  * 'key' fits our expectations for what a flow key should contain.
  *
+ * The 'in_port' will be the datapath's understanding of the port.  The
+ * caller will need to translate with odp_port_to_ofp_port() if the
+ * OpenFlow port is needed.
+ *
  * This function doesn't take the packet itself as an argument because none of
  * the currently understood OVS_KEY_ATTR_* attributes require it.  Currently,
  * it is always possible to infer which additional attribute(s) should appear
@@ -1744,7 +1875,6 @@ enum odp_key_fitness
 odp_flow_key_to_flow(const struct nlattr *key, size_t key_len,
                      struct flow *flow)
 {
-    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
     const struct nlattr *attrs[OVS_KEY_ATTR_MAX + 1];
     uint64_t expected_attrs;
     uint64_t present_attrs;
@@ -1765,22 +1895,41 @@ odp_flow_key_to_flow(const struct nlattr *key, size_t key_len,
         expected_attrs |= UINT64_C(1) << OVS_KEY_ATTR_PRIORITY;
     }
 
+    if (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_SKB_MARK)) {
+        flow->skb_mark = nl_attr_get_u32(attrs[OVS_KEY_ATTR_SKB_MARK]);
+        expected_attrs |= UINT64_C(1) << OVS_KEY_ATTR_SKB_MARK;
+    }
+
     if (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_TUN_ID)) {
         flow->tunnel.tun_id = nl_attr_get_be64(attrs[OVS_KEY_ATTR_TUN_ID]);
         expected_attrs |= UINT64_C(1) << OVS_KEY_ATTR_TUN_ID;
     }
 
-    if (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_IN_PORT)) {
-        uint32_t in_port = nl_attr_get_u32(attrs[OVS_KEY_ATTR_IN_PORT]);
-        if (in_port >= UINT16_MAX || in_port >= OFPP_MAX) {
-            VLOG_ERR_RL(&rl, "in_port %"PRIu32" out of supported range",
-                        in_port);
-            return ODP_FIT_ERROR;
+    if (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_IPV4_TUNNEL)) {
+        const struct ovs_key_ipv4_tunnel *ipv4_tun_key;
+
+        ipv4_tun_key = nl_attr_get(attrs[OVS_KEY_ATTR_IPV4_TUNNEL]);
+
+        flow->tunnel.tun_id = ipv4_tun_key->tun_id;
+        flow->tunnel.ip_src = ipv4_tun_key->ipv4_src;
+        flow->tunnel.ip_dst = ipv4_tun_key->ipv4_dst;
+        flow->tunnel.flags = odp_to_flow_flags(ipv4_tun_key->tun_flags);
+        flow->tunnel.ip_tos = ipv4_tun_key->ipv4_tos;
+        flow->tunnel.ip_ttl = ipv4_tun_key->ipv4_ttl;
+
+        /* Allow this to show up as unexpected, if there are unknown flags,
+         * eventually resulting in ODP_FIT_TOO_MUCH.
+         * OVS_TNL_F_KNOWN_MASK defined locally above. */
+        if (!(ipv4_tun_key->tun_flags & ~OVS_TNL_F_KNOWN_MASK)) {
+            expected_attrs |= UINT64_C(1) << OVS_KEY_ATTR_IPV4_TUNNEL;
         }
-        flow->in_port = odp_port_to_ofp_port(in_port);
+    }
+
+    if (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_IN_PORT)) {
+        flow->in_port = nl_attr_get_u32(attrs[OVS_KEY_ATTR_IN_PORT]);
         expected_attrs |= UINT64_C(1) << OVS_KEY_ATTR_IN_PORT;
     } else {
-        flow->in_port = OFPP_NONE;
+        flow->in_port = OVSP_NONE;
     }
 
     /* Ethernet header. */
@@ -1858,16 +2007,32 @@ commit_set_action(struct ofpbuf *odp_actions, enum ovs_key_attr key_type,
 }
 
 static void
-commit_set_tun_id_action(const struct flow *flow, struct flow *base,
+commit_set_tunnel_action(const struct flow *flow, struct flow *base,
                          struct ofpbuf *odp_actions)
 {
-    if (base->tunnel.tun_id == flow->tunnel.tun_id) {
+    if (!memcmp(&base->tunnel, &flow->tunnel, sizeof base->tunnel)) {
         return;
     }
-    base->tunnel.tun_id = flow->tunnel.tun_id;
+    memcpy(&base->tunnel, &flow->tunnel, sizeof base->tunnel);
 
-    commit_set_action(odp_actions, OVS_KEY_ATTR_TUN_ID,
-                      &base->tunnel.tun_id, sizeof(base->tunnel.tun_id));
+    /* A valid IPV4_TUNNEL must have non-zero ip_dst. */
+    if (flow->tunnel.ip_dst) {
+        struct ovs_key_ipv4_tunnel ipv4_tun_key;
+
+        ipv4_tun_key.tun_id = base->tunnel.tun_id;
+        ipv4_tun_key.tun_flags = flow_to_odp_flags(base->tunnel.flags);
+        ipv4_tun_key.ipv4_src = base->tunnel.ip_src;
+        ipv4_tun_key.ipv4_dst = base->tunnel.ip_dst;
+        ipv4_tun_key.ipv4_tos = base->tunnel.ip_tos;
+        ipv4_tun_key.ipv4_ttl = base->tunnel.ip_ttl;
+        memset(&ipv4_tun_key.pad, 0, sizeof ipv4_tun_key.pad);
+
+        commit_set_action(odp_actions, OVS_KEY_ATTR_IPV4_TUNNEL,
+                          &ipv4_tun_key, sizeof ipv4_tun_key);
+    } else {
+        commit_set_action(odp_actions, OVS_KEY_ATTR_TUN_ID,
+                          &base->tunnel.tun_id, sizeof base->tunnel.tun_id);
+    }
 }
 
 static void
@@ -2031,6 +2196,18 @@ commit_set_priority_action(const struct flow *flow, struct flow *base,
                       &base->skb_priority, sizeof(base->skb_priority));
 }
 
+static void
+commit_set_skb_mark_action(const struct flow *flow, struct flow *base,
+                           struct ofpbuf *odp_actions)
+{
+    if (base->skb_mark == flow->skb_mark) {
+        return;
+    }
+    base->skb_mark = flow->skb_mark;
+
+    commit_set_action(odp_actions, OVS_KEY_ATTR_SKB_MARK,
+                      &base->skb_mark, sizeof(base->skb_mark));
+}
 /* If any of the flow key data that ODP actions can modify are different in
  * 'base' and 'flow', appends ODP actions to 'odp_actions' that change the flow
  * key from 'base' into 'flow', and then changes 'base' the same way. */
@@ -2038,10 +2215,11 @@ void
 commit_odp_actions(const struct flow *flow, struct flow *base,
                    struct ofpbuf *odp_actions)
 {
-    commit_set_tun_id_action(flow, base, odp_actions);
+    commit_set_tunnel_action(flow, base, odp_actions);
     commit_set_ether_addr_action(flow, base, odp_actions);
     commit_vlan_action(flow, base, odp_actions);
     commit_set_nw_action(flow, base, odp_actions);
     commit_set_port_action(flow, base, odp_actions);
     commit_set_priority_action(flow, base, odp_actions);
+    commit_set_skb_mark_action(flow, base, odp_actions);
 }

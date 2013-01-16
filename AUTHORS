@@ -26,6 +26,7 @@ Dominic Curran          dominic.curran@citrix.com
 Ed Maste                emaste at freebsd.org
 Edward Tomasz Napierała trasz@freebsd.org
 Ethan Jackson           ethan@nicira.com
+FUJITA Tomonori         fujita.tomonori@lab.ntt.co.jp
 Gaetano Catalli         gaetano.catalli@gmail.com
 Giuseppe Lettieri       g.lettieri@iet.unipi.it
 Glen Gibb               grg@stanford.edu
@@ -34,6 +35,7 @@ Henry Mai               hmai@nicira.com
 Hao Zheng               hzheng@nicira.com
 Ian Campbell            Ian.Campbell@citrix.com
 Isaku Yamahata          yamahata@valinux.co.jp
+Jarno Rajahalme         jarno.rajahalme@nsn.com
 Jean Tourrilhes         jt@hpl.hp.com
 Jeremy Stribling        strib@nicira.com
 Jesse Gross             jesse@nicira.com
@@ -42,6 +44,7 @@ Joe Stringer            joe@wand.net.nz
 Jun Nakajima            jun.nakajima@intel.com
 Justin Pettit           jpettit@nicira.com
 Keith Amidon            keith@nicira.com
+Krishna Kondaka         kkondaka@vmware.com
 Kyle Mestery            kmestery@cisco.com
 Leo Alterman            lalterman@nicira.com
 Luca Giraudo            lgiraudo@nicira.com
@@ -62,6 +65,7 @@ Sanjay Sane             ssane@nicira.com
 Shan Wei                davidshan@tencent.com
 Shih-Hao Li             shli@nicira.com
 Simon Horman            horms@verge.net.au
+SUGYO Kazushi           sugyo.org@gmail.com
 Tadaaki Nagao           nagao@stratosphere.co.jp
 Tetsuo NAKAGAWA         nakagawa@mxc.nes.nec.co.jp
 Thomas Goirand          zigo@debian.org
@@ -75,12 +79,14 @@ Vivien Bernet-Rollande  vbr@soprive.net
 Wei Yongjun             yjwei@cn.fujitsu.com
 Yasuhito Takamiya       yasuhito@gmail.com
 Yu Zhiguo               yuzg@cn.fujitsu.com
+Zoltan Kiss             zoltan.kiss@citrix.com
 Zhi Yong Wu             zwu.kernel@gmail.com
 
 The following additional people are mentioned in commit logs as having
 provided helpful bug reports or suggestions.
 
 Aaron M. Ucko           ucko@debian.org
+Adam Heath              doogie@brainfood.com
 Ahmed Bilal             numan252@gmail.com
 Alan Shieh              ashieh@nicira.com
 Alban Browaeys          prahal@yahoo.com
@@ -96,6 +102,7 @@ Bob Ball                bob.ball@citrix.com
 Brad Hall               brad@nicira.com
 Brandon Heller          brandonh@stanford.edu
 Brendan Kelley          bkelley@nicira.com
+Brent Salisbury         brent.salisbury@gmail.com
 Bryan Fulton            bryan@nicira.com
 Bryan Osoro             bosoro@nicira.com
 Cedric Hobbs            cedric@nicira.com
@@ -128,14 +135,17 @@ Janis Hamme             janis.hamme@student.kit.edu
 Jari Sundell            sundell.software@gmail.com
 Jed Daniels             openvswitch@jeddaniels.com
 Jeongkeun Lee           jklee@hp.com
+Jing Ai                 ai_jing2000@hotmail.com
 Joan Cirer              joan@ev0.net
 John Galgay             john@galgay.net
 Kevin Mancuso           kevin.mancuso@rackspace.com
+Kiran Shanbhog          kiran@vmware.com
 Kirill Kabardin
 Koichi Yagishita        yagishita.koichi@jrc.co.jp
 Konstantin Khorenko     khorenko@openvz.org
 Kris zhang              zhang.kris@gmail.com
 Krishna Miriyala        krishna@nicira.com
+Logan Rosen             logatronico@gmail.com
 Luca Falavigna          dktrkranz@debian.org
 Luiz Henrique Ozaki     luiz.ozaki@gmail.com
 Michael A. Collins      mike.a.collins@ark-net.org
@@ -161,6 +171,7 @@ Ramana Reddy            gtvrreddy@gmail.com
 Rob Sherwood            rob.sherwood@bigswitch.com
 Roger Leigh             rleigh@codelibre.net
 Rogério Vinhal Nunes
+Saul St. John           sstjohn@cs.wisc.edu
 Scott Hendricks         shendricks@nicira.com
 Sean Brady              sbrady@gtfservices.com
 Sebastian Andrzej Siewior  sebastian@breakpoint.cc

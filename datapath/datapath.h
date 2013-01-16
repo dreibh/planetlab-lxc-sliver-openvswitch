@@ -28,7 +28,6 @@
 
 #include "checksum.h"
 #include "compat.h"
-#include "dp_sysfs.h"
 #include "flow.h"
 #include "tunnel.h"
 #include "vlan.h"
@@ -62,7 +61,6 @@ struct dp_stats_percpu {
  * struct datapath - datapath for flow-based packet switching
  * @rcu: RCU callback head for deferred destruction.
  * @list_node: Element in global 'dps' list.
- * @ifobj: Represents /sys/class/net/<devname>/brif.  Protected by RTNL.
  * @n_flows: Number of flows currently in flow table.
  * @table: Current flow table.  Protected by genl_lock and RCU.
  * @ports: Hash table for ports.  %OVSP_LOCAL port always exists.  Protected by
@@ -76,7 +74,6 @@ struct dp_stats_percpu {
 struct datapath {
 	struct rcu_head rcu;
 	struct list_head list_node;
-	struct kobject ifobj;
 
 	/* Flow table. */
 	struct flow_table __rcu *table;
@@ -125,7 +122,7 @@ struct ovs_skb_cb {
  * @key: Becomes %OVS_PACKET_ATTR_KEY.  Must be nonnull.
  * @userdata: If nonnull, its u64 value is extracted and passed to userspace as
  * %OVS_PACKET_ATTR_USERDATA.
- * @pid: Netlink PID to which packet should be sent.  If @pid is 0 then no
+ * @portid: Netlink PID to which packet should be sent.  If @portid is 0 then no
  * packet is sent and the packet is accounted in the datapath's @n_lost
  * counter.
  */
@@ -133,7 +130,7 @@ struct dp_upcall_info {
 	u8 cmd;
 	const struct sw_flow_key *key;
 	const struct nlattr *userdata;
-	u32 pid;
+	u32 portid;
 };
 
 /**
@@ -181,7 +178,6 @@ static inline struct vport *ovs_vport_rtnl(const struct datapath *dp, int port_n
 
 extern struct notifier_block ovs_dp_device_notifier;
 extern struct genl_multicast_group ovs_dp_vport_multicast_group;
-extern int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
 
 void ovs_dp_process_received_packet(struct vport *, struct sk_buff *);
 void ovs_dp_detach_port(struct vport *);
@@ -189,7 +185,7 @@ int ovs_dp_upcall(struct datapath *, struct sk_buff *,
 		  const struct dp_upcall_info *);
 
 const char *ovs_dp_name(const struct datapath *dp);
-struct sk_buff *ovs_vport_cmd_build_info(struct vport *, u32 pid, u32 seq,
+struct sk_buff *ovs_vport_cmd_build_info(struct vport *, u32 portid, u32 seq,
 					 u8 cmd);
 
 int ovs_execute_actions(struct datapath *dp, struct sk_buff *skb);

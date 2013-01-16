@@ -138,15 +138,15 @@ static struct shash dp_netdevs = SHASH_INITIALIZER(&dp_netdevs);
 /* Maximum port MTU seen so far. */
 static int max_mtu = ETH_PAYLOAD_MAX;
 
-static int get_port_by_number(struct dp_netdev *, uint16_t port_no,
+static int get_port_by_number(struct dp_netdev *, uint32_t port_no,
                               struct dp_netdev_port **portp);
 static int get_port_by_name(struct dp_netdev *, const char *devname,
                             struct dp_netdev_port **portp);
 static void dp_netdev_free(struct dp_netdev *);
 static void dp_netdev_flow_flush(struct dp_netdev *);
 static int do_add_port(struct dp_netdev *, const char *devname,
-                       const char *type, uint16_t port_no);
-static int do_del_port(struct dp_netdev *, uint16_t port_no);
+                       const char *type, uint32_t port_no);
+static int do_del_port(struct dp_netdev *, uint32_t port_no);
 static int dpif_netdev_open(const struct dpif_class *, const char *name,
                             bool create, struct dpif **);
 static int dp_netdev_output_userspace(struct dp_netdev *, const struct ofpbuf *,
@@ -181,6 +181,22 @@ dpif_netdev_enumerate(struct sset *all_dps)
     return 0;
 }
 
+static const char *
+dpif_netdev_port_open_type(const struct dpif_class *class, const char *type)
+{
+    return strcmp(type, "internal") ? type
+                  : class != &dpif_netdev_class ? "dummy"
+                  : "tap";
+}
+
+static const char *
+dpif_planetlab_port_open_type(const struct dpif_class *class, const char *type)
+{
+    return strcmp(type, "internal") ? type
+                  : class != &dpif_planetlab_class ? "dummy"
+                  : "pltap";
+}
+
 static struct dpif *
 create_dpif_netdev(struct dp_netdev *dp)
 {
@@ -195,6 +211,46 @@ create_dpif_netdev(struct dp_netdev *dp)
     dpif->dp_serial = dp->serial;
 
     return &dpif->dpif;
+}
+
+static int
+choose_port(struct dp_netdev *dp, const char *name)
+{
+    int port_no;
+
+    if (dp->class != &dpif_netdev_class && 
+        dp->class != &dpif_planetlab_class) {
+        const char *p;
+        int start_no = 0;
+
+        /* If the port name begins with "br", start the number search at
+         * 100 to make writing tests easier. */
+        if (!strncmp(name, "br", 2)) {
+            start_no = 100;
+        }
+
+        /* If the port name contains a number, try to assign that port number.
+         * This can make writing unit tests easier because port numbers are
+         * predictable. */
+        for (p = name; *p != '\0'; p++) {
+            if (isdigit((unsigned char) *p)) {
+                port_no = start_no + strtol(p, NULL, 10);
+                if (port_no > 0 && port_no < MAX_PORTS
+                    && !dp->ports[port_no]) {
+                    return port_no;
+                }
+                break;
+            }
+        }
+    }
+
+    for (port_no = 1; port_no < MAX_PORTS; port_no++) {
+        if (!dp->ports[port_no]) {
+            return port_no;
+        }
+    }
+
+    return -1;
 }
 
 static int
@@ -214,6 +270,7 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
     }
     hmap_init(&dp->flow_table);
     list_init(&dp->port_list);
+
     error = do_add_port(dp, name, "internal", OVSP_LOCAL);
     if (error) {
         dp_netdev_free(dp);
@@ -316,18 +373,9 @@ dpif_netdev_get_stats(const struct dpif *dpif, struct dpif_dp_stats *stats)
     return 0;
 }
 
-static const char* internal_port_type(const struct dp_netdev* dp)
-{
-	if (dp->class == &dpif_netdev_class)
-		return "tap";
-	if (dp->class == &dpif_planetlab_class)
-		return "pltap";
-	return "dummy";
-}
-
 static int
 do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
-            uint16_t port_no)
+            uint32_t port_no)
 {
     struct dp_netdev_port *port;
     struct netdev *netdev;
@@ -338,7 +386,7 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
     /* XXX reject devices already in some dp_netdev. */
 
     /* Open and validate network device. */
-    open_type = (strcmp(type, "internal") ? type : internal_port_type(dp));
+    open_type = dpif_netdev_port_open_type(dp->class, type);
     error = netdev_open(devname, open_type, &netdev);
     if (error) {
         return error;
@@ -378,48 +426,13 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
 }
 
 static int
-choose_port(struct dpif *dpif, struct netdev *netdev)
-{
-    struct dp_netdev *dp = get_dp_netdev(dpif);
-    int port_no;
-
-    if (dpif->dpif_class != &dpif_netdev_class &&
-        dpif->dpif_class != &dpif_planetlab_class)
-    {
-        /* If the port name contains a number, try to assign that port number.
-         * This can make writing unit tests easier because port numbers are
-         * predictable. */
-        const char *p;
-
-        for (p = netdev_get_name(netdev); *p != '\0'; p++) {
-            if (isdigit((unsigned char) *p)) {
-                port_no = strtol(p, NULL, 10);
-                if (port_no > 0 && port_no < MAX_PORTS
-                    && !dp->ports[port_no]) {
-                    return port_no;
-                }
-                break;
-            }
-        }
-    }
-
-    for (port_no = 0; port_no < MAX_PORTS; port_no++) {
-        if (!dp->ports[port_no]) {
-            return port_no;
-        }
-    }
-
-    return -1;
-}
-
-static int
 dpif_netdev_port_add(struct dpif *dpif, struct netdev *netdev,
-                     uint16_t *port_nop)
+                     uint32_t *port_nop)
 {
     struct dp_netdev *dp = get_dp_netdev(dpif);
     int port_no;
 
-    if (*port_nop != UINT16_MAX) {
+    if (*port_nop != UINT32_MAX) {
         if (*port_nop >= MAX_PORTS) {
             return EFBIG;
         } else if (dp->ports[*port_nop]) {
@@ -427,7 +440,7 @@ dpif_netdev_port_add(struct dpif *dpif, struct netdev *netdev,
         }
         port_no = *port_nop;
     } else {
-        port_no = choose_port(dpif, netdev);
+        port_no = choose_port(dp, netdev_get_name(netdev));
     }
     if (port_no >= 0) {
         *port_nop = port_no;
@@ -438,21 +451,21 @@ dpif_netdev_port_add(struct dpif *dpif, struct netdev *netdev,
 }
 
 static int
-dpif_netdev_port_del(struct dpif *dpif, uint16_t port_no)
+dpif_netdev_port_del(struct dpif *dpif, uint32_t port_no)
 {
     struct dp_netdev *dp = get_dp_netdev(dpif);
     return port_no == OVSP_LOCAL ? EINVAL : do_del_port(dp, port_no);
 }
 
 static bool
-is_valid_port_number(uint16_t port_no)
+is_valid_port_number(uint32_t port_no)
 {
     return port_no < MAX_PORTS;
 }
 
 static int
 get_port_by_number(struct dp_netdev *dp,
-                   uint16_t port_no, struct dp_netdev_port **portp)
+                   uint32_t port_no, struct dp_netdev_port **portp)
 {
     if (!is_valid_port_number(port_no)) {
         *portp = NULL;
@@ -479,7 +492,7 @@ get_port_by_name(struct dp_netdev *dp,
 }
 
 static int
-do_del_port(struct dp_netdev *dp, uint16_t port_no)
+do_del_port(struct dp_netdev *dp, uint32_t port_no)
 {
     struct dp_netdev_port *port;
     char *name;
@@ -514,7 +527,7 @@ answer_port_query(const struct dp_netdev_port *port,
 }
 
 static int
-dpif_netdev_port_query_by_number(const struct dpif *dpif, uint16_t port_no,
+dpif_netdev_port_query_by_number(const struct dpif *dpif, uint32_t port_no,
                                  struct dpif_port *dpif_port)
 {
     struct dp_netdev *dp = get_dp_netdev(dpif);
@@ -522,7 +535,7 @@ dpif_netdev_port_query_by_number(const struct dpif *dpif, uint16_t port_no,
     int error;
 
     error = get_port_by_number(dp, port_no, &port);
-    if (!error) {
+    if (!error && dpif_port) {
         answer_port_query(port, dpif_port);
     }
     return error;
@@ -537,7 +550,7 @@ dpif_netdev_port_query_by_name(const struct dpif *dpif, const char *devname,
     int error;
 
     error = get_port_by_name(dp, devname, &port);
-    if (!error) {
+    if (!error && dpif_port) {
         answer_port_query(port, dpif_port);
     }
     return error;
@@ -666,7 +679,7 @@ static int
 dpif_netdev_flow_from_nlattrs(const struct nlattr *key, uint32_t key_len,
                               struct flow *flow)
 {
-    if (odp_flow_key_to_flow(key, key_len, flow)) {
+    if (odp_flow_key_to_flow(key, key_len, flow) != ODP_FIT_PERFECT) {
         /* This should not happen: it indicates that odp_flow_key_from_flow()
          * and odp_flow_key_to_flow() disagree on the acceptable form of a
          * flow.  Log the problem as an error, with enough details to enable
@@ -875,7 +888,7 @@ dpif_netdev_flow_dump_next(const struct dpif *dpif, void *state_,
         struct ofpbuf buf;
 
         ofpbuf_use_stack(&buf, &state->keybuf, sizeof state->keybuf);
-        odp_flow_key_from_flow(&buf, &flow->key);
+        odp_flow_key_from_flow(&buf, &flow->key, flow->key.in_port);
 
         *key = buf.data;
         *key_len = buf.size;
@@ -925,7 +938,7 @@ dpif_netdev_execute(struct dpif *dpif, const struct dpif_execute *execute)
     ofpbuf_reserve(&copy, DP_NETDEV_HEADROOM);
     ofpbuf_put(&copy, execute->packet->data, execute->packet->size);
 
-    flow_extract(&copy, 0, NULL, -1, &key);
+    flow_extract(&copy, 0, 0, NULL, -1, &key);
     error = dpif_netdev_flow_from_nlattrs(execute->key, execute->key_len,
                                           &key);
     if (!error) {
@@ -1023,7 +1036,7 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
     if (packet->size < ETH_HEADER_LEN) {
         return;
     }
-    flow_extract(packet, 0, NULL, odp_port_to_ofp_port(port->port_no), &key);
+    flow_extract(packet, 0, 0, NULL, port->port_no, &key);
     flow = dp_netdev_lookup_flow(dp, &key);
     if (flow) {
         dp_netdev_flow_used(flow, packet);
@@ -1086,7 +1099,7 @@ dp_netdev_set_dl(struct ofpbuf *packet, const struct ovs_key_ethernet *eth_key)
 
 static void
 dp_netdev_output_port(struct dp_netdev *dp, struct ofpbuf *packet,
-                      uint16_t out_port)
+                      uint32_t out_port)
 {
     struct dp_netdev_port *p = dp->ports[out_port];
     if (p) {
@@ -1113,7 +1126,7 @@ dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
 
     buf = &u->buf;
     ofpbuf_init(buf, ODPUTIL_FLOW_KEY_BYTES + 2 + packet->size);
-    odp_flow_key_from_flow(buf, flow);
+    odp_flow_key_from_flow(buf, flow, flow->in_port);
     key_len = buf->size;
     ofpbuf_pull(buf, key_len);
     ofpbuf_reserve(buf, 2);
@@ -1181,13 +1194,14 @@ execute_set_action(struct ofpbuf *packet, const struct nlattr *a)
 {
     enum ovs_key_attr type = nl_attr_type(a);
     const struct ovs_key_ipv4 *ipv4_key;
+    const struct ovs_key_ipv6 *ipv6_key;
     const struct ovs_key_tcp *tcp_key;
     const struct ovs_key_udp *udp_key;
 
     switch (type) {
     case OVS_KEY_ATTR_TUN_ID:
     case OVS_KEY_ATTR_PRIORITY:
-    case OVS_KEY_ATTR_IPV6:
+    case OVS_KEY_ATTR_SKB_MARK:
     case OVS_KEY_ATTR_IPV4_TUNNEL:
         /* not implemented */
         break;
@@ -1201,6 +1215,13 @@ execute_set_action(struct ofpbuf *packet, const struct nlattr *a)
         ipv4_key = nl_attr_get_unspec(a, sizeof(struct ovs_key_ipv4));
         packet_set_ipv4(packet, ipv4_key->ipv4_src, ipv4_key->ipv4_dst,
                         ipv4_key->ipv4_tos, ipv4_key->ipv4_ttl);
+        break;
+
+    case OVS_KEY_ATTR_IPV6:
+        ipv6_key = nl_attr_get_unspec(a, sizeof(struct ovs_key_ipv6));
+        packet_set_ipv6(packet, ipv6_key->ipv6_proto, ipv6_key->ipv6_src,
+                        ipv6_key->ipv6_dst, ipv6_key->ipv6_tclass,
+                        ipv6_key->ipv6_label, ipv6_key->ipv6_hlimit);
         break;
 
     case OVS_KEY_ATTR_TCP:
@@ -1274,8 +1295,9 @@ dp_netdev_execute_actions(struct dp_netdev *dp,
     }
 }
 
-#define DPIF_NETDEV_CLASS_FUNCTIONS 			\
+#define DPIF_NETDEV_CLASS_FUNCTIONS(PORT_OPEN_TYPE)	\
     dpif_netdev_enumerate,				\
+    PORT_OPEN_TYPE,					\
     dpif_netdev_open,					\
     dpif_netdev_close,					\
     dpif_netdev_destroy,				\
@@ -1310,12 +1332,12 @@ dp_netdev_execute_actions(struct dp_netdev *dp,
 
 const struct dpif_class dpif_netdev_class = {
     "netdev",
-    DPIF_NETDEV_CLASS_FUNCTIONS
+    DPIF_NETDEV_CLASS_FUNCTIONS(dpif_netdev_port_open_type)
 };
 
 const struct dpif_class dpif_planetlab_class = {
     "planetlab",
-    DPIF_NETDEV_CLASS_FUNCTIONS
+    DPIF_NETDEV_CLASS_FUNCTIONS(dpif_planetlab_port_open_type)
 };
 
 static void

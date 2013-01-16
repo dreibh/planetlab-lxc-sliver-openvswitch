@@ -169,6 +169,9 @@ AT_DATA([test-data], [dnl
 # actions=strip_vlan
 0012 0008 00000000
 
+# actions=set_queue:2309737729
+0015 0008 89abcd01
+
 dnl 802.1ad isn't supported at the moment
 dnl # actions=push_vlan:0x88a8
 dnl 0011 0008 88a8 0000
@@ -180,9 +183,6 @@ ffff 0010 00002320 0001 0005 00000000
 
 # actions=set_tunnel:0x12345678
 ffff 0010 00002320 0002 0000 12345678
-
-# actions=set_queue:2309737729
-ffff 0010 00002320 0004 0000 89abcd01
 
 # actions=pop_queue
 ffff 0010 00002320 0005 000000000000
@@ -240,12 +240,12 @@ dnl action instead, so parse-ofp11-actions will recognise and drop this action.
 ffff 0020 00002320 0016 000000000000 fedcba9876543210 ffffffffffffffff
 
 dnl Write-Metadata duplicated.
-& ofp_actions|WARN|duplicate write_metadata instruction specified
+& ofp_actions|WARN|duplicate write_metadata instruction not allowed, for OpenFlow 1.1+ compatibility
 # bad OF1.1 actions: OFPBAC_UNSUPPORTED_ORDER
 ffff 0020 00002320 0016 000000000000 fedcba9876543210 ffffffffffffffff ffff 0020 00002320 0016 000000000000 fedcba9876543210 ffffffffffffffff
 
 dnl Write-Metadata in wrong position.
-& ofp_actions|WARN|write_metadata instruction must be specified after other instructions/actions
+& ofp_actions|WARN|invalid instruction ordering: apply_actions must appear before write_metadata, for OpenFlow 1.1+ compatibility
 # bad OF1.1 actions: OFPBAC_UNSUPPORTED_ORDER
 ffff 0020 00002320 0016 000000000000 fedcba9876543210 ffffffffffffffff ffff 0010 00002320 0002 0000 12345678
 
@@ -341,7 +341,7 @@ dnl Check that an empty Apply-Actions instruction gets dropped.
 0004 0008 00000000
 
 dnl Duplicate instruction type:
-# bad OF1.1 instructions: OFPIT_BAD_INSTRUCTION
+# bad OF1.1 instructions: OFPBAC_UNSUPPORTED_ORDER
 0004 0008 00000000 0004 0008 00000000
 
 dnl Instructions not multiple of 8 in length.
@@ -379,12 +379,39 @@ dnl Write-Metadata too long.
 0002 0020 00000000 fedcba9876543210 ffffffffffffffff 0000000000000000
 
 dnl Write-Metadata duplicated.
-# bad OF1.1 instructions: OFPIT_BAD_INSTRUCTION
+# bad OF1.1 instructions: OFPBAC_UNSUPPORTED_ORDER
 0002 0018 00000000 fedcba9876543210 ff00ff00ff00ff00 0002 0018 00000000 fedcba9876543210 ff00ff00ff00ff00
 
-dnl Write-Metadata in wrong position.
-& ofp_actions|WARN|write_metadata instruction must be specified after other instructions/actions
-# bad OF1.1 instructions: OFPBAC_UNSUPPORTED_ORDER
+dnl Write-Metadata in wrong position (OpenFlow 1.1+ disregards the order
+dnl and OVS reorders it to the canonical order)
+# actions=write_metadata:0xfedcba9876543210,goto_table:1
+#  1: 01 -> 02
+#  3: 08 -> 18
+#  4: 01 -> 00
+#  8: 00 -> fe
+#  9: 02 -> dc
+# 10: 00 -> ba
+# 11: 18 -> 98
+# 12: 00 -> 76
+# 13: 00 -> 54
+# 14: 00 -> 32
+# 15: 00 -> 10
+# 16: fe -> ff
+# 17: dc -> ff
+# 18: ba -> ff
+# 19: 98 -> ff
+# 20: 76 -> ff
+# 21: 54 -> ff
+# 22: 32 -> ff
+# 23: 10 -> ff
+# 24: ff -> 00
+# 25: ff -> 01
+# 26: ff -> 00
+# 27: ff -> 08
+# 28: ff -> 01
+# 29: ff -> 00
+# 30: ff -> 00
+# 31: ff -> 00
 0001 0008 01 000000 0002 0018 00000000 fedcba9876543210 ffffffffffffffff
 
 dnl Write-Actions not supported yet.

@@ -90,6 +90,31 @@ nx_entry_ok(const void *p, unsigned int match_len)
     return header;
 }
 
+/* Given NXM/OXM value 'value' and mask 'mask', each 'width' bytes long,
+ * checks for any 1-bit in the value where there is a 0-bit in the mask.  If it
+ * finds one, logs a warning. */
+static void
+check_mask_consistency(const uint8_t *p, const struct mf_field *mf)
+{
+    unsigned int width = mf->n_bytes;
+    const uint8_t *value = p + 4;
+    const uint8_t *mask = p + 4 + width;
+    unsigned int i;
+
+    for (i = 0; i < width; i++) {
+        if (value[i] & ~mask[i]) {
+            if (!VLOG_DROP_WARN(&rl)) {
+                char *s = nx_match_to_string(p, width * 2 + 4);
+                VLOG_WARN_RL(&rl, "NXM/OXM entry %s has 1-bits in value for "
+                             "bits wildcarded by the mask.  (Future versions "
+                             "of OVS may report this as an OpenFlow error.)",
+                             s);
+                break;
+            }
+        }
+    }
+}
+
 static enum ofperr
 nx_pull_raw(const uint8_t *p, unsigned int match_len, bool strict,
             struct match *match, ovs_be64 *cookie, ovs_be64 *cookie_mask)
@@ -141,6 +166,7 @@ nx_pull_raw(const uint8_t *p, unsigned int match_len, bool strict,
                     error = OFPERR_OFPBMC_BAD_MASK;
                 } else {
                     error = 0;
+                    check_mask_consistency(p, mf);
                     mf_set(mf, &value, &mask, match);
                 }
             }
@@ -547,7 +573,7 @@ nx_put_raw(struct ofpbuf *b, bool oxm, const struct match *match,
     int match_len;
     int i;
 
-    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 17);
+    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 18);
 
     /* Metadata. */
     if (match->wc.masks.in_port) {
@@ -626,7 +652,8 @@ nx_put_raw(struct ofpbuf *b, bool oxm, const struct match *match,
                                    flow->arp_tha, match->wc.masks.arp_tha);
             }
         }
-    } else if (flow->dl_type == htons(ETH_TYPE_ARP)) {
+    } else if (flow->dl_type == htons(ETH_TYPE_ARP) ||
+               flow->dl_type == htons(ETH_TYPE_RARP)) {
         /* ARP. */
         if (match->wc.masks.nw_proto) {
             nxm_put_16(b, oxm ? OXM_OF_ARP_OP : NXM_OF_ARP_OP,
@@ -643,8 +670,8 @@ nx_put_raw(struct ofpbuf *b, bool oxm, const struct match *match,
     }
 
     /* Tunnel ID. */
-    nxm_put_64m(b, NXM_NX_TUN_ID, flow->tunnel.tun_id,
-                match->wc.masks.tunnel.tun_id);
+    nxm_put_64m(b, oxm ? OXM_OF_TUNNEL_ID : NXM_NX_TUN_ID,
+		flow->tunnel.tun_id, match->wc.masks.tunnel.tun_id);
 
     /* Registers. */
     for (i = 0; i < FLOW_N_REGS; i++) {
@@ -1201,6 +1228,7 @@ nxm_reg_load_to_nxast(const struct ofpact_reg_load *load,
         struct ofp_header *oh = (struct ofp_header *)openflow->l2;
 
         switch(oh->version) {
+        case OFP13_VERSION:
         case OFP12_VERSION:
             set_field_to_ofast(load, openflow);
             break;

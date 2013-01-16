@@ -68,11 +68,8 @@ enum ofperr {
 /* ## OFPET_HELLO_FAILED ## */
 /* ## ------------------ ## */
 
-    /* OF1.0+(0).  Hello protocol failed. */
-    OFPERR_OFPET_HELLO_FAILED = OFPERR_OFS,
-
     /* OF1.0+(0,0).  No compatible version. */
-    OFPERR_OFPHFC_INCOMPATIBLE,
+    OFPERR_OFPHFC_INCOMPATIBLE = OFPERR_OFS,
 
     /* OF1.0+(0,1).  Permissions error. */
     OFPERR_OFPHFC_EPERM,
@@ -80,9 +77,6 @@ enum ofperr {
 /* ## ----------------- ## */
 /* ## OFPET_BAD_REQUEST ## */
 /* ## ----------------- ## */
-
-    /* OF1.0+(1).  Request was not understood. */
-    OFPERR_OFPET_BAD_REQUEST,
 
     /* OF1.0+(1,0).  ofp_header.version not supported. */
     OFPERR_OFPBRC_BAD_VERSION,
@@ -130,6 +124,9 @@ enum ofperr {
     /* OF1.2+(1,12).  Invalid packet in packet-out. */
     OFPERR_OFPBRC_BAD_PACKET,
 
+    /* OF1.3+(1,13).  Multipart request overflowed the assigned buffer. */
+    OFPERR_OFPBRC_MULTIPART_BUFFER_OVERFLOW,
+
     /* NX1.0+(1,256).  Invalid NXM flow match. */
     OFPERR_NXBRC_NXM_INVALID,
 
@@ -158,12 +155,18 @@ enum ofperr {
      * the id of any existing monitor. */
     OFPERR_NXBRC_FM_BAD_ID,
 
+    /* NX1.0+(1,520).  The 'event' in an NXST_FLOW_MONITOR reply does not
+     * specify one of the NXFME_ABBREV, NXFME_ADD, NXFME_DELETE, or
+     * NXFME_MODIFY. */
+    OFPERR_NXBRC_FM_BAD_EVENT,
+
+    /* NX1.0+(1,521).  The error that occurred cannot be represented in this
+     * OpenFlow version. */
+    OFPERR_NXBRC_UNENCODABLE_ERROR,
+
 /* ## ---------------- ## */
 /* ## OFPET_BAD_ACTION ## */
 /* ## ---------------- ## */
-
-    /* OF1.0+(2).  Error in action description. */
-    OFPERR_OFPET_BAD_ACTION,
 
     /* OF1.0+(2,0).  Unknown action type. */
     OFPERR_OFPBAC_BAD_TYPE,
@@ -221,9 +224,6 @@ enum ofperr {
 /* ## OFPET_BAD_INSTRUCTION ## */
 /* ## --------------------- ## */
 
-    /* OF1.1+(3).  Error in instruction list. */
-    OFPERR_OFPIT_BAD_INSTRUCTION,
-
     /* OF1.1+(3,0).  Unknown instruction. */
     OFPERR_OFPBIC_UNKNOWN_INST,
 
@@ -254,9 +254,6 @@ enum ofperr {
 /* ## --------------- ## */
 /* ## OFPET_BAD_MATCH ## */
 /* ## --------------- ## */
-
-    /* OF1.1+(4).  Error in match. */
-    OFPERR_OFPET_BAD_MATCH,
 
     /* OF1.1+(4,0).  Unsupported match type specified by the match */
     OFPERR_OFPBMC_BAD_TYPE,
@@ -303,9 +300,6 @@ enum ofperr {
 /* ## OFPET_FLOW_MOD_FAILED ## */
 /* ## --------------------- ## */
 
-    /* OF1.0(3), OF1.1+(5).  Problem modifying flow entry. */
-    OFPERR_OFPET_FLOW_MOD_FAILED,
-
     /* OF1.1+(5,0).  Unspecified error. */
     OFPERR_OFPFMFC_UNKNOWN,
 
@@ -350,9 +344,6 @@ enum ofperr {
 /* ## ---------------------- ## */
 /* ## OFPET_GROUP_MOD_FAILED ## */
 /* ## ---------------------- ## */
-
-    /* OF1.1+(6).  Problem modifying group entry. */
-    OFPERR_OFPET_GROUP_MOD_FAILED,
 
     /* OF1.1+(6,0).  Group not added because a group ADD attempted to replace
      * an already-present group. */
@@ -409,9 +400,6 @@ enum ofperr {
 /* ## OFPET_PORT_MOD_FAILED ## */
 /* ## --------------------- ## */
 
-    /* OF1.0(4), OF1.1+(7).  OFPT_PORT_MOD failed. */
-    OFPERR_OFPET_PORT_MOD_FAILED,
-
     /* OF1.0(4,0), OF1.1+(7,0).  Specified port does not exist. */
     OFPERR_OFPPMFC_BAD_PORT,
 
@@ -432,9 +420,6 @@ enum ofperr {
 /* ## OFPET_TABLE_MOD_FAILED ## */
 /* ## ---------------------- ## */
 
-    /* OF1.1+(8).  Table mod request failed. */
-    OFPERR_OFPET_TABLE_MOD_FAILED,
-
     /* OF1.1+(8,0).  Specified table does not exist. */
     OFPERR_OFPTMFC_BAD_TABLE,
 
@@ -447,9 +432,6 @@ enum ofperr {
 /* ## --------------------- ## */
 /* ## OFPET_QUEUE_OP_FAILED ## */
 /* ## --------------------- ## */
-
-    /* OF1.0(5), OF1.1+(9).  Queue operation failed. */
-    OFPERR_OFPET_QUEUE_OP_FAILED,
 
     /* OF1.0(5,0), OF1.1+(9,0).  Invalid port (or port does not exist). */
     OFPERR_OFPQOFC_BAD_PORT,
@@ -464,9 +446,6 @@ enum ofperr {
 /* ## OFPET_SWITCH_CONFIG_FAILED ## */
 /* ## -------------------------- ## */
 
-    /* OF1.1+(10).  Switch config request failed. */
-    OFPERR_OFPET_SWITCH_CONFIG_FAILED,
-
     /* OF1.1+(10,0).  Specified flags is invalid. */
     OFPERR_OFPSCFC_BAD_FLAGS,
 
@@ -480,9 +459,6 @@ enum ofperr {
 /* ## OFPET_ROLE_REQUEST_FAILED ## */
 /* ## ------------------------- ## */
 
-    /* OF1.2+(11).  Controller Role request failed. */
-    OFPERR_OFPET_ROLE_REQUEST_FAILED,
-
     /* OF1.2+(11,0).  Stale Message: old generation_id. */
     OFPERR_OFPRRFC_STALE,
 
@@ -492,23 +468,81 @@ enum ofperr {
     /* NX1.0(1,513), NX1.1(1,513), OF1.2+(11,2).  Invalid role. */
     OFPERR_OFPRRFC_BAD_ROLE,
 
+/* ## ---------------------- ## */
+/* ## OFPET_METER_MOD_FAILED ## */
+/* ## ---------------------- ## */
+
+    /* OF1.3+(12,0).  Unspecified error. */
+    OFPERR_OFPMMFC_UNKNOWN,
+
+    /* OF1.3+(12,1).  Meter not added because a Meter ADD attempted to
+     * replace an existing Meter. */
+    OFPERR_OFPMMFC_METER_EXISTS,
+
+    /* OF1.3+(12,2).  Meter not added because Meter specified is invalid. */
+    OFPERR_OFPMMFC_INVALID_METER,
+
+    /* OF1.3+(12,3).  Meter not modified because a Meter MODIFY attempted
+     * to modify a non-existent Meter. */
+    OFPERR_OFPMMFC_UNKNOWN_METER,
+
+    /* OF1.3+(12,4).  Unsupported or unknown command. */
+    OFPERR_OFPMMFC_BAD_COMMAND,
+
+    /* OF1.3+(12,5).  Flag configuration unsupported. */
+    OFPERR_OFPMMFC_BAD_FLAGS,
+
+    /* OF1.3+(12,6).  Rate unsupported. */
+    OFPERR_OFPMMFC_BAD_RATE,
+
+    /* OF1.3+(12,7).  Burst size unsupported. */
+    OFPERR_OFPMMFC_BAD_BURST,
+
+    /* OF1.3+(12,8).  Band unsupported. */
+    OFPERR_OFPMMFC_BAD_BAND,
+
+    /* OF1.3+(12,9).  Band value unsupported. */
+    OFPERR_OFPMMFC_BAD_BAND_VALUE,
+
+    /* OF1.3+(12,10).  No more meters available. */
+    OFPERR_OFPMMFC_OUT_OF_METERS,
+
+    /* OF1.3+(12,11).  The maximum number of properties for a meter has
+     * been exceeded. */
+    OFPERR_OFPMMFC_OUT_OF_BANDS,
+
+/* ## --------------------------- ## */
+/* ## OFPET_TABLE_FEATURES_FAILED ## */
+/* ## --------------------------- ## */
+
+    /* OF1.3+(13,0).  Specified table does not exist. */
+    OFPERR_OFPTFFC_BAD_TABLE,
+
+    /* OF1.3+(13,1).  Invalid metadata mask. */
+    OFPERR_OFPTFFC_BAD_METADATA,
+
+    /* OF1.3+(13,2).  Unknown property type. */
+    OFPERR_OFPTFFC_BAD_TYPE,
+
+    /* OF1.3+(13,3).  Length problem in properties. */
+    OFPERR_OFPTFFC_BAD_LEN,
+
+    /* OF1.3+(13,4).  Unsupported property value. */
+    OFPERR_OFPTFFC_BAD_ARGUMENT,
+
+    /* OF1.3+(13,5).  Permissions error. */
+    OFPERR_OFPTFFC_EPERM,
+
 /* ## ------------------ ## */
 /* ## OFPET_EXPERIMENTER ## */
 /* ## ------------------ ## */
-
-    /* OF1.2+(0xffff).  Experimenter error messages. */
-    OFPERR_OFPET_EXPERIMENTER,
 };
 
 const char *ofperr_domain_get_name(enum ofp_version);
 
 bool ofperr_is_valid(enum ofperr);
-bool ofperr_is_category(enum ofperr);
-bool ofperr_is_nx_extension(enum ofperr);
-bool ofperr_is_encodable(enum ofperr, enum ofp_version);
 
 enum ofperr ofperr_decode(enum ofp_version, uint16_t type, uint16_t code);
-enum ofperr ofperr_decode_type(enum ofp_version, uint16_t type);
 enum ofperr ofperr_from_name(const char *);
 
 enum ofperr ofperr_decode_msg(const struct ofp_header *,

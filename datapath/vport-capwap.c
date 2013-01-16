@@ -27,7 +27,6 @@
 #include "datapath.h"
 #include "tunnel.h"
 #include "vport.h"
-#include "vport-generic.h"
 
 #define CAPWAP_SRC_PORT 58881
 #define CAPWAP_DST_PORT 58882
@@ -143,7 +142,11 @@ static struct sk_buff *defrag(struct sk_buff *, bool frag_last);
 
 static void capwap_frag_init(struct inet_frag_queue *, void *match);
 static unsigned int capwap_frag_hash(struct inet_frag_queue *);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,7,0)
 static int capwap_frag_match(struct inet_frag_queue *, void *match);
+#else
+static bool capwap_frag_match(struct inet_frag_queue *, void *match);
+#endif
 static void capwap_frag_expire(unsigned long ifq);
 
 static struct inet_frags frag_state = {
@@ -155,28 +158,6 @@ static struct inet_frags frag_state = {
 	.secret_interval = CAPWAP_FRAG_SECRET_INTERVAL,
 };
 
-static void get_capwap_param(const struct tnl_mutable_config *mutable,
-			const struct ovs_key_ipv4_tunnel *tun_key,
-			u32 *flags,  __be64 *out_key)
-{
-	if (tun_key->ipv4_dst) {
-		*flags = 0;
-
-		if (tun_key->tun_flags & OVS_FLOW_TNL_F_KEY)
-			*flags = TNL_F_OUT_KEY_ACTION;
-		if (tun_key->tun_flags & OVS_FLOW_TNL_F_CSUM)
-			*flags |= TNL_F_CSUM;
-		*out_key = tun_key->tun_id;
-	} else {
-		*flags = mutable->flags;
-		if (mutable->flags & TNL_F_OUT_KEY_ACTION)
-			*out_key = tun_key->tun_id;
-		else
-			*out_key = mutable->out_key;
-
-	}
-}
-
 static int capwap_hdr_len(const struct tnl_mutable_config *mutable,
 			  const struct ovs_key_ipv4_tunnel *tun_key)
 {
@@ -184,7 +165,7 @@ static int capwap_hdr_len(const struct tnl_mutable_config *mutable,
 	u32 flags;
 	__be64 out_key;
 
-	get_capwap_param(mutable, tun_key, &flags, &out_key);
+	tnl_get_param(mutable, tun_key, &flags, &out_key);
 
 	/* CAPWAP has no checksums. */
 	if (flags & TNL_F_CSUM)
@@ -199,17 +180,19 @@ static int capwap_hdr_len(const struct tnl_mutable_config *mutable,
 	return size;
 }
 
-static void capwap_build_header(const struct vport *vport,
-				const struct tnl_mutable_config *mutable,
-				const struct ovs_key_ipv4_tunnel *tun_key,
-				void *header)
+static struct sk_buff *capwap_build_header(const struct vport *vport,
+					    const struct tnl_mutable_config *mutable,
+					    struct dst_entry *dst,
+					    struct sk_buff *skb,
+					    int tunnel_hlen)
 {
-	struct udphdr *udph = header;
+	struct ovs_key_ipv4_tunnel *tun_key = OVS_CB(skb)->tun_key;
+	struct udphdr *udph = udp_hdr(skb);
 	struct capwaphdr *cwh = (struct capwaphdr *)(udph + 1);
 	u32 flags;
 	__be64 out_key;
 
-	get_capwap_param(mutable, tun_key, &flags, &out_key);
+	tnl_get_param(mutable, tun_key, &flags, &out_key);
 
 	udph->source = htons(CAPWAP_SRC_PORT);
 	udph->dest = htons(CAPWAP_DST_PORT);
@@ -218,7 +201,8 @@ static void capwap_build_header(const struct vport *vport,
 	cwh->frag_id = 0;
 	cwh->frag_off = 0;
 
-	if (out_key || (flags & TNL_F_OUT_KEY_ACTION)) {
+	if (out_key || flags & TNL_F_OUT_KEY_ACTION) {
+		/* first field in WSI is key */
 		struct capwaphdr_wsi *wsi = (struct capwaphdr_wsi *)(cwh + 1);
 
 		cwh->begin = CAPWAP_KEYED;
@@ -237,30 +221,6 @@ static void capwap_build_header(const struct vport *vport,
 		/* make packet readable by old capwap code */
 		cwh->begin = CAPWAP_NO_WSI;
 	}
-}
-
-static struct sk_buff *capwap_update_header(const struct vport *vport,
-					    const struct tnl_mutable_config *mutable,
-					    struct dst_entry *dst,
-					    struct sk_buff *skb,
-					    int tunnel_hlen)
-{
-	const struct ovs_key_ipv4_tunnel *tun_key = OVS_CB(skb)->tun_key;
-	struct udphdr *udph = udp_hdr(skb);
-	u32 flags;
-	__be64 out_key;
-
-	get_capwap_param(mutable, tun_key, &flags, &out_key);
-
-	if (flags & TNL_F_OUT_KEY_ACTION) {
-		/* first field in WSI is key */
-		struct capwaphdr *cwh = (struct capwaphdr *)(udph + 1);
-		struct capwaphdr_wsi *wsi = (struct capwaphdr_wsi *)(cwh + 1);
-		struct capwaphdr_wsi_key *opt = (struct capwaphdr_wsi_key *)(wsi + 1);
-
-		opt->key = out_key;
-	}
-
 	udph->len = htons(skb->len - skb_transport_offset(skb));
 
 	if (unlikely(skb->len - skb_network_offset(skb) > dst_mtu(dst))) {
@@ -377,10 +337,12 @@ static int capwap_rcv(struct sock *sk, struct sk_buff *skb)
 	}
 
 	if (key_present && mutable->key.daddr &&
-			 !(mutable->flags & TNL_F_IN_KEY_MATCH))
+			 !(mutable->flags & TNL_F_IN_KEY_MATCH)) {
 		key_present = false;
+		key = 0;
+	}
 
-	tnl_tun_key_init(&tun_key, iph, key, key_present ? OVS_FLOW_TNL_F_KEY : 0);
+	tnl_tun_key_init(&tun_key, iph, key, key_present ? OVS_TNL_F_KEY : 0);
 	OVS_CB(skb)->tun_key = &tun_key;
 
 	ovs_tnl_rcv(vport, skb);
@@ -397,7 +359,6 @@ static const struct tnl_ops capwap_tnl_ops = {
 	.ipproto	= IPPROTO_UDP,
 	.hdr_len	= capwap_hdr_len,
 	.build_header	= capwap_build_header,
-	.update_header	= capwap_update_header,
 };
 
 static inline struct capwap_net *ovs_get_capwap_net(struct net *net)
@@ -445,7 +406,7 @@ static int init_socket(struct net *net)
 	capwap_net->frag_state.low_thresh	= CAPWAP_FRAG_PRUNE_MEM;
 
 	inet_frags_init_net(&capwap_net->frag_state);
-
+	udp_encap_enable();
 	capwap_net->n_tunnels++;
 	return 0;
 
@@ -811,8 +772,7 @@ static struct sk_buff *defrag(struct sk_buff *skb, bool frag_last)
 	u16 frag_off;
 	struct frag_queue *fq;
 
-	if (atomic_read(&ns_frag_state->mem) > ns_frag_state->high_thresh)
-		inet_frag_evictor(ns_frag_state, &frag_state);
+	inet_frag_evictor(ns_frag_state, &frag_state, false);
 
 	match.daddr = iph->daddr;
 	match.saddr = iph->saddr;
@@ -846,7 +806,11 @@ static unsigned int capwap_frag_hash(struct inet_frag_queue *ifq)
 	return frag_hash(&ifq_cast(ifq)->match);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,7,0)
 static int capwap_frag_match(struct inet_frag_queue *ifq, void *a_)
+#else
+static bool capwap_frag_match(struct inet_frag_queue *ifq, void *a_)
+#endif
 {
 	struct frag_match *a = a_;
 	struct frag_match *b = &ifq_cast(ifq)->match;
@@ -882,9 +846,6 @@ const struct vport_ops ovs_capwap_vport_ops = {
 	.get_addr	= ovs_tnl_get_addr,
 	.get_options	= ovs_tnl_get_options,
 	.set_options	= ovs_tnl_set_options,
-	.get_dev_flags	= ovs_vport_gen_get_dev_flags,
-	.is_running	= ovs_vport_gen_is_running,
-	.get_operstate	= ovs_vport_gen_get_operstate,
 	.send		= ovs_tnl_send,
 };
 #else

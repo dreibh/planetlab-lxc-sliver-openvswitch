@@ -75,6 +75,7 @@ enum ofp_version {
     OFP10_VERSION = 0x01,
     OFP11_VERSION = 0x02,
     OFP12_VERSION = 0x03,
+    OFP13_VERSION = 0x04
 };
 
 #define OFP_MAX_TABLE_NAME_LEN 32
@@ -84,6 +85,27 @@ enum ofp_version {
 #define OFP_SSL_PORT  6633
 
 #define OFP_ETH_ALEN 6          /* Bytes in an Ethernet address. */
+
+#define OFP_DEFAULT_MISS_SEND_LEN   128
+
+/* Values below this cutoff are 802.3 packets and the two bytes
+ * following MAC addresses are used as a frame length.  Otherwise, the
+ * two bytes are used as the Ethernet type.
+ */
+#define OFP_DL_TYPE_ETH2_CUTOFF   0x0600
+
+/* Value of dl_type to indicate that the frame does not include an
+ * Ethernet type.
+ */
+#define OFP_DL_TYPE_NOT_ETH_TYPE  0x05ff
+
+/* Value used in "idle_timeout" and "hard_timeout" to indicate that the entry
+ * is permanent. */
+#define OFP_FLOW_PERMANENT 0
+
+/* By default, choose a priority in the middle. */
+#define OFP_DEFAULT_PRIORITY 0x8000
+
 
 /* Header on all OpenFlow packets. */
 struct ofp_header {
@@ -95,6 +117,39 @@ struct ofp_header {
                            to facilitate pairing. */
 };
 OFP_ASSERT(sizeof(struct ofp_header) == 8);
+
+/* OFPT_ERROR: Error message (datapath -> controller). */
+struct ofp_error_msg {
+    ovs_be16 type;
+    ovs_be16 code;
+    uint8_t data[0];          /* Variable-length data.  Interpreted based
+                                 on the type and code. */
+};
+OFP_ASSERT(sizeof(struct ofp_error_msg) == 4);
+
+enum ofp_config_flags {
+    /* Handling of IP fragments. */
+    OFPC_FRAG_NORMAL   = 0,  /* No special handling for fragments. */
+    OFPC_FRAG_DROP     = 1,  /* Drop fragments. */
+    OFPC_FRAG_REASM    = 2,  /* Reassemble (only if OFPC_IP_REASM set). */
+    OFPC_FRAG_NX_MATCH = 3,  /* Make first fragments available for matching. */
+    OFPC_FRAG_MASK     = 3,
+
+    /* OFPC_INVALID_TTL_TO_CONTROLLER is deprecated in OpenFlow 1.3 */
+
+    /* TTL processing - applicable for IP and MPLS packets. */
+    OFPC_INVALID_TTL_TO_CONTROLLER = 1 << 2, /* Send packets with invalid TTL
+                                                to the controller. */
+};
+
+/* Switch configuration. */
+struct ofp_switch_config {
+    ovs_be16 flags;             /* OFPC_* flags. */
+    ovs_be16 miss_send_len;     /* Max bytes of new flow that datapath should
+                                   send to the controller. */
+};
+OFP_ASSERT(sizeof(struct ofp_switch_config) == 4);
+
 
 /* Common flags to indicate behavior of the physical port.  These flags are
  * used in ofp_port to describe the current configuration.  They are used in
@@ -166,14 +221,17 @@ struct ofp_switch_features {
     ovs_be32 n_buffers;     /* Max packets buffered at once. */
 
     uint8_t n_tables;       /* Number of tables supported by datapath. */
-    uint8_t pad[3];         /* Align to 64-bits. */
+    uint8_t auxiliary_id;   /* OF 1.3: Identify auxiliary connections */
+    uint8_t pad[2];         /* Align to 64-bits. */
 
     /* Features. */
     ovs_be32 capabilities;  /* OFPC_*, OFPC10_*, OFPC11_*, OFPC12_*. */
-    ovs_be32 actions;       /* Bitmap of supported "ofp_action_type"s. */
+    ovs_be32 actions;       /* Bitmap of supported "ofp_action_type"s.
+                             * DEPRECATED in OpenFlow 1.1 */
 
     /* Followed by an array of struct ofp10_phy_port or struct ofp11_port
-     * structures.  The number is inferred from header.length. */
+     * structures.  The number is inferred from header.length.
+     * REMOVED in OpenFlow 1.3 */
 };
 OFP_ASSERT(sizeof(struct ofp_switch_features) == 24);
 
@@ -210,6 +268,29 @@ enum ofp_flow_mod_flags {
                                     * expires or is deleted. */
     OFPFF_CHECK_OVERLAP = 1 << 1,  /* Check for overlapping entries first. */
 };
+
+/* Action header for OFPAT10_VENDOR and OFPAT11_EXPERIMEMNTER.
+ * The rest of the body is vendor-defined. */
+struct ofp_action_vendor_header {
+    ovs_be16 type;                  /* OFPAT10_VENDOR. */
+    ovs_be16 len;                   /* Length is a multiple of 8. */
+    ovs_be32 vendor;                /* Vendor ID, which takes the same form
+                                       as in "struct ofp_vendor_header". */
+};
+OFP_ASSERT(sizeof(struct ofp_action_vendor_header) == 8);
+
+/* Action header that is common to all actions.  The length includes the
+ * header and any padding used to make the action 64-bit aligned.
+ * NB: The length of an action *must* always be a multiple of eight. */
+struct ofp_action_header {
+    ovs_be16 type;                  /* One of OFPAT10_*. */
+    ovs_be16 len;                   /* Length of action, including this
+                                       header.  This is the length of action,
+                                       including any padding to make it
+                                       64-bit aligned. */
+    uint8_t pad[4];
+};
+OFP_ASSERT(sizeof(struct ofp_action_header) == 8);
 
 /* Action structure for OFPAT10_SET_VLAN_VID and OFPAT11_SET_VLAN_VID. */
 struct ofp_action_vlan_vid {
@@ -288,6 +369,10 @@ struct ofp_port_status {
 };
 OFP_ASSERT(sizeof(struct ofp_port_status) == 8);
 
+enum ofp_stats_reply_flags {
+    OFPSF_REPLY_MORE  = 1 << 0  /* More replies to follow. */
+};
+
 #define DESC_STR_LEN   256
 #define SERIAL_NUM_LEN 32
 /* Body of reply to OFPST_DESC request.  Each entry is a NULL-terminated ASCII
@@ -333,5 +418,27 @@ enum ofp_group {
     OFPG_ALL        = 0xfffffffc,  /* All groups, for group delete commands. */
     OFPG_ANY        = 0xffffffff   /* Wildcard, for flow stats requests. */
 };
+
+enum ofp_hello_elem_type {
+    OFPHET_VERSIONBITMAP          = 1, /* Bitmap of version supported. */
+};
+
+/* Common header for all Hello Elements */
+struct ofp_hello_elem_header {
+    ovs_be16    type;        /* One of OFPHET_*. */
+    ovs_be16    length;      /* Length in bytes of this element. */
+};
+OFP_ASSERT(sizeof(struct ofp_hello_elem_header) == 4);
+
+/* Vendor extension. */
+struct ofp_vendor_header {
+    struct ofp_header header;   /* Type OFPT_VENDOR or OFPT_EXPERIMENTER. */
+    ovs_be32 vendor;            /* Vendor ID:
+                                 * - MSB 0: low-order bytes are IEEE OUI.
+                                 * - MSB != 0: defined by OpenFlow
+                                 *   consortium. */
+    /* Vendor-defined arbitrary additional data. */
+};
+OFP_ASSERT(sizeof(struct ofp_vendor_header) == 12);
 
 #endif /* openflow/openflow-common.h */

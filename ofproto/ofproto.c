@@ -221,16 +221,43 @@ static size_t allocated_ofproto_classes;
 /* Map from datapath name to struct ofproto, for use by unixctl commands. */
 static struct hmap all_ofprotos = HMAP_INITIALIZER(&all_ofprotos);
 
+/* Initial mappings of port to OpenFlow number mappings. */
+static struct shash init_ofp_ports = SHASH_INITIALIZER(&init_ofp_ports);
+
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
 
-static void
-ofproto_initialize(void)
+/* Must be called to initialize the ofproto library.
+ *
+ * The caller may pass in 'iface_hints', which contains an shash of
+ * "iface_hint" elements indexed by the interface's name.  The provider
+ * may use these hints to describe the startup configuration in order to
+ * reinitialize its state.  The caller owns the provided data, so a
+ * provider will make copies of anything required.  An ofproto provider
+ * will remove any existing state that is not described by the hint, and
+ * may choose to remove it all. */
+void
+ofproto_init(const struct shash *iface_hints)
 {
-    static bool inited;
+    struct shash_node *node;
+    size_t i;
 
-    if (!inited) {
-        inited = true;
-        ofproto_class_register(&ofproto_dpif_class);
+    ofproto_class_register(&ofproto_dpif_class);
+
+    /* Make a local copy, since we don't own 'iface_hints' elements. */
+    SHASH_FOR_EACH(node, iface_hints) {
+        const struct iface_hint *orig_hint = node->data;
+        struct iface_hint *new_hint = xmalloc(sizeof *new_hint);
+        const char *br_type = ofproto_normalize_type(orig_hint->br_type);
+
+        new_hint->br_name = xstrdup(orig_hint->br_name);
+        new_hint->br_type = xstrdup(br_type);
+        new_hint->ofp_port = orig_hint->ofp_port;
+
+        shash_add(&init_ofp_ports, node->name, new_hint);
+    }
+
+    for (i = 0; i < n_ofproto_classes; i++) {
+        ofproto_classes[i]->init(&init_ofp_ports);
     }
 }
 
@@ -242,7 +269,6 @@ ofproto_class_find__(const char *type)
 {
     size_t i;
 
-    ofproto_initialize();
     for (i = 0; i < n_ofproto_classes; i++) {
         const struct ofproto_class *class = ofproto_classes[i];
         struct sset types;
@@ -313,7 +339,6 @@ ofproto_enumerate_types(struct sset *types)
 {
     size_t i;
 
-    ofproto_initialize();
     for (i = 0; i < n_ofproto_classes; i++) {
         ofproto_classes[i]->enumerate_types(types);
     }
@@ -349,10 +374,10 @@ ofproto_create(const char *datapath_name, const char *datapath_type,
     const struct ofproto_class *class;
     struct ofproto *ofproto;
     int error;
+    int i;
 
     *ofprotop = NULL;
 
-    ofproto_initialize();
     ofproto_unixctl_init();
 
     datapath_type = ofproto_normalize_type(datapath_type);
@@ -382,14 +407,15 @@ ofproto_create(const char *datapath_name, const char *datapath_type,
                                         OFPROTO_FLOW_EVICTION_THRESHOLD_DEFAULT);
     ofproto->forward_bpdu = false;
     ofproto->fallback_dpid = pick_fallback_dpid();
-    ofproto->mfr_desc = xstrdup(DEFAULT_MFR_DESC);
-    ofproto->hw_desc = xstrdup(DEFAULT_HW_DESC);
-    ofproto->sw_desc = xstrdup(DEFAULT_SW_DESC);
-    ofproto->serial_desc = xstrdup(DEFAULT_SERIAL_DESC);
-    ofproto->dp_desc = xstrdup(DEFAULT_DP_DESC);
+    ofproto->mfr_desc = NULL;
+    ofproto->hw_desc = NULL;
+    ofproto->sw_desc = NULL;
+    ofproto->serial_desc = NULL;
+    ofproto->dp_desc = NULL;
     ofproto->frag_handling = OFPC_FRAG_NORMAL;
     hmap_init(&ofproto->ports);
     shash_init(&ofproto->port_by_name);
+    simap_init(&ofproto->ofp_requests);
     ofproto->max_ports = OFPP_MAX;
     ofproto->tables = NULL;
     ofproto->n_tables = 0;
@@ -414,7 +440,19 @@ ofproto_create(const char *datapath_name, const char *datapath_type,
         return error;
     }
 
+    /* The "max_ports" member should have been set by ->construct(ofproto).
+     * Port 0 is not a valid OpenFlow port, so mark that as unavailable. */
+    ofproto->ofp_port_ids = bitmap_allocate(ofproto->max_ports);
+    bitmap_set1(ofproto->ofp_port_ids, 0);
+
+    /* Check that hidden tables, if any, are at the end. */
     assert(ofproto->n_tables);
+    for (i = 0; i + 1 < ofproto->n_tables; i++) {
+        enum oftable_flags flags = ofproto->tables[i].flags;
+        enum oftable_flags next_flags = ofproto->tables[i + 1].flags;
+
+        assert(!(flags & OFTABLE_HIDDEN) || next_flags & OFTABLE_HIDDEN);
+    }
 
     ofproto->datapath_id = pick_datapath_id(ofproto);
     init_ports(ofproto);
@@ -480,9 +518,10 @@ ofproto_set_datapath_id(struct ofproto *p, uint64_t datapath_id)
 void
 ofproto_set_controllers(struct ofproto *p,
                         const struct ofproto_controller *controllers,
-                        size_t n_controllers)
+                        size_t n_controllers, uint32_t allowed_versions)
 {
-    connmgr_set_controllers(p->connmgr, controllers, n_controllers);
+    connmgr_set_controllers(p->connmgr, controllers, n_controllers,
+                            allowed_versions);
 }
 
 void
@@ -546,63 +585,23 @@ ofproto_set_forward_bpdu(struct ofproto *ofproto, bool forward_bpdu)
 }
 
 /* Sets the MAC aging timeout for the OFPP_NORMAL action on 'ofproto' to
- * 'idle_time', in seconds. */
+ * 'idle_time', in seconds, and the maximum number of MAC table entries to
+ * 'max_entries'. */
 void
-ofproto_set_mac_idle_time(struct ofproto *ofproto, unsigned idle_time)
+ofproto_set_mac_table_config(struct ofproto *ofproto, unsigned idle_time,
+                             size_t max_entries)
 {
-    if (ofproto->ofproto_class->set_mac_idle_time) {
-        ofproto->ofproto_class->set_mac_idle_time(ofproto, idle_time);
+    if (ofproto->ofproto_class->set_mac_table_config) {
+        ofproto->ofproto_class->set_mac_table_config(ofproto, idle_time,
+                                                     max_entries);
     }
 }
 
 void
-ofproto_set_desc(struct ofproto *p,
-                 const char *mfr_desc, const char *hw_desc,
-                 const char *sw_desc, const char *serial_desc,
-                 const char *dp_desc)
+ofproto_set_dp_desc(struct ofproto *p, const char *dp_desc)
 {
-    struct ofp_desc_stats *ods;
-
-    if (mfr_desc) {
-        if (strlen(mfr_desc) >= sizeof ods->mfr_desc) {
-            VLOG_WARN("%s: truncating mfr_desc, must be less than %zu bytes",
-                      p->name, sizeof ods->mfr_desc);
-        }
-        free(p->mfr_desc);
-        p->mfr_desc = xstrdup(mfr_desc);
-    }
-    if (hw_desc) {
-        if (strlen(hw_desc) >= sizeof ods->hw_desc) {
-            VLOG_WARN("%s: truncating hw_desc, must be less than %zu bytes",
-                      p->name, sizeof ods->hw_desc);
-        }
-        free(p->hw_desc);
-        p->hw_desc = xstrdup(hw_desc);
-    }
-    if (sw_desc) {
-        if (strlen(sw_desc) >= sizeof ods->sw_desc) {
-            VLOG_WARN("%s: truncating sw_desc, must be less than %zu bytes",
-                      p->name, sizeof ods->sw_desc);
-        }
-        free(p->sw_desc);
-        p->sw_desc = xstrdup(sw_desc);
-    }
-    if (serial_desc) {
-        if (strlen(serial_desc) >= sizeof ods->serial_num) {
-            VLOG_WARN("%s: truncating serial_desc, must be less than %zu "
-                      "bytes", p->name, sizeof ods->serial_num);
-        }
-        free(p->serial_desc);
-        p->serial_desc = xstrdup(serial_desc);
-    }
-    if (dp_desc) {
-        if (strlen(dp_desc) >= sizeof ods->dp_desc) {
-            VLOG_WARN("%s: truncating dp_desc, must be less than %zu bytes",
-                      p->name, sizeof ods->dp_desc);
-        }
-        free(p->dp_desc);
-        p->dp_desc = xstrdup(dp_desc);
-    }
+    free(p->dp_desc);
+    p->dp_desc = dp_desc ? xstrdup(dp_desc) : NULL;
 }
 
 int
@@ -1008,6 +1007,8 @@ ofproto_destroy__(struct ofproto *ofproto)
     free(ofproto->dp_desc);
     hmap_destroy(&ofproto->ports);
     shash_destroy(&ofproto->port_by_name);
+    bitmap_free(ofproto->ofp_port_ids);
+    simap_destroy(&ofproto->ofp_requests);
 
     OFPROTO_FOR_EACH_TABLE (table, ofproto) {
         oftable_destroy(table);
@@ -1062,6 +1063,53 @@ process_port_change(struct ofproto *ofproto, int error, char *devname)
     } else if (!error) {
         update_port(ofproto, devname);
         free(devname);
+    }
+}
+
+int
+ofproto_type_run(const char *datapath_type)
+{
+    const struct ofproto_class *class;
+    int error;
+
+    datapath_type = ofproto_normalize_type(datapath_type);
+    class = ofproto_class_find__(datapath_type);
+
+    error = class->type_run ? class->type_run(datapath_type) : 0;
+    if (error && error != EAGAIN) {
+        VLOG_ERR_RL(&rl, "%s: type_run failed (%s)",
+                    datapath_type, strerror(error));
+    }
+    return error;
+}
+
+int
+ofproto_type_run_fast(const char *datapath_type)
+{
+    const struct ofproto_class *class;
+    int error;
+
+    datapath_type = ofproto_normalize_type(datapath_type);
+    class = ofproto_class_find__(datapath_type);
+
+    error = class->type_run_fast ? class->type_run_fast(datapath_type) : 0;
+    if (error && error != EAGAIN) {
+        VLOG_ERR_RL(&rl, "%s: type_run_fast failed (%s)",
+                    datapath_type, strerror(error));
+    }
+    return error;
+}
+
+void
+ofproto_type_wait(const char *datapath_type)
+{
+    const struct ofproto_class *class;
+
+    datapath_type = ofproto_normalize_type(datapath_type);
+    class = ofproto_class_find__(datapath_type);
+
+    if (class->type_wait) {
+        class->type_wait(datapath_type);
     }
 }
 
@@ -1345,23 +1393,59 @@ ofproto_port_dump_done(struct ofproto_port_dump *dump)
     return dump->error == EOF ? 0 : dump->error;
 }
 
-/* Attempts to add 'netdev' as a port on 'ofproto'.  If successful, returns 0
- * and sets '*ofp_portp' to the new port's OpenFlow port number (if 'ofp_portp'
- * is non-null).  On failure, returns a positive errno value and sets
- * '*ofp_portp' to OFPP_NONE (if 'ofp_portp' is non-null). */
+/* Returns the type to pass to netdev_open() when a datapath of type
+ * 'datapath_type' has a port of type 'port_type', for a few special
+ * cases when a netdev type differs from a port type.  For example, when
+ * using the userspace datapath, a port of type "internal" needs to be
+ * opened as "tap".
+ *
+ * Returns either 'type' itself or a string literal, which must not be
+ * freed. */
+const char *
+ofproto_port_open_type(const char *datapath_type, const char *port_type)
+{
+    const struct ofproto_class *class;
+
+    datapath_type = ofproto_normalize_type(datapath_type);
+    class = ofproto_class_find__(datapath_type);
+    if (!class) {
+        return port_type;
+    }
+
+    return (class->port_open_type
+            ? class->port_open_type(datapath_type, port_type)
+            : port_type);
+}
+
+/* Attempts to add 'netdev' as a port on 'ofproto'.  If 'ofp_portp' is
+ * non-null and '*ofp_portp' is not OFPP_NONE, attempts to use that as
+ * the port's OpenFlow port number.
+ *
+ * If successful, returns 0 and sets '*ofp_portp' to the new port's
+ * OpenFlow port number (if 'ofp_portp' is non-null).  On failure,
+ * returns a positive errno value and sets '*ofp_portp' to OFPP_NONE (if
+ * 'ofp_portp' is non-null). */
 int
 ofproto_port_add(struct ofproto *ofproto, struct netdev *netdev,
                  uint16_t *ofp_portp)
 {
-    uint16_t ofp_port;
+    uint16_t ofp_port = ofp_portp ? *ofp_portp : OFPP_NONE;
     int error;
 
-    error = ofproto->ofproto_class->port_add(ofproto, netdev, &ofp_port);
+    error = ofproto->ofproto_class->port_add(ofproto, netdev);
     if (!error) {
-        update_port(ofproto, netdev_get_name(netdev));
+        const char *netdev_name = netdev_get_name(netdev);
+
+        simap_put(&ofproto->ofp_requests, netdev_name, ofp_port);
+        update_port(ofproto, netdev_name);
     }
     if (ofp_portp) {
-        *ofp_portp = error ? OFPP_NONE : ofp_port;
+        struct ofproto_port ofproto_port;
+
+        ofproto_port_query_by_name(ofproto, netdev_get_name(netdev),
+                                   &ofproto_port);
+        *ofp_portp = error ? OFPP_NONE : ofproto_port.ofp_port;
+        ofproto_port_destroy(&ofproto_port);
     }
     return error;
 }
@@ -1392,7 +1476,13 @@ ofproto_port_del(struct ofproto *ofproto, uint16_t ofp_port)
 {
     struct ofport *ofport = ofproto_get_port(ofproto, ofp_port);
     const char *name = ofport ? netdev_get_name(ofport->netdev) : "<unknown>";
+    struct simap_node *ofp_request_node;
     int error;
+
+    ofp_request_node = simap_find(&ofproto->ofp_requests, name);
+    if (ofp_request_node) {
+        simap_delete(&ofproto->ofp_requests, ofp_request_node);
+    }
 
     error = ofproto->ofproto_class->port_del(ofproto, ofp_port);
     if (!error && ofport) {
@@ -1519,12 +1609,50 @@ reinit_ports(struct ofproto *p)
     sset_destroy(&devnames);
 }
 
+static uint16_t
+alloc_ofp_port(struct ofproto *ofproto, const char *netdev_name)
+{
+    uint16_t ofp_port;
+    uint16_t end_port_no = ofproto->alloc_port_no;
+
+    ofp_port = simap_get(&ofproto->ofp_requests, netdev_name);
+    ofp_port = ofp_port ? ofp_port : OFPP_NONE;
+
+    if (ofp_port >= ofproto->max_ports
+            || bitmap_is_set(ofproto->ofp_port_ids, ofp_port)) {
+        /* Search for a free OpenFlow port number.  We try not to
+         * immediately reuse them to prevent problems due to old
+         * flows. */
+        for (;;) {
+            if (++ofproto->alloc_port_no >= ofproto->max_ports) {
+                ofproto->alloc_port_no = 0;
+            }
+            if (!bitmap_is_set(ofproto->ofp_port_ids,
+                               ofproto->alloc_port_no)) {
+                ofp_port = ofproto->alloc_port_no;
+                break;
+            }
+            if (ofproto->alloc_port_no == end_port_no) {
+                return OFPP_NONE;
+            }
+        }
+    }
+    bitmap_set1(ofproto->ofp_port_ids, ofp_port);
+    return ofp_port;
+}
+
+static void
+dealloc_ofp_port(const struct ofproto *ofproto, uint16_t ofp_port)
+{
+    bitmap_set0(ofproto->ofp_port_ids, ofp_port);
+}
+
 /* Opens and returns a netdev for 'ofproto_port' in 'ofproto', or a null
  * pointer if the netdev cannot be opened.  On success, also fills in
  * 'opp'.  */
 static struct netdev *
-ofport_open(const struct ofproto *ofproto,
-            const struct ofproto_port *ofproto_port,
+ofport_open(struct ofproto *ofproto,
+            struct ofproto_port *ofproto_port,
             struct ofputil_phy_port *pp)
 {
     enum netdev_flags flags;
@@ -1541,6 +1669,14 @@ ofport_open(const struct ofproto *ofproto,
         return NULL;
     }
 
+    if (ofproto_port->ofp_port == OFPP_NONE) {
+        if (!strcmp(ofproto->name, ofproto_port->name)) {
+            ofproto_port->ofp_port = OFPP_LOCAL;
+        } else {
+            ofproto_port->ofp_port = alloc_ofp_port(ofproto,
+                                                    ofproto_port->name);
+        }
+    }
     pp->port_no = ofproto_port->ofp_port;
     netdev_get_etheraddr(netdev, pp->hw_addr);
     ovs_strlcpy(pp->name, ofproto_port->name, sizeof pp->name);
@@ -1549,8 +1685,8 @@ ofport_open(const struct ofproto *ofproto,
     pp->state = netdev_get_carrier(netdev) ? 0 : OFPUTIL_PS_LINK_DOWN;
     netdev_get_features(netdev, &pp->curr, &pp->advertised,
                         &pp->supported, &pp->peer);
-    pp->curr_speed = netdev_features_to_bps(pp->curr);
-    pp->max_speed = netdev_features_to_bps(pp->supported);
+    pp->curr_speed = netdev_features_to_bps(pp->curr, 0);
+    pp->max_speed = netdev_features_to_bps(pp->supported, 0);
 
     return netdev;
 }
@@ -1710,6 +1846,7 @@ static void
 ofport_destroy(struct ofport *port)
 {
     if (port) {
+        dealloc_ofp_port(port->ofproto, port->ofp_port);
         port->ofproto->ofproto_class->port_destruct(port);
         ofport_destroy__(port);
      }
@@ -1803,23 +1940,40 @@ init_ports(struct ofproto *p)
 {
     struct ofproto_port_dump dump;
     struct ofproto_port ofproto_port;
+    struct shash_node *node, *next;
 
     OFPROTO_PORT_FOR_EACH (&ofproto_port, &dump, p) {
-        uint16_t ofp_port = ofproto_port.ofp_port;
-        if (ofproto_get_port(p, ofp_port)) {
-            VLOG_WARN_RL(&rl, "%s: ignoring duplicate port %"PRIu16" "
-                         "in datapath", p->name, ofp_port);
-        } else if (shash_find(&p->port_by_name, ofproto_port.name)) {
+        const char *name = ofproto_port.name;
+
+        if (shash_find(&p->port_by_name, name)) {
             VLOG_WARN_RL(&rl, "%s: ignoring duplicate device %s in datapath",
-                         p->name, ofproto_port.name);
+                         p->name, name);
         } else {
             struct ofputil_phy_port pp;
             struct netdev *netdev;
+
+            /* Check if an OpenFlow port number had been requested. */
+            node = shash_find(&init_ofp_ports, name);
+            if (node) {
+                const struct iface_hint *iface_hint = node->data;
+                simap_put(&p->ofp_requests, name, iface_hint->ofp_port);
+            }
 
             netdev = ofport_open(p, &ofproto_port, &pp);
             if (netdev) {
                 ofport_install(p, netdev, &pp);
             }
+        }
+    }
+
+    SHASH_FOR_EACH_SAFE(node, next, &init_ofp_ports) {
+        struct iface_hint *iface_hint = node->data;
+
+        if (!strcmp(iface_hint->br_name, p->name)) {
+            free(iface_hint->br_name);
+            free(iface_hint->br_type);
+            free(iface_hint);
+            shash_delete(&init_ofp_ports, node);
         }
     }
 
@@ -1928,7 +2082,7 @@ ofproto_rule_destroy(struct rule *rule)
 bool
 ofproto_rule_has_out_port(const struct rule *rule, uint16_t port)
 {
-    return (port == OFPP_NONE
+    return (port == OFPP_ANY
             || ofpacts_output_to_port(rule->ofpacts, rule->ofpacts_len, port));
 }
 
@@ -1957,7 +2111,7 @@ ofoperation_has_out_port(const struct ofoperation *op, uint16_t out_port)
 
 /* Executes the actions indicated by 'rule' on 'packet' and credits 'rule''s
  * statistics appropriately.  'packet' must have at least sizeof(struct
- * ofp_packet_in) bytes of headroom.
+ * ofp10_packet_in) bytes of headroom.
  *
  * 'packet' doesn't necessarily have to match 'rule'.  'rule' will be credited
  * with statistics for 'packet' either way.
@@ -1968,9 +2122,9 @@ rule_execute(struct rule *rule, uint16_t in_port, struct ofpbuf *packet)
 {
     struct flow flow;
 
-    assert(ofpbuf_headroom(packet) >= sizeof(struct ofp_packet_in));
+    assert(ofpbuf_headroom(packet) >= sizeof(struct ofp10_packet_in));
 
-    flow_extract(packet, 0, NULL, in_port, &flow);
+    flow_extract(packet, 0, 0, NULL, in_port, &flow);
     return rule->ofproto->ofproto_class->rule_execute(rule, &flow, packet);
 }
 
@@ -2012,20 +2166,33 @@ handle_features_request(struct ofconn *ofconn, const struct ofp_header *oh)
     struct ofport *port;
     bool arp_match_ip;
     struct ofpbuf *b;
+    int n_tables;
+    int i;
 
     ofproto->ofproto_class->get_features(ofproto, &arp_match_ip,
                                          &features.actions);
     assert(features.actions & OFPUTIL_A_OUTPUT); /* sanity check */
 
+    /* Count only non-hidden tables in the number of tables.  (Hidden tables,
+     * if present, are always at the end.) */
+    n_tables = ofproto->n_tables;
+    for (i = 0; i < ofproto->n_tables; i++) {
+        if (ofproto->tables[i].flags & OFTABLE_HIDDEN) {
+            n_tables = i;
+            break;
+        }
+    }
+
     features.datapath_id = ofproto->datapath_id;
     features.n_buffers = pktbuf_capacity();
-    features.n_tables = ofproto->n_tables;
+    features.n_tables = n_tables;
     features.capabilities = (OFPUTIL_C_FLOW_STATS | OFPUTIL_C_TABLE_STATS |
                              OFPUTIL_C_PORT_STATS | OFPUTIL_C_QUEUE_STATS);
     if (arp_match_ip) {
         features.capabilities |= OFPUTIL_C_ARP_MATCH_IP;
     }
-
+    /* FIXME: Fill in proper features.auxiliary_id for auxiliary connections */
+    features.auxiliary_id = 0;
     b = ofputil_encode_switch_features(&features, ofconn_get_protocol(ofconn),
                                        oh->xid);
     HMAP_FOR_EACH (port, hmap_node, &ofproto->ports) {
@@ -2048,7 +2215,9 @@ handle_get_config_request(struct ofconn *ofconn, const struct ofp_header *oh)
     buf = ofpraw_alloc_reply(OFPRAW_OFPT_GET_CONFIG_REPLY, oh, 0);
     osc = ofpbuf_put_uninit(buf, sizeof *osc);
     flags = ofproto->frag_handling;
-    if (ofconn_get_invalid_ttl_to_controller(ofconn)) {
+    /* OFPC_INVALID_TTL_TO_CONTROLLER is deprecated in OF 1.3 */
+    if (oh->version < OFP13_VERSION
+        && ofconn_get_invalid_ttl_to_controller(ofconn)) {
         flags |= OFPC_INVALID_TTL_TO_CONTROLLER;
     }
     osc->flags = htons(flags);
@@ -2081,8 +2250,10 @@ handle_set_config(struct ofconn *ofconn, const struct ofp_header *oh)
             }
         }
     }
+    /* OFPC_INVALID_TTL_TO_CONTROLLER is deprecated in OF 1.3 */
     ofconn_set_invalid_ttl_to_controller(ofconn,
-             (flags & OFPC_INVALID_TTL_TO_CONTROLLER));
+             (oh->version < OFP13_VERSION
+              && flags & OFPC_INVALID_TTL_TO_CONTROLLER));
 
     ofconn_set_miss_send_len(ofconn, ntohs(osc->miss_send_len));
 
@@ -2147,7 +2318,7 @@ handle_packet_out(struct ofconn *ofconn, const struct ofp_header *oh)
     }
 
     /* Verify actions against packet, then send packet if successful. */
-    flow_extract(payload, 0, NULL, po.in_port, &flow);
+    flow_extract(payload, 0, 0, NULL, po.in_port, &flow);
     error = ofpacts_check(po.ofpacts, po.ofpacts_len, &flow, p->max_ports);
     if (!error) {
         error = p->ofproto_class->packet_out(p, payload, &flow,
@@ -2221,17 +2392,29 @@ static enum ofperr
 handle_desc_stats_request(struct ofconn *ofconn,
                           const struct ofp_header *request)
 {
+    static const char *default_mfr_desc = "Nicira, Inc.";
+    static const char *default_hw_desc = "Open vSwitch";
+    static const char *default_sw_desc = VERSION;
+    static const char *default_serial_desc = "None";
+    static const char *default_dp_desc = "None";
+
     struct ofproto *p = ofconn_get_ofproto(ofconn);
     struct ofp_desc_stats *ods;
     struct ofpbuf *msg;
 
     msg = ofpraw_alloc_stats_reply(request, 0);
     ods = ofpbuf_put_zeros(msg, sizeof *ods);
-    ovs_strlcpy(ods->mfr_desc, p->mfr_desc, sizeof ods->mfr_desc);
-    ovs_strlcpy(ods->hw_desc, p->hw_desc, sizeof ods->hw_desc);
-    ovs_strlcpy(ods->sw_desc, p->sw_desc, sizeof ods->sw_desc);
-    ovs_strlcpy(ods->serial_num, p->serial_desc, sizeof ods->serial_num);
-    ovs_strlcpy(ods->dp_desc, p->dp_desc, sizeof ods->dp_desc);
+    ovs_strlcpy(ods->mfr_desc, p->mfr_desc ? p->mfr_desc : default_mfr_desc,
+                sizeof ods->mfr_desc);
+    ovs_strlcpy(ods->hw_desc, p->hw_desc ? p->hw_desc : default_hw_desc,
+                sizeof ods->hw_desc);
+    ovs_strlcpy(ods->sw_desc, p->sw_desc ? p->sw_desc : default_sw_desc,
+                sizeof ods->sw_desc);
+    ovs_strlcpy(ods->serial_num,
+                p->serial_desc ? p->serial_desc : default_serial_desc,
+                sizeof ods->serial_num);
+    ovs_strlcpy(ods->dp_desc, p->dp_desc ? p->dp_desc : default_dp_desc,
+                sizeof ods->dp_desc);
     ofconn_send_reply(ofconn, msg);
 
     return 0;
@@ -2244,6 +2427,7 @@ handle_table_stats_request(struct ofconn *ofconn,
     struct ofproto *p = ofconn_get_ofproto(ofconn);
     struct ofp12_table_stats *ots;
     struct ofpbuf *msg;
+    int n_tables;
     size_t i;
 
     /* Set up default values.
@@ -2272,8 +2456,15 @@ handle_table_stats_request(struct ofconn *ofconn,
 
     p->ofproto_class->get_tables(p, ots);
 
+    /* Post-process the tables, dropping hidden tables. */
+    n_tables = p->n_tables;
     for (i = 0; i < p->n_tables; i++) {
         const struct oftable *table = &p->tables[i];
+
+        if (table->flags & OFTABLE_HIDDEN) {
+            n_tables = i;
+            break;
+        }
 
         if (table->name) {
             ovs_strzcpy(ots[i].name, table->name, sizeof ots[i].name);
@@ -2284,7 +2475,7 @@ handle_table_stats_request(struct ofconn *ofconn,
         }
     }
 
-    msg = ofputil_encode_table_stats_reply(ots, p->n_tables, request);
+    msg = ofputil_encode_table_stats_reply(ots, n_tables, request);
     ofconn_send_reply(ofconn, msg);
 
     free(ots);
@@ -2321,7 +2512,7 @@ handle_port_stats_request(struct ofconn *ofconn,
     }
 
     ofpmp_init(&replies, request);
-    if (port_no != OFPP_NONE) {
+    if (port_no != OFPP_ANY) {
         port = ofproto_get_port(p, port_no);
         if (port) {
             append_port_stat(port, &replies);
@@ -2438,7 +2629,7 @@ next_matching_table(const struct ofproto *ofproto,
  * OpenFlow OFPFC_MODIFY and OFPFC_DELETE requests and puts them on list
  * 'rules'.
  *
- * If 'out_port' is anything other than OFPP_NONE, then only rules that output
+ * If 'out_port' is anything other than OFPP_ANY, then only rules that output
  * to 'out_port' are included.
  *
  * Hidden rules are always omitted.
@@ -2489,7 +2680,7 @@ exit:
  * OpenFlow OFPFC_MODIFY_STRICT and OFPFC_DELETE_STRICT requests and puts them
  * on list 'rules'.
  *
- * If 'out_port' is anything other than OFPP_NONE, then only rules that output
+ * If 'out_port' is anything other than OFPP_ANY, then only rules that output
  * to 'out_port' are included.
  *
  * Hidden rules are always omitted.
@@ -2587,6 +2778,12 @@ handle_flow_stats_request(struct ofconn *ofconn,
                                                &fs.byte_count);
         fs.ofpacts = rule->ofpacts;
         fs.ofpacts_len = rule->ofpacts_len;
+        fs.flags = 0;
+        if (rule->send_flow_removed) {
+            fs.flags |= OFPFF_SEND_FLOW_REM;
+            /* FIXME: Implement OF 1.3 flags OFPFF13_NO_PKT_COUNTS
+               and OFPFF13_NO_BYT_COUNTS */
+        }
         ofputil_append_flow_stats_reply(&fs, &replies);
     }
     ofconn_send_replies(ofconn, &replies);
@@ -2833,7 +3030,7 @@ handle_queue_stats_request(struct ofconn *ofconn,
         return error;
     }
 
-    if (oqsr.port_no == OFPP_ALL) {
+    if (oqsr.port_no == OFPP_ANY) {
         error = OFPERR_OFPQOFC_BAD_QUEUE;
         HMAP_FOR_EACH (port, hmap_node, &ofproto->ports) {
             if (!handle_queue_stats_for_port(port, oqsr.queue_id, &cbdata)) {
@@ -2953,6 +3150,8 @@ add_flow(struct ofproto *ofproto, struct ofconn *ofconn,
         return OFPERR_OFPFMFC_OVERLAP;
     }
 
+    /* FIXME: Implement OFPFF12_RESET_COUNTS */
+
     rule->ofproto = ofproto;
     rule->pending = NULL;
     rule->flow_cookie = fm->new_cookie;
@@ -2961,6 +3160,8 @@ add_flow(struct ofproto *ofproto, struct ofconn *ofconn,
     rule->hard_timeout = fm->hard_timeout;
     rule->table_id = table - ofproto->tables;
     rule->send_flow_removed = (fm->flags & OFPFF_SEND_FLOW_REM) != 0;
+    /* FIXME: Implement OF 1.3 flags OFPFF13_NO_PKT_COUNTS
+       and OFPFF13_NO_BYT_COUNTS */
     rule->ofpacts = xmemdup(fm->ofpacts, fm->ofpacts_len);
     rule->ofpacts_len = fm->ofpacts_len;
     rule->evictable = true;
@@ -3046,6 +3247,8 @@ modify_flows__(struct ofproto *ofproto, struct ofconn *ofconn,
         bool actions_changed;
         ovs_be64 new_cookie;
 
+        /* FIXME: Implement OFPFF12_RESET_COUNTS */
+
         if (rule_is_modifiable(rule)) {
             /* At least one rule is modifiable, don't report EPERM error. */
             error = 0;
@@ -3106,7 +3309,7 @@ modify_flows_loose(struct ofproto *ofproto, struct ofconn *ofconn,
 
     error = collect_rules_loose(ofproto, fm->table_id, &fm->match,
                                 fm->cookie, fm->cookie_mask,
-                                OFPP_NONE, &rules);
+                                OFPP_ANY, &rules);
     if (error) {
         return error;
     } else if (list_is_empty(&rules)) {
@@ -3131,7 +3334,7 @@ modify_flow_strict(struct ofproto *ofproto, struct ofconn *ofconn,
 
     error = collect_rules_strict(ofproto, fm->table_id, &fm->match,
                                  fm->priority, fm->cookie, fm->cookie_mask,
-                                 OFPP_NONE, &rules);
+                                 OFPP_ANY, &rules);
 
     if (error) {
         return error;
@@ -3295,17 +3498,6 @@ handle_flow_mod(struct ofconn *ofconn, const struct ofp_header *oh)
     ofpbuf_use_stub(&ofpacts, ofpacts_stub, sizeof ofpacts_stub);
     error = ofputil_decode_flow_mod(&fm, oh, ofconn_get_protocol(ofconn),
                                     &ofpacts);
-    if (error) {
-        goto exit_free_ofpacts;
-    }
-
-    if (fm.flags & OFPFF10_EMERG) {
-        /* We do not support the OpenFlow 1.0 emergency flow cache, which
-         * is not required in OpenFlow 1.0.1 and removed from OpenFlow 1.1.
-         * There is no good error code, so just state that the flow table
-         * is full. */
-        error = OFPERR_OFPFMFC_TABLE_FULL;
-    }
     if (!error) {
         error = ofpacts_check(fm.ofpacts, fm.ofpacts_len,
                               &fm.match.flow, ofproto->max_ports);
@@ -3388,27 +3580,38 @@ handle_flow_mod__(struct ofproto *ofproto, struct ofconn *ofconn,
 static enum ofperr
 handle_role_request(struct ofconn *ofconn, const struct ofp_header *oh)
 {
-    const struct nx_role_request *nrr = ofpmsg_body(oh);
-    struct nx_role_request *reply;
+    struct ofputil_role_request rr;
     struct ofpbuf *buf;
     uint32_t role;
+    enum ofperr error;
 
-    role = ntohl(nrr->role);
-    if (role != NX_ROLE_OTHER && role != NX_ROLE_MASTER
-        && role != NX_ROLE_SLAVE) {
-        return OFPERR_OFPRRFC_BAD_ROLE;
+    error = ofputil_decode_role_message(oh, &rr);
+    if (error) {
+        return error;
     }
+
+    if (rr.request_current_role_only) {
+        role = ofconn_get_role(ofconn); /* NX_ROLE_* */
+        goto reply;
+    }
+
+    role = rr.role;
 
     if (ofconn_get_role(ofconn) != role
         && ofconn_has_pending_opgroups(ofconn)) {
         return OFPROTO_POSTPONE;
     }
 
+    if (rr.have_generation_id) {
+        if (!ofconn_set_master_election_id(ofconn, rr.generation_id)) {
+            return OFPERR_OFPRRFC_STALE;
+        }
+    }
+
     ofconn_set_role(ofconn, role);
 
-    buf = ofpraw_alloc_reply(OFPRAW_NXT_ROLE_REPLY, oh, 0);
-    reply = ofpbuf_put_zeros(buf, sizeof *reply);
-    reply->role = htonl(role);
+reply:
+    buf = ofputil_encode_role_reply(oh, role);
     ofconn_send_reply(ofconn, buf);
 
     return 0;
@@ -3819,14 +4022,14 @@ handle_openflow__(struct ofconn *ofconn, const struct ofpbuf *msg)
     case OFPTYPE_BARRIER_REQUEST:
         return handle_barrier_request(ofconn, oh);
 
+    case OFPTYPE_ROLE_REQUEST:
+        return handle_role_request(ofconn, oh);
+
         /* OpenFlow replies. */
     case OFPTYPE_ECHO_REPLY:
         return 0;
 
         /* Nicira extension requests. */
-    case OFPTYPE_ROLE_REQUEST:
-        return handle_role_request(ofconn, oh);
-
     case OFPTYPE_FLOW_MOD_TABLE_ID:
         return handle_nxt_flow_mod_table_id(ofconn, oh);
 
@@ -3874,6 +4077,19 @@ handle_openflow__(struct ofconn *ofconn, const struct ofpbuf *msg)
     case OFPTYPE_FLOW_MONITOR_STATS_REQUEST:
         return handle_flow_monitor_request(ofconn, oh);
 
+        /* FIXME: Change the following once they are implemented: */
+    case OFPTYPE_QUEUE_GET_CONFIG_REQUEST:
+    case OFPTYPE_GET_ASYNC_REQUEST:
+    case OFPTYPE_METER_MOD:
+    case OFPTYPE_GROUP_REQUEST:
+    case OFPTYPE_GROUP_DESC_REQUEST:
+    case OFPTYPE_GROUP_FEATURES_REQUEST:
+    case OFPTYPE_METER_REQUEST:
+    case OFPTYPE_METER_CONFIG_REQUEST:
+    case OFPTYPE_METER_FEATURES_REQUEST:
+    case OFPTYPE_TABLE_FEATURES_REQUEST:
+        return OFPERR_OFPBRC_BAD_TYPE;
+
     case OFPTYPE_HELLO:
     case OFPTYPE_ERROR:
     case OFPTYPE_FEATURES_REPLY:
@@ -3882,6 +4098,7 @@ handle_openflow__(struct ofconn *ofconn, const struct ofpbuf *msg)
     case OFPTYPE_FLOW_REMOVED:
     case OFPTYPE_PORT_STATUS:
     case OFPTYPE_BARRIER_REPLY:
+    case OFPTYPE_QUEUE_GET_CONFIG_REPLY:
     case OFPTYPE_DESC_STATS_REPLY:
     case OFPTYPE_FLOW_STATS_REPLY:
     case OFPTYPE_QUEUE_STATS_REPLY:
@@ -3893,6 +4110,14 @@ handle_openflow__(struct ofconn *ofconn, const struct ofpbuf *msg)
     case OFPTYPE_FLOW_MONITOR_PAUSED:
     case OFPTYPE_FLOW_MONITOR_RESUMED:
     case OFPTYPE_FLOW_MONITOR_STATS_REPLY:
+    case OFPTYPE_GET_ASYNC_REPLY:
+    case OFPTYPE_GROUP_REPLY:
+    case OFPTYPE_GROUP_DESC_REPLY:
+    case OFPTYPE_GROUP_FEATURES_REPLY:
+    case OFPTYPE_METER_REPLY:
+    case OFPTYPE_METER_CONFIG_REPLY:
+    case OFPTYPE_METER_FEATURES_REPLY:
+    case OFPTYPE_TABLE_FEATURES_REPLY:
     default:
         return OFPERR_OFPBRC_BAD_TYPE;
     }

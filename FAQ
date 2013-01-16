@@ -128,20 +128,37 @@ A: All official releases have been through a comprehensive testing
    supplanted by the next major release.  The current LTS release is
    1.4.x.
 
+Q: What Linux kernel versions does each Open vSwitch release work with?
+
+A: The following table lists the Linux kernel versions against which the
+   given versions of the Open vSwitch kernel module will successfully
+   build.  The Linux kernel versions are upstream kernel versions, so
+   Linux kernels modified from the upstream sources may not build in
+   some cases even if they are based on a supported version.  This is
+   most notably true of Red Hat Enterprise Linux (RHEL) kernels, which
+   are extensively modified from upstream.
+
+   Open vSwitch   Linux kernel
+   ------------   -------------
+       1.4.x      2.6.18 to 3.2
+       1.5.x      2.6.18 to 3.2
+       1.6.x      2.6.18 to 3.2
+       1.7.x      2.6.18 to 3.3
+       1.8.x      2.6.18 to 3.4
+       1.9.x      2.6.18 to 3.7
+
+   Open vSwitch userspace should also work with the Linux kernel module
+   built into Linux 3.3 and later.
+
+   Open vSwitch userspace is not sensitive to the Linux kernel version.
+   It should build against almost any kernel, certainly against 2.6.18
+   and later.
+
 Q: What features are not available in the Open vSwitch kernel datapath
    that ships as part of the upstream Linux kernel?
 
 A: The kernel module in upstream Linux 3.3 and later does not include
    the following features:
-
-       - Bridge compatibility, that is, support for the ovs-brcompatd
-         daemon that (if you enable it) lets "brctl" and other Linux
-         bridge tools transparently work with Open vSwitch instead.
-
-         We do not expect bridge compatibility to ever be available in
-         upstream Linux.  If you need bridge compatibility, use the
-         kernel module from the Open vSwitch distribution instead of the
-         upstream Linux kernel module.
 
        - Tunnel virtual ports, that is, interfaces with type "gre",
          "ipsec_gre", "capwap".  It is possible to create tunnels in
@@ -166,6 +183,21 @@ A: Tunnel and patch virtual ports are not supported, as described in the
    previous answer.  It is also not possible to use queue-related
    actions.  On Linux kernels before 2.6.39, maximum-sized VLAN packets
    may not be transmitted.
+
+
+Terminology
+-----------
+
+Q: I thought Open vSwitch was a virtual Ethernet switch, but the
+   documentation keeps talking about bridges.  What's a bridge?
+
+A: In networking, the terms "bridge" and "switch" are synonyms.  Open
+   vSwitch implements an Ethernet switch, which means that it is also
+   an Ethernet bridge.
+
+Q: What's a VLAN?
+
+A: See the "VLAN" section below.
 
 
 Basic Configuration
@@ -414,6 +446,14 @@ Q: Is there any documentation on the database tables and fields?
 
 A: Yes.  ovs-vswitchd.conf.db(5) is a comprehensive reference.
 
+Q: When I run ovs-dpctl I no longer see the bridges I created.  Instead,
+   I only see a datapath called "ovs-system".  How can I see datapath
+   information about a particular bridge?
+
+A: In version 1.9.0, OVS switched to using a single datapath that is
+   shared by all bridges of that type.  The "ovs-appctl dpif/*"
+   commands provide similar functionality that is scoped by the bridge.
+
 
 VLANs
 -----
@@ -546,6 +586,25 @@ A: It's possible that you have the VLAN configured on your physical
          equally well.  Refer to the documentation for the Port table
          in ovs-vswitchd.conf.db(5) for more information.
 
+Q: I added a pair of VMs on different VLANs, like this:
+
+       ovs-vsctl add-br br0
+       ovs-vsctl add-port br0 eth0
+       ovs-vsctl add-port br0 tap0 tag=9
+       ovs-vsctl add-port br0 tap1 tag=10
+
+    but the VMs can't access each other, the external network, or the
+    Internet.
+
+A: It is to be expected that the VMs can't access each other.  VLANs
+   are a means to partition a network.  When you configured tap0 and
+   tap1 as access ports for different VLANs, you indicated that they
+   should be isolated from each other.
+
+   As for the external network and the Internet, it seems likely that
+   the machines you are trying to access are not on VLAN 9 (or 10) and
+   that the Internet is not available on VLAN 9 (or 10).
+
 Q: Can I configure an IP address on a VLAN?
 
 A: Yes.  Use an "internal port" configured as an access port.  For
@@ -602,12 +661,24 @@ Controllers
 
 Q: What versions of OpenFlow does Open vSwitch support?
 
-A: Open vSwitch supports OpenFlow 1.0.  It also includes a number of
-   extensions that bring many of the features from later versions of
-   OpenFlow.  Work is underway to provide support for later versions and
-   can be tracked here:
+A: Open vSwitch 1.9 and earlier support only OpenFlow 1.0 (plus
+   extensions that bring in many of the features from later versions
+   of OpenFlow).
 
-       http://openvswitch.org/development/openflow-1-x-plan/
+   Open vSwitch versions 1.10 and later will have experimental support
+   for OpenFlow 1.2 and 1.3.  On these versions of Open vSwitch, the
+   following command enables OpenFlow 1.0, 1.2, and 1.3 on bridge br0:
+
+       ovs-vsctl set bridge br0 protocols=openflow10,openflow12,openflow13
+
+   Support for OpenFlow 1.1 is incomplete enough that it cannot yet be
+   enabled, even experimentally.
+
+   Support for OpenFlow 1.2 and 1.3 is still incomplete.  Work to be
+   done is tracked in OPENFLOW-1.1+ in the Open vSwitch source tree
+   (also via http://openvswitch.org/development/openflow-1-x-plan/).
+   When support for a given OpenFlow version is solidly implemented,
+   Open vSwitch will enable that version by default.
 
 Q: I'm getting "error type 45250 code 0".  What's that?
 

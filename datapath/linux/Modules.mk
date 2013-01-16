@@ -13,6 +13,8 @@ openvswitch_sources += \
 	linux/compat/time.c	\
 	linux/compat/workqueue.c
 openvswitch_headers += \
+	linux/compat/include/asm/percpu.h \
+	linux/compat/include/linux/bug.h \
 	linux/compat/include/linux/compiler.h \
 	linux/compat/include/linux/compiler-gcc.h \
 	linux/compat/include/linux/cpumask.h \
@@ -59,6 +61,7 @@ openvswitch_headers += \
 	linux/compat/include/net/checksum.h \
 	linux/compat/include/net/dst.h \
 	linux/compat/include/net/genetlink.h \
+	linux/compat/include/net/inet_frag.h \
 	linux/compat/include/net/ip.h \
 	linux/compat/include/net/ipv6.h \
 	linux/compat/include/net/net_namespace.h \
@@ -66,11 +69,4 @@ openvswitch_headers += \
 	linux/compat/include/net/protocol.h \
 	linux/compat/include/net/route.h \
 	linux/compat/include/net/sock.h \
-	linux/compat/include/net/netns/generic.h \
-	linux/compat/genetlink.inc
-
-# always distribute brcompat source regardless of local build configuration
-dist_modules += brcompat
-build_modules += $(if $(BUILD_BRCOMPAT),brcompat)
-brcompat_sources = linux/compat/genetlink-brcompat.c brcompat_main.c
-brcompat_headers =
+	linux/compat/include/net/netns/generic.h

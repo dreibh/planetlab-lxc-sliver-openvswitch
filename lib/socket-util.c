@@ -205,22 +205,10 @@ lookup_hostname(const char *host_name, struct in_addr *addr)
             : EINVAL);
 }
 
-/* Returns the error condition associated with socket 'fd' and resets the
- * socket's error status. */
-int
-get_socket_error(int fd)
-{
-    int error;
-
-    if (getsockopt_int(fd, SOL_SOCKET, SO_ERROR, "SO_ERROR", &error)) {
-        error = errno;
-    }
-    return error;
-}
-
 int
 check_connection_completion(int fd)
 {
+    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 10);
     struct pollfd pfd;
     int retval;
 
@@ -230,9 +218,17 @@ check_connection_completion(int fd)
         retval = poll(&pfd, 1, 0);
     } while (retval < 0 && errno == EINTR);
     if (retval == 1) {
-        return get_socket_error(fd);
+        if (pfd.revents & POLLERR) {
+            ssize_t n = send(fd, "", 1, MSG_DONTWAIT);
+            if (n < 0) {
+                return errno;
+            } else {
+                VLOG_ERR_RL(&rl, "poll return POLLERR but send succeeded");
+                return EPROTO;
+            }
+        }
+        return 0;
     } else if (retval < 0) {
-        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 10);
         VLOG_ERR_RL(&rl, "poll: %s", strerror(errno));
         return errno;
     } else {
@@ -612,6 +608,7 @@ exit:
         }
     } else if (fd >= 0) {
         close(fd);
+        fd = -1;
     }
     *fdp = fd;
     return error;
@@ -944,7 +941,7 @@ describe_sockaddr(struct ds *string, int fd,
 
             memcpy(&sin, &ss, sizeof sin);
             ds_put_format(string, IP_FMT":%"PRIu16,
-                          IP_ARGS(&sin.sin_addr.s_addr), ntohs(sin.sin_port));
+                          IP_ARGS(sin.sin_addr.s_addr), ntohs(sin.sin_port));
         } else if (ss.ss_family == AF_UNIX) {
             struct sockaddr_un sun;
             const char *null;
@@ -1123,7 +1120,7 @@ send_iovec_and_fds(int sock,
 
         msg.msg_name = NULL;
         msg.msg_namelen = 0;
-        msg.msg_iov = (struct iovec *) iovs;
+        msg.msg_iov = CONST_CAST(struct iovec *, iovs);
         msg.msg_iovlen = n_iovs;
         msg.msg_control = &cmsg.cm;
         msg.msg_controllen = CMSG_SPACE(n_fds * sizeof *fds);

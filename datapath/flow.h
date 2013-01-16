@@ -41,11 +41,10 @@ struct sw_flow_actions {
 };
 
 struct sw_flow_key {
+	struct ovs_key_ipv4_tunnel tun_key;  /* Encapsulating tunnel key. */
 	struct {
-		union {
-			struct ovs_key_ipv4_tunnel tun_key;  /* Encapsulating tunnel key. */
-		} tun;
 		u32	priority;	/* Packet QoS priority. */
+		u32	skb_mark;	/* SKB mark. */
 		u16	in_port;	/* Input switch port (or DP_MAX_PORTS). */
 	} phy;
 	struct {
@@ -104,9 +103,6 @@ struct sw_flow {
 	struct sw_flow_key key;
 	struct sw_flow_actions __rcu *sf_acts;
 
-	atomic_t refcnt;
-	bool dead;
-
 	spinlock_t lock;	/* Lock for values below. */
 	unsigned long used;	/* Last used time (in jiffies). */
 	u64 packet_count;	/* Number of packets matched. */
@@ -133,12 +129,10 @@ void ovs_flow_exit(void);
 
 struct sw_flow *ovs_flow_alloc(void);
 void ovs_flow_deferred_free(struct sw_flow *);
+void ovs_flow_free(struct sw_flow *);
 
 struct sw_flow_actions *ovs_flow_actions_alloc(const struct nlattr *);
 void ovs_flow_deferred_free_acts(struct sw_flow_actions *);
-
-void ovs_flow_hold(struct sw_flow *);
-void ovs_flow_put(struct sw_flow *);
 
 int ovs_flow_extract(struct sk_buff *, u16 in_port, struct sw_flow_key *,
 		     int *key_lenp);
@@ -154,6 +148,7 @@ u64 ovs_flow_used_time(unsigned long flow_jiffies);
  *  OVS_KEY_ATTR_TUN_ID        8    --     4     12
  *  OVS_KEY_ATTR_IPV4_TUNNEL  24    --     4     28
  *  OVS_KEY_ATTR_IN_PORT       4    --     4      8
+ *  OVS_KEY_ATTR_SKB_MARK      4    --     4      8
  *  OVS_KEY_ATTR_ETHERNET     12    --     4     16
  *  OVS_KEY_ATTR_ETHERTYPE     2     2     4      8  (outer VLAN ethertype)
  *  OVS_KEY_ATTR_8021Q         4    --     4      8
@@ -163,9 +158,9 @@ u64 ovs_flow_used_time(unsigned long flow_jiffies);
  *  OVS_KEY_ATTR_ICMPV6        2     2     4      8
  *  OVS_KEY_ATTR_ND           28    --     4     32
  *  -------------------------------------------------
- *  total                                       184
+ *  total                                       192
  */
-#define FLOW_BUFSIZE 184
+#define FLOW_BUFSIZE 192
 
 int ovs_flow_to_nlattrs(const struct sw_flow_key *, struct sk_buff *);
 int ovs_flow_from_nlattrs(struct sw_flow_key *swkey, int *key_lenp,

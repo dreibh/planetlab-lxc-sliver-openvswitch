@@ -43,16 +43,17 @@ EXTRA_DIST = \
 	DESIGN \
 	FAQ \
 	INSTALL \
+	INSTALL.Debian \
 	INSTALL.Fedora \
 	INSTALL.KVM \
 	INSTALL.Libvirt \
 	INSTALL.RHEL \
 	INSTALL.SSL \
 	INSTALL.XenServer \
-	INSTALL.bridge \
 	INSTALL.userspace \
 	IntegrationGuide \
 	NOTICE \
+	OPENFLOW-1.1+ \
 	PORTING \
 	README-gcov \
 	REPORTING-BUGS \
@@ -169,6 +170,20 @@ CLEANFILES += distfiles
 endif
 .PHONY: dist-hook-git
 
+# Check that every .c file includes <config.h>.
+ALL_LOCAL += config-h-check
+config-h-check:
+	@cd $(srcdir); \
+	if test -e .git && (git --version) >/dev/null 2>&1 && \
+	   git --no-pager grep -L '#include <config\.h>' `git ls-files | grep '\.c$$' | \
+               grep -vE '^datapath|^lib/sflow|^third-party'`; \
+	then \
+	    echo "See above for list of violations of the rule that"; \
+	    echo "every C source file must #include <config.h>."; \
+	    exit 1; \
+	fi
+.PHONY: config-h-check
+
 # Check that "struct vlog_ratelimit" is always declared "static".
 ALL_LOCAL += rate-limit-check
 rate-limit-check:
@@ -211,6 +226,11 @@ clean-local: $(CLEAN_LOCAL)
 install-data-local: $(INSTALL_DATA_LOCAL)
 uninstall-local: $(UNINSTALL_LOCAL)
 .PHONY: $(DIST_HOOKS) $(CLEAN_LOCAL) $(INSTALL_DATA_LOCAL) $(UNINSTALL_LOCAL)
+
+modules_install:
+if LINUX_ENABLED
+	cd datapath/linux && $(MAKE) modules_install
+endif
 
 include lib/automake.mk
 include ofproto/automake.mk

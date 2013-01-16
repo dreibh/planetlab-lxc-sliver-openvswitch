@@ -46,11 +46,14 @@ int ofputil_netmask_to_wcbits(ovs_be32 netmask);
 
 /* Protocols.
  *
+ * A "protocol" is an OpenFlow version plus, for some OpenFlow versions,
+ * a bit extra about the flow match format in use.
+ *
  * These are arranged from most portable to least portable, or alternatively
- * from least powerful to most powerful.  Formats earlier on the list are more
- * likely to be understood for the purpose of making requests, but formats
- * later on the list are more likely to accurately describe a flow within a
- * switch.
+ * from least powerful to most powerful.  Protocols earlier on the list are
+ * more likely to be understood for the purpose of making requests, but
+ * protocol later on the list are more likely to accurately describe a flow
+ * within a switch.
  *
  * On any given OpenFlow connection, a single protocol is in effect at any
  * given time.  These values use separate bits only because that makes it easy
@@ -58,33 +61,49 @@ int ofputil_netmask_to_wcbits(ovs_be32 netmask);
  * to implement set union and intersection.
  */
 enum ofputil_protocol {
-    /* OpenFlow 1.0-based protocols. */
-    OFPUTIL_P_OF10     = 1 << 0, /* OpenFlow 1.0 flow format. */
-    OFPUTIL_P_OF10_TID = 1 << 1, /* OF1.0 + flow_mod_table_id extension. */
-#define OFPUTIL_P_OF10_ANY (OFPUTIL_P_OF10 | OFPUTIL_P_OF10_TID)
+    /* OpenFlow 1.0 protocols.
+     *
+     * The "STD" protocols use the standard OpenFlow 1.0 flow format.
+     * The "NXM" protocols use the Nicira Extensible Match (NXM) flow format.
+     *
+     * The protocols with "TID" mean that the nx_flow_mod_table_id Nicira
+     * extension has been enabled.  The other protocols have it disabled.
+     */
+#define OFPUTIL_P_NONE 0
+    OFPUTIL_P_OF10_STD     = 1 << 0,
+    OFPUTIL_P_OF10_STD_TID = 1 << 1,
+    OFPUTIL_P_OF10_NXM     = 1 << 2,
+    OFPUTIL_P_OF10_NXM_TID = 1 << 3,
+#define OFPUTIL_P_OF10_STD_ANY (OFPUTIL_P_OF10_STD | OFPUTIL_P_OF10_STD_TID)
+#define OFPUTIL_P_OF10_NXM_ANY (OFPUTIL_P_OF10_NXM | OFPUTIL_P_OF10_NXM_TID)
 
-    /* OpenFlow 1.0 with NXM-based flow formats. */
-    OFPUTIL_P_NXM      = 1 << 2, /* Nicira extended match. */
-    OFPUTIL_P_NXM_TID  = 1 << 3, /* NXM + flow_mod_table_id extension. */
-#define OFPUTIL_P_NXM_ANY (OFPUTIL_P_NXM | OFPUTIL_P_NXM_TID)
-
-    /* OpenFlow 1.2 */
-    OFPUTIL_P_OF12      = 1 << 4, /* OpenFlow 1.2 flow format. */
+    /* OpenFlow 1.2+ protocols (only one variant each).
+     *
+     * These use the standard OpenFlow Extensible Match (OXM) flow format.
+     *
+     * OpenFlow 1.2+ always operates with an equivalent of the
+     * nx_flow_mod_table_id Nicira extension enabled, so there is no "TID"
+     * variant. */
+    OFPUTIL_P_OF12_OXM      = 1 << 4,
+    OFPUTIL_P_OF13_OXM      = 1 << 5,
+#define OFPUTIL_P_ANY_OXM (OFPUTIL_P_OF12_OXM | OFPUTIL_P_OF13_OXM)
 
     /* All protocols. */
-#define OFPUTIL_P_ANY (OFPUTIL_P_OF10_ANY | OFPUTIL_P_NXM_ANY)
+#define OFPUTIL_P_ANY ((1 << 6) - 1)
 
     /* Protocols in which a specific table may be specified in flow_mods. */
-#define OFPUTIL_P_TID (OFPUTIL_P_OF10_TID | OFPUTIL_P_NXM_TID)
+#define OFPUTIL_P_TID (OFPUTIL_P_OF10_STD_TID | \
+                       OFPUTIL_P_OF10_NXM_TID | \
+                       OFPUTIL_P_ANY_OXM)
 };
 
 /* Protocols to use for flow dumps, from most to least preferred. */
 extern enum ofputil_protocol ofputil_flow_dump_protocols[];
 extern size_t ofputil_n_flow_dump_protocols;
 
-enum ofputil_protocol
-ofputil_protocol_from_ofp_version(enum ofp_version version);
-enum ofp_version  ofputil_protocol_to_ofp_version(enum ofputil_protocol);
+enum ofputil_protocol ofputil_protocol_from_ofp_version(enum ofp_version);
+enum ofputil_protocol ofputil_protocols_from_ofp_version(enum ofp_version);
+enum ofp_version ofputil_protocol_to_ofp_version(enum ofputil_protocol);
 
 bool ofputil_protocol_is_valid(enum ofputil_protocol);
 enum ofputil_protocol ofputil_protocol_set_tid(enum ofputil_protocol,
@@ -97,6 +116,40 @@ const char *ofputil_protocol_to_string(enum ofputil_protocol);
 char *ofputil_protocols_to_string(enum ofputil_protocol);
 enum ofputil_protocol ofputil_protocols_from_string(const char *);
 enum ofputil_protocol ofputil_usable_protocols(const struct match *);
+
+void ofputil_format_version(struct ds *, enum ofp_version);
+void ofputil_format_version_name(struct ds *, enum ofp_version);
+
+/* A bitmap of version numbers
+ *
+ * Bit offsets correspond to ofp_version numbers which in turn correspond to
+ * wire-protocol numbers for Open Flow versions..  E.g. (1u << OFP11_VERSION)
+ * is the mask for Open Flow 1.1.  If the bit for a version is set then it is
+ * allowed, otherwise it is disallowed. */
+
+void ofputil_format_version_bitmap(struct ds *msg, uint32_t bitmap);
+void ofputil_format_version_bitmap_names(struct ds *msg, uint32_t bitmap);
+
+uint32_t ofputil_protocols_to_version_bitmap(enum ofputil_protocol);
+enum ofputil_protocol ofputil_protocols_from_version_bitmap(uint32_t bitmap);
+
+/* Bitmap of OpenFlow versions that Open vSwitch supports. */
+#define OFPUTIL_SUPPORTED_VERSIONS \
+    ((1u << OFP10_VERSION) | (1u << OFP12_VERSION) | (1u << OFP13_VERSION))
+
+/* Bitmap of OpenFlow versions to enable by default (a subset of
+ * OFPUTIL_SUPPORTED_VERSIONS). */
+#define OFPUTIL_DEFAULT_VERSIONS (1u << OFP10_VERSION)
+
+enum ofputil_protocol ofputil_protocols_from_string(const char *s);
+
+const char *ofputil_version_to_string(enum ofp_version ofp_version);
+uint32_t ofputil_versions_from_string(const char *s);
+uint32_t ofputil_versions_from_strings(char ** const s, size_t count);
+
+bool ofputil_decode_hello(const struct ofp_header *,
+                          uint32_t *allowed_versions);
+struct ofpbuf *ofputil_encode_hello(uint32_t version_bitmap);
 
 struct ofpbuf *ofputil_encode_set_protocol(enum ofputil_protocol current,
                                            enum ofputil_protocol want,
@@ -215,6 +268,7 @@ struct ofputil_flow_stats {
     uint64_t byte_count;        /* Byte count, UINT64_MAX if unknown. */
     struct ofpact *ofpacts;
     size_t ofpacts_len;
+    uint16_t flags;             /* Added for OF 1.3 */
 };
 
 int ofputil_decode_flow_stats_reply(struct ofputil_flow_stats *,
@@ -351,7 +405,7 @@ struct ofputil_phy_port {
 };
 
 enum ofputil_capabilities {
-    /* OpenFlow 1.0, 1.1 and 1.2 share these values for these capabilities. */
+    /* OpenFlow 1.0, 1.1, 1.2, and 1.3 share these capability values. */
     OFPUTIL_C_FLOW_STATS     = 1 << 0,  /* Flow statistics. */
     OFPUTIL_C_TABLE_STATS    = 1 << 1,  /* Table statistics. */
     OFPUTIL_C_PORT_STATS     = 1 << 2,  /* Port statistics. */
@@ -364,10 +418,10 @@ enum ofputil_capabilities {
     /* OpenFlow 1.0 only. */
     OFPUTIL_C_STP            = 1 << 3,  /* 802.1d spanning tree. */
 
-    /* OpenFlow 1.1 and 1.2 share this capability. */
+    /* OpenFlow 1.1, 1.2, and 1.3 share this capability. */
     OFPUTIL_C_GROUP_STATS    = 1 << 4,  /* Group statistics. */
 
-    /* OpenFlow 1.2 only */
+    /* OpenFlow 1.2 and 1.3 share this capability */
     OFPUTIL_C_PORT_BLOCKED   = 1 << 8,  /* Switch will block looping ports */
 };
 
@@ -407,6 +461,7 @@ struct ofputil_switch_features {
     uint64_t datapath_id;       /* Datapath unique ID. */
     uint32_t n_buffers;         /* Max packets buffered at once. */
     uint8_t n_tables;           /* Number of tables supported by datapath. */
+    uint8_t auxiliary_id;       /* Identify auxiliary connections */
     enum ofputil_capabilities capabilities;
     enum ofputil_action_bitmap actions;
 };
@@ -451,6 +506,19 @@ enum ofperr ofputil_decode_port_mod(const struct ofp_header *,
                                     struct ofputil_port_mod *);
 struct ofpbuf *ofputil_encode_port_mod(const struct ofputil_port_mod *,
                                        enum ofputil_protocol);
+
+/* Abstract ofp_role_request and reply. */
+struct ofputil_role_request {
+    bool request_current_role_only; /* no role change */
+    bool have_generation_id;
+    enum nx_role role;
+    uint64_t generation_id;
+};
+
+enum ofperr ofputil_decode_role_message(const struct ofp_header *,
+                                        struct ofputil_role_request *);
+struct ofpbuf *ofputil_encode_role_reply(const struct ofp_header *,
+                                         enum nx_role current_role);
 
 /* Abstract table stats.
  *
@@ -638,7 +706,7 @@ enum ofperr ofputil_decode_port_stats_request(const struct ofp_header *request,
                                               uint16_t *ofp10_port);
 
 struct ofputil_queue_stats_request {
-    uint16_t port_no;
+    uint16_t port_no;           /* OFPP_ANY means "all ports". */
     uint32_t queue_id;
 };
 
