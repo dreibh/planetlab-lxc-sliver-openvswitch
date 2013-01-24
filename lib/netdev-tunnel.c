@@ -170,7 +170,7 @@ netdev_tunnel_get_config(struct netdev_dev *dev_, struct smap *args)
 
     if (netdev_dev->valid_remote_ip)
     	smap_add_format(args, "remote_ip", IP_FMT,
-		IP_ARGS(&netdev_dev->remote_addr.sin_addr));
+		IP_ARGS(netdev_dev->remote_addr.sin_addr.s_addr));
     if (netdev_dev->valid_remote_port)
         smap_add_format(args, "remote_port", "%"PRIu16,
 		ntohs(netdev_dev->remote_addr.sin_port));
@@ -496,6 +496,7 @@ const struct netdev_class netdev_tunnel_class = {
     netdev_tunnel_destroy,
     netdev_tunnel_get_config,
     netdev_tunnel_set_config, 
+    NULL,			/* get_tunnel_config */
 
     netdev_tunnel_open,
     netdev_tunnel_close,

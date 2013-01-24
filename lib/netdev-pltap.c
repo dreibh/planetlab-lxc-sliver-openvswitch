@@ -333,7 +333,7 @@ netdev_pltap_up(struct netdev_dev_pltap *dev)
     
     return vsys_transaction("vif_up", NULL, "%s\n"IP_FMT"\n%d\n",
 	       dev->real_name,
-	       IP_ARGS(&dev->local_addr.sin_addr),
+	       IP_ARGS(dev->local_addr.sin_addr.s_addr),
 	       dev->local_netmask);
 }
 
@@ -395,7 +395,7 @@ netdev_pltap_get_config(struct netdev_dev *dev_, struct smap *args)
 
     if (netdev_dev->valid_local_ip)
     	smap_add_format(args, "local_ip", IP_FMT,
-            IP_ARGS(&netdev_dev->local_addr.sin_addr));
+            IP_ARGS(netdev_dev->local_addr.sin_addr.s_addr));
     if (netdev_dev->valid_local_netmask)
         smap_add_format(args, "local_netmask", "%"PRIu32,
             ntohs(netdev_dev->local_netmask));
@@ -729,6 +729,7 @@ const struct netdev_class netdev_pltap_class = {
     netdev_pltap_destroy,
     netdev_pltap_get_config,
     netdev_pltap_set_config, 
+    NULL,			/* get_tunnel_config */
 
     netdev_pltap_open,
     netdev_pltap_close,

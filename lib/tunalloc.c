@@ -6,6 +6,7 @@
  * new tuntap interface. Interface name can be acquired via TUNGETIFF ioctl.
  */
 
+#include <config.h>
 #include <sys/un.h>
 #include <stdlib.h>
 #include <stdio.h>
