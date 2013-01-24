@@ -73,7 +73,7 @@ is_tunnel_class(const struct netdev_class *class)
 static struct netdev_dev_tunnel *
 netdev_dev_tunnel_cast(const struct netdev_dev *netdev_dev)
 {
-    assert(is_tunnel_class(netdev_dev_get_class(netdev_dev)));
+    ovs_assert(is_tunnel_class(netdev_dev_get_class(netdev_dev)));
     return CONTAINER_OF(netdev_dev, struct netdev_dev_tunnel, netdev_dev);
 }
 
@@ -81,7 +81,7 @@ static struct netdev_tunnel *
 netdev_tunnel_cast(const struct netdev *netdev)
 {
     struct netdev_dev *netdev_dev = netdev_get_dev(netdev);
-    assert(is_tunnel_class(netdev_dev_get_class(netdev_dev)));
+    ovs_assert(is_tunnel_class(netdev_dev_get_class(netdev_dev)));
     return CONTAINER_OF(netdev, struct netdev_tunnel, netdev);
 }
 
