@@ -363,8 +363,10 @@ static void
 netdev_pltap_sync_flags(struct netdev_dev_pltap *dev)
 {
 
-    if (dev->fd < 0 || !netdev_pltap_finalized(dev))
+    if (dev->fd < 0 || !netdev_pltap_finalized(dev)) {
+    	sync_done(dev);
     	return;
+    }
     
     VLOG_DBG("sync_flags(%s): current: %s %s  target: %s %s",
         dev->real_name,
