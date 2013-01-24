@@ -17,7 +17,6 @@
 #include <config.h>
 #include "dpif.h"
 
-#include <assert.h>
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -160,7 +159,7 @@ static void dp_netdev_execute_actions(struct dp_netdev *,
 static struct dpif_netdev *
 dpif_netdev_cast(const struct dpif *dpif)
 {
-    assert(dpif->dpif_class->open == dpif_netdev_open);
+    ovs_assert(dpif->dpif_class->open == dpif_netdev_open);
     return CONTAINER_OF(dpif, struct dpif_netdev, dpif);
 }
 
@@ -298,7 +297,7 @@ dpif_netdev_open(const struct dpif_class *class, const char *name,
             if (error) {
                 return error;
             }
-            assert(dp != NULL);
+            ovs_assert(dp != NULL);
         }
     } else {
         if (dp->class != class) {
@@ -346,7 +345,7 @@ static void
 dpif_netdev_close(struct dpif *dpif)
 {
     struct dp_netdev *dp = get_dp_netdev(dpif);
-    assert(dp->open_cnt > 0);
+    ovs_assert(dp->open_cnt > 0);
     if (--dp->open_cnt == 0 && dp->destroyed) {
         shash_find_and_delete(&dp_netdevs, dp->name);
         dp_netdev_free(dp);
@@ -1202,7 +1201,7 @@ execute_set_action(struct ofpbuf *packet, const struct nlattr *a)
     case OVS_KEY_ATTR_TUN_ID:
     case OVS_KEY_ATTR_PRIORITY:
     case OVS_KEY_ATTR_SKB_MARK:
-    case OVS_KEY_ATTR_IPV4_TUNNEL:
+    case OVS_KEY_ATTR_TUNNEL:
         /* not implemented */
         break;
 
@@ -1259,7 +1258,6 @@ dp_netdev_execute_actions(struct dp_netdev *dp,
     unsigned int left;
 
     NL_ATTR_FOR_EACH_UNSAFE (a, left, actions, actions_len) {
-        const struct ovs_action_push_vlan *vlan;
         int type = nl_attr_type(a);
 
         switch ((enum ovs_action_attr) type) {
@@ -1271,10 +1269,11 @@ dp_netdev_execute_actions(struct dp_netdev *dp,
             dp_netdev_action_userspace(dp, packet, key, a);
             break;
 
-        case OVS_ACTION_ATTR_PUSH_VLAN:
-            vlan = nl_attr_get(a);
+        case OVS_ACTION_ATTR_PUSH_VLAN: {
+            const struct ovs_action_push_vlan *vlan = nl_attr_get(a);
             eth_push_vlan(packet, vlan->vlan_tci);
             break;
+        }
 
         case OVS_ACTION_ATTR_POP_VLAN:
             eth_pop_vlan(packet);

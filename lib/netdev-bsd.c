@@ -17,7 +17,6 @@
 #include <config.h>
 
 #include <stdlib.h>
-#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -50,6 +49,7 @@
 #include "socket-util.h"
 #include "shash.h"
 #include "svec.h"
+#include "util.h"
 #include "vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_bsd);
@@ -157,14 +157,15 @@ is_netdev_bsd_class(const struct netdev_class *netdev_class)
 static struct netdev_bsd *
 netdev_bsd_cast(const struct netdev *netdev)
 {
-    assert(is_netdev_bsd_class(netdev_dev_get_class(netdev_get_dev(netdev))));
+    ovs_assert(is_netdev_bsd_class(netdev_dev_get_class(
+                                       netdev_get_dev(netdev))));
     return CONTAINER_OF(netdev, struct netdev_bsd, netdev);
 }
 
 static struct netdev_dev_bsd *
 netdev_dev_bsd_cast(const struct netdev_dev *netdev_dev)
 {
-    assert(is_netdev_bsd_class(netdev_dev_get_class(netdev_dev)));
+    ovs_assert(is_netdev_bsd_class(netdev_dev_get_class(netdev_dev)));
     return CONTAINER_OF(netdev_dev, struct netdev_dev_bsd, netdev_dev);
 }
 
@@ -1255,6 +1256,7 @@ const struct netdev_class netdev_bsd_class = {
     netdev_bsd_destroy,
     NULL, /* get_config */
     NULL, /* set_config */
+    NULL, /* get_tunnel_config */
     netdev_bsd_open_system,
     netdev_bsd_close,
 
@@ -1315,6 +1317,7 @@ const struct netdev_class netdev_tap_class = {
     netdev_bsd_destroy,
     NULL, /* get_config */
     NULL, /* set_config */
+    NULL, /* get_tunnel_config */
     netdev_bsd_open_system,
     netdev_bsd_close,
 

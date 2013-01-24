@@ -15,7 +15,6 @@
 
 #include <config.h>
 #include "bridge.h"
-#include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdlib.h>
@@ -471,7 +470,7 @@ bridge_reconfigure(const struct ovsrec_open_vswitch *ovs_cfg)
 
     COVERAGE_INC(bridge_reconfigure);
 
-    assert(!reconfiguring);
+    ovs_assert(!reconfiguring);
     reconfiguring = true;
 
     /* Destroy "struct bridge"s, "struct port"s, and "struct iface"s according
@@ -565,7 +564,7 @@ bridge_reconfigure_continue(const struct ovsrec_open_vswitch *ovs_cfg)
     struct bridge *br;
     bool done;
 
-    assert(reconfiguring);
+    ovs_assert(reconfiguring);
     done = bridge_reconfigure_ofp();
 
     /* Complete the configuration. */
@@ -1188,7 +1187,7 @@ iface_set_ofp_port(struct iface *iface, int ofp_port)
 {
     struct bridge *br = iface->port->bridge;
 
-    assert(iface->ofp_port < 0 && ofp_port >= 0);
+    ovs_assert(iface->ofp_port < 0 && ofp_port >= 0);
     iface->ofp_port = ofp_port;
     hmap_insert(&br->ifaces, &iface->ofp_port_node, hash_int(ofp_port, 0));
     iface_set_ofport(iface->cfg, ofp_port);
@@ -1402,7 +1401,7 @@ iface_create(struct bridge *br, struct if_cfg *if_cfg, int ofp_port)
      * internal datastructures may not be consistent.  Eventually, when port
      * additions and deletions are cheaper, these calls should be removed. */
     bridge_run_fast();
-    assert(!iface_lookup(br, iface_cfg->name));
+    ovs_assert(!iface_lookup(br, iface_cfg->name));
     error = iface_do_create(br, if_cfg, &ofp_port, &netdev);
     bridge_run_fast();
     if (error) {
@@ -1841,7 +1840,7 @@ iface_refresh_stats(struct iface *iface)
 #define IFACE_STAT(MEMBER, NAME) values[i++] = stats.MEMBER;
     IFACE_STATS;
 #undef IFACE_STAT
-    assert(i == ARRAY_SIZE(keys));
+    ovs_assert(i == ARRAY_SIZE(keys));
 
     ovsrec_interface_set_statistics(iface->cfg, keys, values,
                                     ARRAY_SIZE(keys));
@@ -2403,7 +2402,7 @@ bridge_create(const struct ovsrec_bridge *br_cfg)
 {
     struct bridge *br;
 
-    assert(!bridge_lookup(br_cfg->name));
+    ovs_assert(!bridge_lookup(br_cfg->name));
     br = xzalloc(sizeof *br);
 
     br->name = xstrdup(br_cfg->name);
@@ -2569,7 +2568,7 @@ bridge_add_del_ports(struct bridge *br,
     struct shash new_ports;
     size_t i;
 
-    assert(hmap_is_empty(&br->if_cfg_todo));
+    ovs_assert(hmap_is_empty(&br->if_cfg_todo));
 
     /* Collect new ports. */
     shash_init(&new_ports);
@@ -2730,12 +2729,23 @@ bridge_configure_local_iface_netdev(struct bridge *br,
 
 /* Returns true if 'a' and 'b' are the same except that any number of slashes
  * in either string are treated as equal to any number of slashes in the other,
- * e.g. "x///y" is equal to "x/y". */
+ * e.g. "x///y" is equal to "x/y".
+ *
+ * Also, if 'b_stoplen' bytes from 'b' are found to be equal to corresponding
+ * bytes from 'a', the function considers this success.  Specify 'b_stoplen' as
+ * SIZE_MAX to compare all of 'a' to all of 'b' rather than just a prefix of
+ * 'b' against a prefix of 'a'.
+ */
 static bool
-equal_pathnames(const char *a, const char *b)
+equal_pathnames(const char *a, const char *b, size_t b_stoplen)
 {
-    while (*a == *b) {
-        if (*a == '/') {
+    const char *b_start = b;
+    for (;;) {
+        if (b - b_start >= b_stoplen) {
+            return true;
+        } else if (*a != *b) {
+            return false;
+        } else if (*a == '/') {
             a += strspn(a, "/");
             b += strspn(b, "/");
         } else if (*a == '\0') {
@@ -2745,7 +2755,6 @@ equal_pathnames(const char *a, const char *b)
             b++;
         }
     }
-    return false;
 }
 
 static void
@@ -2792,21 +2801,40 @@ bridge_configure_remotes(struct bridge *br,
             static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
             char *whitelist;
 
-            whitelist = xasprintf("unix:%s/%s.controller",
+            if (!strncmp(c->target, "unix:", 5)) {
+                /* Connect to a listening socket */
+                whitelist = xasprintf("unix:%s/", ovs_rundir());
+                if (!equal_pathnames(c->target, whitelist,
+                                     strlen(whitelist))) {
+                    VLOG_ERR_RL(&rl, "bridge %s: Not connecting to socket "
+                                  "controller \"%s\" due to possibility for "
+                                  "remote exploit.  Instead, specify socket "
+                                  "in whitelisted \"%s\" or connect to "
+                                  "\"unix:%s/%s.mgmt\" (which is always "
+                                  "available without special configuration).",
+                                  br->name, c->target, whitelist,
                                   ovs_rundir(), br->name);
-            if (!equal_pathnames(c->target, whitelist)) {
-                /* Prevent remote ovsdb-server users from accessing arbitrary
-                 * Unix domain sockets and overwriting arbitrary local
-                 * files. */
-                VLOG_ERR_RL(&rl, "bridge %s: Not adding Unix domain socket "
-                            "controller \"%s\" due to possibility for remote "
-                            "exploit.  Instead, specify whitelisted \"%s\" or "
-                            "connect to \"unix:%s/%s.mgmt\" (which is always "
-                            "available without special configuration).",
-                            br->name, c->target, whitelist,
-                            ovs_rundir(), br->name);
-                free(whitelist);
-                continue;
+                    free(whitelist);
+                    continue;
+                }
+            } else {
+               whitelist = xasprintf("punix:%s/%s.controller",
+                                     ovs_rundir(), br->name);
+               if (!equal_pathnames(c->target, whitelist, SIZE_MAX)) {
+                   /* Prevent remote ovsdb-server users from accessing
+                    * arbitrary Unix domain sockets and overwriting arbitrary
+                    * local files. */
+                   VLOG_ERR_RL(&rl, "bridge %s: Not adding Unix domain socket "
+                                  "controller \"%s\" due to possibility of "
+                                  "overwriting local files. Instead, specify "
+                                  "whitelisted \"%s\" or connect to "
+                                  "\"unix:%s/%s.mgmt\" (which is always "
+                                  "available without special configuration).",
+                                  br->name, c->target, whitelist,
+                                  ovs_rundir(), br->name);
+                   free(whitelist);
+                   continue;
+               }
             }
 
             free(whitelist);
