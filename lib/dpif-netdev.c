@@ -184,16 +184,9 @@ static const char *
 dpif_netdev_port_open_type(const struct dpif_class *class, const char *type)
 {
     return strcmp(type, "internal") ? type
-                  : class != &dpif_netdev_class ? "dummy"
-                  : "tap";
-}
-
-static const char *
-dpif_planetlab_port_open_type(const struct dpif_class *class, const char *type)
-{
-    return strcmp(type, "internal") ? type
-                  : class != &dpif_planetlab_class ? "dummy"
-                  : "pltap";
+                  : class == &dpif_netdev_class ? "tap"
+                  : class == &dpif_planetlab_class ? "pltap"
+                  : "dummy";
 }
 
 static struct dpif *
@@ -1294,9 +1287,9 @@ dp_netdev_execute_actions(struct dp_netdev *dp,
     }
 }
 
-#define DPIF_NETDEV_CLASS_FUNCTIONS(PORT_OPEN_TYPE)	\
+#define DPIF_NETDEV_CLASS_FUNCTIONS			\
     dpif_netdev_enumerate,				\
-    PORT_OPEN_TYPE,					\
+    dpif_netdev_port_open_type,				\
     dpif_netdev_open,					\
     dpif_netdev_close,					\
     dpif_netdev_destroy,				\
@@ -1331,12 +1324,12 @@ dp_netdev_execute_actions(struct dp_netdev *dp,
 
 const struct dpif_class dpif_netdev_class = {
     "netdev",
-    DPIF_NETDEV_CLASS_FUNCTIONS(dpif_netdev_port_open_type)
+    DPIF_NETDEV_CLASS_FUNCTIONS
 };
 
 const struct dpif_class dpif_planetlab_class = {
     "planetlab",
-    DPIF_NETDEV_CLASS_FUNCTIONS(dpif_planetlab_port_open_type)
+    DPIF_NETDEV_CLASS_FUNCTIONS
 };
 
 static void
