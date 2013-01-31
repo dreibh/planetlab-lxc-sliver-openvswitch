@@ -73,12 +73,13 @@ netdev_initialize(void)
         inited = true;
 
         fatal_signal_add_hook(close_all_netdevs, NULL, NULL, true);
+        netdev_vport_patch_register();
 
 #ifdef LINUX_DATAPATH
         netdev_register_provider(&netdev_linux_class);
         netdev_register_provider(&netdev_internal_class);
         netdev_register_provider(&netdev_tap_class);
-        netdev_vport_register();
+        netdev_vport_tunnel_register();
 #endif
 #ifdef __FreeBSD__
         netdev_register_provider(&netdev_tap_class);
@@ -1441,6 +1442,14 @@ const char *
 netdev_get_type(const struct netdev *netdev)
 {
     return netdev_get_dev(netdev)->netdev_class->type;
+}
+
+
+const char *
+netdev_get_type_from_name(const char *name)
+{
+    const struct netdev_dev *dev = netdev_dev_from_name(name);
+    return dev ? netdev_dev_get_type(dev) : NULL;
 }
 
 struct netdev_dev *
