@@ -58,7 +58,7 @@ The last command creates some subdirectories that are later used by the Makefile
 
 * Example usage
 
-Assume we have a PlanetLab slice called 'myslice' which
+Assume we have a PlanetLab slice called 'example_slice' which
 contains four nodes:
 
 1) onelab7.iet.unipi.it
@@ -83,7 +83,7 @@ In the same directory were we have put the Makefile we create a 'conf.mk'
 file containing the following variables:
 
 ----------
-SLICE=myslice
+SLICE=example_slice
 HOST_1=onelab7.iet.unipi.it
 IP_1=10.0.9.1/24
 HOST_2=planet2.elte.hu
@@ -113,7 +113,7 @@ the Open vSwitch servers, create the bridges and setup the tunnels. We
 can test that network is up by logging into a node and pinging some
 other node using the private subnet addresses:
 
-$ ssh -l myslice onelab7.iet.unipi.it ping 10.0.9.4
+$ ssh -l example_slice onelab7.iet.unipi.it ping 10.0.9.4
 
 Links can be destroyed and created dynamically. Assume we now want the
 the topology to match the following one:
