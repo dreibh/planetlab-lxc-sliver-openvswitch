@@ -2,7 +2,7 @@
 # to check for any change:
 # grep AC_INIT configure.ac 
 %define version 1.9.90
-%define taglevel 2
+%define taglevel 3
 
 %define debug_package %{nil}
 
@@ -49,6 +49,9 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Fri Feb 22 2013 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.9.90-3
+- pulled mainstream - amazingly this is still known as 1.9.90 despite the size of changes
+
 * Fri Dec 21 2012 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.9.90-2
 - merged with upstream
 - handling of promisc &up/down flags for tap devices
