@@ -306,6 +306,15 @@ function get_local_links () {
     ovs-vsctl --db=unix:$DB_SOCKET list-ifaces "$bridge"
 }
 
+function get_mac () {
+
+    get_params "bridge" "$@"
+
+    set -e
+    local tap=$(ovs-appctl netdev-pltap/get-tapname "$bridge")
+    ifconfig "$tap" | awk '/HWaddr/ { print $5 }'
+}
+
 ### for demos - connect to an ndnmap deployment to visualize links bandwidth
 # this expects 3 arguments
 # an interface name, L<id1>-<id2> based on your ids in conf.mk
@@ -354,31 +363,12 @@ function gmap_probe () {
 }
 
 ####################
-# xxx tmp for a demo 
-# there *must* be a better way to do that
-# the thing is the slice sees several tap devices at this point, which is odd...
-# for now I'm searching the tapname based on some hint - the vnet ip range
-VNET=10.0.16
-function show_mac () {
-    ifnames=$(grep : /proc/net/dev | cut -d: -f1 | awk '{print $1;}')
-    tapname=""
-    for ifname in $ifnames; do
-	ifconfig $ifname | grep -q "$VNET" && tapname=$ifname
-    done
-    if [ -z "$tapname" ] ; then
-	echo "no-tap-found-for$VNET"
-	exit 1
-    fi
-    ifconfig $tapname | grep -i hwaddr | awk '{print $5;}'
-}
-
-####################
 SUPPORTED_SUBCOMMANDS="start stop status 
 start_db stop_db start_switch stop_switch
 create_bridge create_port del_bridge del_port
 show get_local_endpoint set_remote_endpoint
 set_controller del_controller gmap_probe
-get_local_ip get_local_links show_mac"
+get_local_ip get_local_links get_mac"
 
 function main () {
 	message="Usage: $COMMAND <subcommand> ...
