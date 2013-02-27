@@ -90,21 +90,6 @@ static inline struct vxlanhdr *vxlan_hdr(const struct sk_buff *skb)
 	return (struct vxlanhdr *)(udp_hdr(skb) + 1);
 }
 
-/* Compute source port for outgoing packet.
- * Currently we use the flow hash.
- */
-static u16 get_src_port(struct sk_buff *skb)
-{
-	int low;
-	int high;
-	unsigned int range;
-	u32 hash = OVS_CB(skb)->flow->hash;
-
-        inet_get_local_port_range(&low, &high);
-        range = (high - low) + 1;
-	return (((u64) hash * range) >> 32) + low;
-}
-
 static struct sk_buff *vxlan_build_header(const struct vport *vport,
 					  const struct tnl_mutable_config *mutable,
 					  struct dst_entry *dst,
@@ -120,7 +105,7 @@ static struct sk_buff *vxlan_build_header(const struct vport *vport,
 	tnl_get_param(mutable, tun_key, &flags, &out_key);
 
 	udph->dest = mutable->dst_port;
-	udph->source = htons(get_src_port(skb));
+	udph->source = htons(ovs_tnl_get_src_port(skb));
 	udph->check = 0;
 	udph->len = htons(skb->len - skb_transport_offset(skb));
 
@@ -166,10 +151,8 @@ static int vxlan_rcv(struct sock *sk, struct sk_buff *skb)
 	iph = ip_hdr(skb);
 	vport = ovs_tnl_find_port(dev_net(skb->dev), iph->daddr, iph->saddr,
 		key, TNL_T_PROTO_VXLAN, &mutable);
-	if (unlikely(!vport)) {
-		icmp_send(skb, ICMP_DEST_UNREACH, ICMP_PORT_UNREACH, 0);
+	if (unlikely(!vport))
 		goto error;
-	}
 
 	if (mutable->flags & TNL_F_IN_KEY_MATCH || !mutable->key.daddr)
 		tunnel_flags = OVS_TNL_F_KEY;

@@ -167,7 +167,7 @@ Q: What features are not available in the Open vSwitch kernel datapath
 
 A: The kernel module in upstream Linux 3.3 and later does not include
    tunnel virtual ports, that is, interfaces with type "gre",
-   "ipsec_gre", "gre64", "ipsec_gre64", "vxlan", or "capwap".  It is
+   "ipsec_gre", "gre64", "ipsec_gre64", "vxlan", or "lisp".  It is
    possible to create tunnels in Linux and attach them to Open vSwitch
    as system devices.  However, they cannot be dynamically created
    through the OVSDB protocol or set the tunnel ids as a flow action.
@@ -320,6 +320,55 @@ A: No.  ERSPAN is an undocumented proprietary protocol.  As an
    alternative, Open vSwitch supports mirroring to a GRE tunnel (see
    above).
 
+Q: Why are there so many different ways to dump flows?
+
+A: Open vSwitch uses different kinds of flows for different purposes:
+
+      - OpenFlow flows are the most important kind of flow.  OpenFlow
+        controllers use these flows to define a switch's policy.
+        OpenFlow flows support wildcards, priorities, and multiple
+        tables.
+
+        When in-band control is in use, Open vSwitch sets up a few
+        "hidden" flows, with priority higher than a controller or the
+        user can configure, that are not visible via OpenFlow.  (See
+        the "Controller" section of the FAQ for more information
+        about hidden flows.)
+
+      - The Open vSwitch software switch implementation uses a second
+        kind of flow internally.  These flows, called "exact-match"
+        or "datapath" or "kernel" flows, do not support wildcards or
+        priorities and comprise only a single table, which makes them
+        suitable for caching.   OpenFlow flows and exact-match flows
+        also support different actions and number ports differently.
+
+        Exact-match flows are an implementation detail that is
+        subject to change in future versions of Open vSwitch.  Even
+        with the current version of Open vSwitch, hardware switch
+        implementations do not necessarily use exact-match flows.
+
+  Each of the commands for dumping flows has a different purpose:
+
+      - "ovs-ofctl dump-flows <br>" dumps OpenFlow flows, excluding
+        hidden flows.  This is the most commonly useful form of flow
+        dump.  (Unlike the other commands, this should work with any
+        OpenFlow switch, not just Open vSwitch.)
+
+      - "ovs-appctl bridge/dump-flows <br>" dumps OpenFlow flows,
+        including hidden flows.  This is occasionally useful for
+        troubleshooting suspected issues with in-band control.
+
+      - "ovs-dpctl dump-flows [dp]" dumps the exact-match flow table
+        entries for a Linux kernel-based datapath.  In Open vSwitch
+        1.10 and later, ovs-vswitchd merges multiple switches into a
+        single datapath, so it will show all the flows on all your
+        kernel-based switches.  This command can occasionally be
+        useful for debugging.
+
+      - "ovs-appctl dpif/dump-flows <br>", new in Open vSwitch 1.10,
+        dumps exact-match flows for only the specified bridge,
+        regardless of the type.
+
 
 Configuration Problems
 ----------------------
@@ -447,6 +496,12 @@ A: Wireless base stations generally only allow packets with the source
    point, so the same problems will show up with the Linux bridge or
    any other way to do bridging.
 
+Q: I can't seem to add my PPP interface to an Open vSwitch bridge.
+
+A: PPP most commonly carries IP packets, but Open vSwitch works only
+   with Ethernet frames.  The correct way to interface PPP to an
+   Ethernet network is usually to use routing instead of switching.
+
 Q: Is there any documentation on the database tables and fields?
 
 A: Yes.  ovs-vswitchd.conf.db(5) is a comprehensive reference.
@@ -519,6 +574,11 @@ A: Suppose that you want to set up bridge br0 connected to physical
    that you want to keep, is:
 
        ovs-vsctl -- --all destroy QoS -- --all destroy Queue
+
+   If you do want to keep some QoS or Queue records, or the Open
+   vSwitch you are using is older than version 1.8 (which added the
+   --all option), then you will have to destroy QoS and Queue records
+   individually.
 
 Q: I configured Quality of Service (QoS) in my OpenFlow network by
    adding records to the QoS and Queue table, but the results aren't
@@ -743,8 +803,16 @@ A: The configuration for VLANs in the Open vSwitch database (e.g. via
    You can use "normal switching" as a component of your OpenFlow
    actions, e.g. by putting "normal" into the lists of actions on
    ovs-ofctl or by outputting to OFPP_NORMAL from an OpenFlow
-   controller.  This will only be suitable for some situations,
-   though.
+   controller.  In situations where this is not suitable, you can
+   implement VLAN handling yourself, e.g.:
+
+       - If a packet comes in on an access port, and the flow table
+         needs to send it out on a trunk port, then the flow can add
+         the appropriate VLAN tag with the "mod_vlan_vid" action.
+
+       - If a packet comes in on a trunk port, and the flow table
+         needs to send it out on an access port, then the flow can
+         strip the VLAN tag with the "strip_vlan" action.
 
 Q: I configured ports on a bridge as access ports with different VLAN
    tags, like this:
@@ -938,15 +1006,94 @@ A: Yes, Open vSwitch makes individual bond interfaces visible as
          controller is not configured, this happens implicitly to
          every packet.)
 
-       - The "autopath" Nicira extension action.  However, "autopath"
-         is deprecated and scheduled for removal in February 2013.
-
        - Mirrors configured for output to a bonded port.
 
    It would make a lot of sense for Open vSwitch to present a bond as
    a single OpenFlow port.  If you want to contribute an
    implementation of such a feature, please bring it up on the Open
    vSwitch development mailing list at dev@openvswitch.org.
+
+Q: I have a sophisticated network setup involving Open vSwitch, VMs or
+   multiple hosts, and other components.  The behavior isn't what I
+   expect.  Help!
+
+A: To debug network behavior problems, trace the path of a packet,
+   hop-by-hop, from its origin in one host to a remote host.  If
+   that's correct, then trace the path of the response packet back to
+   the origin.
+
+   Usually a simple ICMP echo request and reply ("ping") packet is
+   good enough.  Start by initiating an ongoing "ping" from the origin
+   host to a remote host.  If you are tracking down a connectivity
+   problem, the "ping" will not display any successful output, but
+   packets are still being sent.  (In this case the packets being sent
+   are likely ARP rather than ICMP.)
+
+   Tools available for tracing include the following:
+
+       - "tcpdump" and "wireshark" for observing hops across network
+         devices, such as Open vSwitch internal devices and physical
+         wires.
+
+       - "ovs-appctl dpif/dump-flows <br>" in Open vSwitch 1.10 and
+         later or "ovs-dpctl dump-flows <br>" in earlier versions.
+         These tools allow one to observe the actions being taken on
+         packets in ongoing flows.
+
+         See ovs-vswitchd(8) for "ovs-appctl dpif/dump-flows"
+         documentation, ovs-dpctl(8) for "ovs-dpctl dump-flows"
+         documentation, and "Why are there so many different ways to
+         dump flows?" above for some background.
+
+       - "ovs-appctl ofproto/trace" to observe the logic behind how
+         ovs-vswitchd treats packets.  See ovs-vswitchd(8) for
+         documentation.  You can out more details about a given flow
+         that "ovs-dpctl dump-flows" displays, by cutting and pasting
+         a flow from the output into an "ovs-appctl ofproto/trace"
+         command.
+
+       - SPAN, RSPAN, and ERSPAN features of physical switches, to
+         observe what goes on at these physical hops.
+
+   Starting at the origin of a given packet, observe the packet at
+   each hop in turn.  For example, in one plausible scenario, you
+   might:
+
+       1. "tcpdump" the "eth" interface through which an ARP egresses
+          a VM, from inside the VM.
+
+       2. "tcpdump" the "vif" or "tap" interface through which the ARP
+          ingresses the host machine.
+
+       3. Use "ovs-dpctl dump-flows" to spot the ARP flow and observe
+          the host interface through which the ARP egresses the
+          physical machine.  You may need to use "ovs-dpctl show" to
+          interpret the port numbers.  If the output seems surprising,
+          you can use "ovs-appctl ofproto/trace" to observe details of
+          how ovs-vswitchd determined the actions in the "ovs-dpctl
+          dump-flows" output.
+
+       4. "tcpdump" the "eth" interface through which the ARP egresses
+          the physical machine.
+
+       5. "tcpdump" the "eth" interface through which the ARP
+          ingresses the physical machine, at the remote host that
+          receives the ARP.
+
+       6. Use "ovs-dpctl dump-flows" to spot the ARP flow on the
+          remote host that receives the ARP and observe the VM "vif"
+          or "tap" interface to which the flow is directed.  Again,
+          "ovs-dpctl show" and "ovs-appctl ofproto/trace" might help.
+
+       7. "tcpdump" the "vif" or "tap" interface to which the ARP is
+          directed.
+
+       8. "tcpdump" the "eth" interface through which the ARP
+          ingresses a VM, from inside the VM.
+
+   It is likely that during one of these steps you will figure out the
+   problem.  If not, then follow the ARP reply back to the origin, in
+   reverse.
 
 Contact 
 -------

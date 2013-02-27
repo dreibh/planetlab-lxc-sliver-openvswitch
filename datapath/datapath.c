@@ -306,7 +306,7 @@ static int queue_gso_packets(struct net *net, int dp_ifindex,
 	struct sk_buff *segs, *nskb;
 	int err;
 
-	segs = skb_gso_segment(skb, NETIF_F_SG | NETIF_F_HW_CSUM);
+	segs = __skb_gso_segment(skb, NETIF_F_SG | NETIF_F_HW_CSUM, false);
 	if (IS_ERR(segs))
 		return PTR_ERR(segs);
 
@@ -374,8 +374,8 @@ static int queue_userspace_packet(struct net *net, int dp_ifindex,
 	len = sizeof(struct ovs_header);
 	len += nla_total_size(skb->len);
 	len += nla_total_size(FLOW_BUFSIZE);
-	if (upcall_info->cmd == OVS_PACKET_CMD_ACTION)
-		len += nla_total_size(8);
+	if (upcall_info->userdata)
+		len += NLA_ALIGN(upcall_info->userdata->nla_len);
 
 	user_skb = genlmsg_new(len, GFP_ATOMIC);
 	if (!user_skb) {
@@ -392,13 +392,15 @@ static int queue_userspace_packet(struct net *net, int dp_ifindex,
 	nla_nest_end(user_skb, nla);
 
 	if (upcall_info->userdata)
-		nla_put_u64(user_skb, OVS_PACKET_ATTR_USERDATA,
-			    nla_get_u64(upcall_info->userdata));
+		__nla_put(user_skb, OVS_PACKET_ATTR_USERDATA,
+			  nla_len(upcall_info->userdata),
+			  nla_data(upcall_info->userdata));
 
 	nla = __nla_reserve(user_skb, OVS_PACKET_ATTR_PACKET, skb->len);
 
 	skb_copy_and_csum_dev(skb, nla_data(nla));
 
+	genlmsg_end(user_skb, upcall);
 	err = genlmsg_unicast(net, user_skb, upcall_info->portid);
 
 out:
@@ -432,10 +434,10 @@ static struct nlattr *reserve_sfa_size(struct sw_flow_actions **sfa, int attr_le
 	int next_offset = offsetof(struct sw_flow_actions, actions) +
 					(*sfa)->actions_len;
 
-	if (req_size <= (ksize(*sfa) - next_offset))
+	if (req_size <= ((*sfa)->buf_size - next_offset))
 		goto out;
 
-	new_acts_size = ksize(*sfa) * 2;
+	new_acts_size = (*sfa)->buf_size * 2;
 
 	if (new_acts_size > MAX_ACTIONS_BUFSIZE) {
 		if ((MAX_ACTIONS_BUFSIZE - next_offset) < req_size)
@@ -449,7 +451,7 @@ static struct nlattr *reserve_sfa_size(struct sw_flow_actions **sfa, int attr_le
 
 	memcpy(acts->actions, (*sfa)->actions, (*sfa)->actions_len);
 	acts->actions_len = (*sfa)->actions_len;
-	kfree(*sfa);
+	ovs_flow_actions_free(*sfa);
 	*sfa = acts;
 
 out:
@@ -678,7 +680,7 @@ static int validate_userspace(const struct nlattr *attr)
 {
 	static const struct nla_policy userspace_policy[OVS_USERSPACE_ATTR_MAX + 1] =	{
 		[OVS_USERSPACE_ATTR_PID] = {.type = NLA_U32 },
-		[OVS_USERSPACE_ATTR_USERDATA] = {.type = NLA_U64 },
+		[OVS_USERSPACE_ATTR_USERDATA] = {.type = NLA_UNSPEC },
 	};
 	struct nlattr *a[OVS_USERSPACE_ATTR_MAX + 1];
 	int error;
@@ -1290,7 +1292,7 @@ static int ovs_flow_cmd_new_or_set(struct sk_buff *skb, struct genl_info *info)
 	return 0;
 
 err_kfree:
-	kfree(acts);
+	ovs_flow_actions_free(acts);
 error:
 	return error;
 }
@@ -1967,6 +1969,7 @@ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
 	if (IS_ERR(vport))
 		goto exit_unlock;
 
+	err = 0;
 	if (a[OVS_VPORT_ATTR_STATS])
 		ovs_vport_set_stats(vport, nla_data(a[OVS_VPORT_ATTR_STATS]));
 
@@ -2064,6 +2067,7 @@ static int ovs_vport_cmd_del(struct sk_buff *skb, struct genl_info *info)
 	if (IS_ERR(reply))
 		goto exit_unlock;
 
+	err = 0;
 	ovs_dp_detach_port(vport);
 
 	genl_notify(reply, genl_info_net(info), info->snd_portid,

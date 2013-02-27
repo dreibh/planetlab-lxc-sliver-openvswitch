@@ -151,7 +151,7 @@ static int dpif_netdev_open(const struct dpif_class *, const char *name,
                             bool create, struct dpif **);
 static int dp_netdev_output_userspace(struct dp_netdev *, const struct ofpbuf *,
                                     int queue_no, const struct flow *,
-                                    uint64_t arg);
+                                    const struct nlattr *userdata);
 static void dp_netdev_execute_actions(struct dp_netdev *,
                                       struct ofpbuf *, struct flow *,
                                       const struct nlattr *actions,
@@ -1051,7 +1051,7 @@ dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
         dp->n_hit++;
     } else {
         dp->n_missed++;
-        dp_netdev_output_userspace(dp, packet, DPIF_UC_MISS, &key, 0);
+        dp_netdev_output_userspace(dp, packet, DPIF_UC_MISS, &key, NULL);
     }
 }
 
@@ -1116,37 +1116,51 @@ dp_netdev_output_port(struct dp_netdev *dp, struct ofpbuf *packet,
 
 static int
 dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
-                         int queue_no, const struct flow *flow, uint64_t arg)
+                           int queue_no, const struct flow *flow,
+                           const struct nlattr *userdata)
 {
     struct dp_netdev_queue *q = &dp->queues[queue_no];
-    struct dp_netdev_upcall *u;
-    struct dpif_upcall *upcall;
-    struct ofpbuf *buf;
-    size_t key_len;
+    if (q->head - q->tail < MAX_QUEUE_LEN) {
+        struct dp_netdev_upcall *u = &q->upcalls[q->head++ & QUEUE_MASK];
+        struct dpif_upcall *upcall = &u->upcall;
+        struct ofpbuf *buf = &u->buf;
+        size_t buf_size;
 
-    if (q->head - q->tail >= MAX_QUEUE_LEN) {
+        upcall->type = queue_no;
+
+        /* Allocate buffer big enough for everything. */
+        buf_size = ODPUTIL_FLOW_KEY_BYTES + 2 + packet->size;
+        if (userdata) {
+            buf_size += NLA_ALIGN(userdata->nla_len);
+        }
+        ofpbuf_init(buf, buf_size);
+
+        /* Put ODP flow. */
+        odp_flow_key_from_flow(buf, flow, flow->in_port);
+        upcall->key = buf->data;
+        upcall->key_len = buf->size;
+
+        /* Put userdata. */
+        if (userdata) {
+            upcall->userdata = ofpbuf_put(buf, userdata,
+                                          NLA_ALIGN(userdata->nla_len));
+        }
+
+        /* Put packet.
+         *
+         * We adjust 'data' and 'size' in 'buf' so that only the packet itself
+         * is visible in 'upcall->packet'.  The ODP flow and (if present)
+         * userdata become part of the headroom. */
+        ofpbuf_put_zeros(buf, 2);
+        buf->data = ofpbuf_put(buf, packet->data, packet->size);
+        buf->size = packet->size;
+        upcall->packet = buf;
+
+        return 0;
+    } else {
         dp->n_lost++;
         return ENOBUFS;
     }
-
-    u = &q->upcalls[q->head++ & QUEUE_MASK];
-
-    buf = &u->buf;
-    ofpbuf_init(buf, ODPUTIL_FLOW_KEY_BYTES + 2 + packet->size);
-    odp_flow_key_from_flow(buf, flow, flow->in_port);
-    key_len = buf->size;
-    ofpbuf_pull(buf, key_len);
-    ofpbuf_reserve(buf, 2);
-    ofpbuf_put(buf, packet->data, packet->size);
-
-    upcall = &u->upcall;
-    upcall->type = queue_no;
-    upcall->packet = buf;
-    upcall->key = buf->base;
-    upcall->key_len = key_len;
-    upcall->userdata = arg;
-
-    return 0;
 }
 
 static void
@@ -1188,11 +1202,9 @@ dp_netdev_action_userspace(struct dp_netdev *dp,
                           struct ofpbuf *packet, struct flow *key,
                           const struct nlattr *a)
 {
-    const struct nlattr *userdata_attr;
-    uint64_t userdata;
+    const struct nlattr *userdata;
 
-    userdata_attr = nl_attr_find_nested(a, OVS_USERSPACE_ATTR_USERDATA);
-    userdata = userdata_attr ? nl_attr_get_u64(userdata_attr) : 0;
+    userdata = nl_attr_find_nested(a, OVS_USERSPACE_ATTR_USERDATA);
     dp_netdev_output_userspace(dp, packet, DPIF_UC_ACTION, key, userdata);
 }
 
@@ -1241,6 +1253,10 @@ execute_set_action(struct ofpbuf *packet, const struct nlattr *a)
         packet_set_udp_port(packet, udp_key->udp_src, udp_key->udp_dst);
         break;
 
+     case OVS_KEY_ATTR_MPLS:
+         set_mpls_lse(packet, nl_attr_get_be32(a));
+         break;
+
      case OVS_KEY_ATTR_UNSPEC:
      case OVS_KEY_ATTR_ENCAP:
      case OVS_KEY_ATTR_ETHERTYPE:
@@ -1285,6 +1301,16 @@ dp_netdev_execute_actions(struct dp_netdev *dp,
 
         case OVS_ACTION_ATTR_POP_VLAN:
             eth_pop_vlan(packet);
+            break;
+
+        case OVS_ACTION_ATTR_PUSH_MPLS: {
+            const struct ovs_action_push_mpls *mpls = nl_attr_get(a);
+            push_mpls(packet, mpls->mpls_ethertype, mpls->mpls_lse);
+            break;
+         }
+
+        case OVS_ACTION_ATTR_POP_MPLS:
+            pop_mpls(packet, nl_attr_get_be16(a));
             break;
 
         case OVS_ACTION_ATTR_SET:

@@ -41,8 +41,8 @@
  */
 #define TNL_T_PROTO_GRE		0
 #define TNL_T_PROTO_GRE64	1
-#define TNL_T_PROTO_CAPWAP	2
 #define TNL_T_PROTO_VXLAN	3
+#define TNL_T_PROTO_LISP	4
 
 /* These flags are only needed when calling tnl_find_port(). */
 #define TNL_T_KEY_EXACT		(1 << 10)
@@ -56,7 +56,7 @@
 
 /* All public tunnel flags. */
 #define TNL_F_PUBLIC (TNL_F_CSUM | TNL_F_TOS_INHERIT | TNL_F_TTL_INHERIT | \
-		      TNL_F_DF_DEFAULT | TNL_F_IPSEC)
+		      TNL_F_DF_DEFAULT)
 
 /**
  * struct port_lookup_key - Tunnel port key, used as hash table key.
@@ -147,13 +147,6 @@ struct tnl_vport {
 	const struct tnl_ops *tnl_ops;
 
 	struct tnl_mutable_config __rcu *mutable;
-
-	/*
-	 * ID of last fragment sent (for tunnel protocols with direct support
-	 * fragmentation).  If the protocol relies on IP fragmentation then
-	 * this is not needed.
-	 */
-	atomic_t frag_id;
 };
 
 struct vport *ovs_tnl_create(const struct vport_parms *, const struct vport_ops *,
@@ -166,6 +159,7 @@ int ovs_tnl_get_options(const struct vport *, struct sk_buff *);
 const char *ovs_tnl_get_name(const struct vport *vport);
 int ovs_tnl_send(struct vport *vport, struct sk_buff *skb);
 void ovs_tnl_rcv(struct vport *vport, struct sk_buff *skb);
+u16 ovs_tnl_get_src_port(struct sk_buff *skb);
 
 struct vport *ovs_tnl_find_port(struct net *net, __be32 saddr, __be32 daddr,
 				__be64 key, int tunnel_type,
