@@ -1,6 +1,6 @@
 # -*- autoconf -*-
 
-# Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
+# Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -215,6 +215,10 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
 
   OVS_GREP_IFELSE([$KSRC/include/linux/err.h], [ERR_CAST])
 
+  OVS_GREP_IFELSE([$KSRC/include/linux/etherdevice.h], [eth_hw_addr_random])
+
+  OVS_GREP_IFELSE([$KSRC/include/linux/if_vlan.h], [vlan_set_encap_proto])
+
   OVS_GREP_IFELSE([$KSRC/include/linux/in.h], [ipv4_is_multicast])
 
   OVS_GREP_IFELSE([$KSRC/include/linux/netdevice.h], [dev_disable_lro])
@@ -249,6 +253,7 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
                   [OVS_DEFINE([HAVE_SKB_WARN_LRO])])
   OVS_GREP_IFELSE([$KSRC/include/linux/skbuff.h], [consume_skb])
   OVS_GREP_IFELSE([$KSRC/include/linux/skbuff.h], [skb_frag_page])
+  OVS_GREP_IFELSE([$KSRC/include/linux/skbuff.h], [skb_reset_mac_len])
 
   OVS_GREP_IFELSE([$KSRC/include/linux/string.h], [kmemdup], [],
                   [OVS_GREP_IFELSE([$KSRC/include/linux/slab.h], [kmemdup])])
@@ -290,6 +295,8 @@ AC_DEFUN([OVS_CHECK_IF_PACKET],
    fi])
 
 dnl Checks for net/if_dl.h.
+dnl
+dnl (We use this as a proxy for checking whether we're building on FreeBSD.)
 AC_DEFUN([OVS_CHECK_IF_DL],
   [AC_CHECK_HEADER([net/if_dl.h],
                    [HAVE_IF_DL=yes],
@@ -298,6 +305,9 @@ AC_DEFUN([OVS_CHECK_IF_DL],
    if test "$HAVE_IF_DL" = yes; then
       AC_DEFINE([HAVE_IF_DL], [1],
                 [Define to 1 if net/if_dl.h is available.])
+
+      # On FreeBSD we use libpcap to access network devices.
+      AC_SEARCH_LIBS([pcap_open_live], [pcap])
    fi])
 
 dnl Checks for buggy strtok_r.

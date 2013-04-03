@@ -259,7 +259,7 @@ static bool is_mpls(struct ofpbuf *packet)
 }
 
 /* Set time to live (TTL) of an MPLS label stack entry (LSE). */
-static void
+void
 set_mpls_lse_ttl(ovs_be32 *lse, uint8_t ttl)
 {
     *lse &= ~htonl(MPLS_TTL_MASK);
@@ -887,8 +887,7 @@ packet_set_udp_port(struct ofpbuf *packet, ovs_be16 src, ovs_be16 dst)
 uint8_t
 packet_get_tcp_flags(const struct ofpbuf *packet, const struct flow *flow)
 {
-    ovs_be16 dl_type = flow_innermost_dl_type(flow);
-    if (dl_type_is_ip_any(dl_type) &&
+    if (dl_type_is_ip_any(flow->dl_type) &&
         flow->nw_proto == IPPROTO_TCP && packet->l7) {
         const struct tcp_header *tcp = packet->l4;
         return TCP_FLAGS(tcp->tcp_ctl);

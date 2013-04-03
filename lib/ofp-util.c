@@ -84,7 +84,7 @@ ofputil_netmask_to_wcbits(ovs_be32 netmask)
 void
 ofputil_wildcard_from_ofpfw10(uint32_t ofpfw, struct flow_wildcards *wc)
 {
-    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 19);
+    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 20);
 
     /* Initialize most of wc. */
     flow_wildcards_init_catchall(wc);
@@ -1058,7 +1058,7 @@ ofputil_usable_protocols(const struct match *match)
 {
     const struct flow_wildcards *wc = &match->wc;
 
-    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 19);
+    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 20);
 
     /* tunnel params other than tun_id can't be sent in a flow_mod */
     if (!tun_parms_fully_wildcarded(wc)) {
@@ -2345,7 +2345,7 @@ ofputil_decode_flow_removed(struct ofputil_flow_removed *fr,
         fr->priority = ntohs(nfr->priority);
         fr->cookie = nfr->cookie;
         fr->reason = nfr->reason;
-        fr->table_id = 255;
+        fr->table_id = nfr->table_id ? nfr->table_id - 1 : 255;
         fr->duration_sec = ntohl(nfr->duration_sec);
         fr->duration_nsec = ntohl(nfr->duration_nsec);
         fr->idle_timeout = ntohs(nfr->idle_timeout);
@@ -2424,6 +2424,7 @@ ofputil_encode_flow_removed(const struct ofputil_flow_removed *fr,
         nfr->cookie = fr->cookie;
         nfr->priority = htons(fr->priority);
         nfr->reason = fr->reason;
+        nfr->table_id = fr->table_id + 1;
         nfr->duration_sec = htonl(fr->duration_sec);
         nfr->duration_nsec = htonl(fr->duration_nsec);
         nfr->idle_timeout = htons(fr->idle_timeout);

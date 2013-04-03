@@ -329,6 +329,10 @@ set_tunnel_config(struct netdev_dev *dev_, const struct smap *args)
             struct in_addr in_addr;
             if (lookup_ip(node->value, &in_addr)) {
                 VLOG_WARN("%s: bad %s 'remote_ip'", name, type);
+            } else if (ip_is_multicast(in_addr.s_addr)) {
+                VLOG_WARN("%s: multicast remote_ip="IP_FMT" not allowed",
+                          name, IP_ARGS(in_addr.s_addr));
+                return EINVAL;
             } else {
                 tnl_cfg.ip_dst = in_addr.s_addr;
             }
@@ -446,14 +450,6 @@ set_tunnel_config(struct netdev_dev *dev_, const struct smap *args)
                  name, type);
         return EINVAL;
     }
-
-    if (tnl_cfg.ip_src) {
-        if (ip_is_multicast(tnl_cfg.ip_dst)) {
-            VLOG_WARN("%s: remote_ip is multicast, ignoring local_ip", name);
-            tnl_cfg.ip_src = 0;
-        }
-    }
-
     if (!tnl_cfg.ttl) {
         tnl_cfg.ttl = DEFAULT_TTL;
     }
@@ -521,7 +517,10 @@ get_tunnel_config(struct netdev_dev *dev, struct smap *args)
 
     if (tnl_cfg->dst_port) {
         uint16_t dst_port = ntohs(tnl_cfg->dst_port);
-        if (dst_port != VXLAN_DST_PORT) {
+        const char *type = netdev_dev_get_type(dev);
+
+        if ((!strcmp("vxlan", type) && dst_port != VXLAN_DST_PORT) ||
+            (!strcmp("lisp", type) && dst_port != LISP_DST_PORT)) {
             smap_add_format(args, "dst_port", "%d", dst_port);
         }
     }

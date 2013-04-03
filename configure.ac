@@ -1,4 +1,4 @@
-# Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
+# Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -44,7 +44,6 @@ AC_SYS_LARGEFILE
 AC_SEARCH_LIBS([pow], [m])
 AC_SEARCH_LIBS([clock_gettime], [rt])
 AC_SEARCH_LIBS([timer_create], [rt])
-AC_SEARCH_LIBS([pcap_open_live], [pcap])
 
 OVS_CHECK_ESX
 OVS_CHECK_COVERAGE
@@ -62,7 +61,7 @@ OVS_CHECK_STRTOK_R
 AC_CHECK_MEMBERS([struct stat.st_mtim.tv_nsec, struct stat.st_mtimensec],
   [], [], [[#include <sys/stat.h>]])
 AC_CHECK_FUNCS([mlockall strnlen strsignal getloadavg statvfs setmntent])
-AC_CHECK_HEADERS([mntent.h sys/statvfs.h linux/types.h execinfo.h])
+AC_CHECK_HEADERS([mntent.h sys/statvfs.h linux/types.h linux/if_ether.h execinfo.h])
 
 OVS_CHECK_PKIDIR
 OVS_CHECK_RUNDIR

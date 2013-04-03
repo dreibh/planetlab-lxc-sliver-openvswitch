@@ -20,6 +20,20 @@ AT_CHECK([tail -1 stdout], [0],
 OVS_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([ofproto-dpif - goto table])
+OVS_VSWITCHD_START
+ADD_OF_PORTS([br0], [1], [10], [11])
+echo "table=0 in_port=1 actions=output(10),goto_table(1)" > flows.txt
+for i in `seq 1 252`; do echo "table=$i actions=goto_table($(($i+1)))"; done >> flows.txt
+echo "table=253 actions=output(11)" >> flows.txt
+AT_CHECK([ovs-ofctl -O OpenFlow12 add-flows br0 flows.txt])
+AT_CHECK([ovs-appctl ofproto/trace br0 'in_port=1,dl_src=50:54:00:00:00:05,dl_dst=50:54:00:00:00:07,dl_type=0x0800,nw_src=192.168.0.1,nw_dst=192.168.0.2,nw_proto=1,nw_tos=0,nw_ttl=128,icmp_type=8,icmp_code=0'], [0], [stdout])
+AT_CHECK([tail -1 stdout], [0],
+  [Datapath actions: 10,11
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
 AT_SETUP([ofproto-dpif - registers])
 OVS_VSWITCHD_START
 ADD_OF_PORTS([br0], [20], [21], [22], [33], [90])
@@ -45,11 +59,31 @@ in_port=12 actions=load:0x10->NXM_NX_REG0[[]],load:0x11->NXM_NX_REG1[[]],load:0x
 in_port=13 actions=load:0x13->NXM_NX_REG3[[]],load:0x14->NXM_NX_REG4[[]],load:0x15->NXM_NX_REG5[[]]
 in_port=14 actions=load:0x16->NXM_NX_REG6[[]],load:0x17->NXM_NX_REG7[[]]
 in_port=15,reg0=0x10,reg1=0x11,reg2=0x12,reg3=0x13,reg4=0x14,reg5=0x15,reg6=0x16,reg7=0x17 actions=output:33
+
 ])
 AT_CHECK([ovs-ofctl add-flows br0 flows.txt])
 AT_CHECK([ovs-appctl ofproto/trace br0 'in_port(90),eth(src=50:54:00:00:00:05,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=1,tos=0,ttl=128,frag=no),icmp(type=8,code=0)'], [0], [stdout])
 AT_CHECK([tail -1 stdout], [0],
   [Datapath actions: 20,21,22,33
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+AT_SETUP([ofproto-dpif - push-pop])
+OVS_VSWITCHD_START
+ADD_OF_PORTS([br0], [20], [21], [22], [33], [90])
+AT_DATA([flows.txt], [dnl
+in_port=90           actions=load:20->NXM_NX_REG0[[0..7]],load:21->NXM_NX_REG1[[0..7]],load:22->NXM_NX_REG2[[0..7]], load:33->NXM_NX_REG3[[0..7]], push:NXM_NX_REG0[[]], push:NXM_NX_REG1[[0..7]],push:NXM_NX_REG2[[0..15]], push:NXM_NX_REG3[[]], resubmit:2, resubmit:3, resubmit:4, resubmit:5
+in_port=2            actions=pop:NXM_NX_REG0[[0..7]],output:NXM_NX_REG0[[]]
+in_port=3            actions=pop:NXM_NX_REG1[[0..7]],output:NXM_NX_REG1[[]]
+in_port=4            actions=pop:NXM_NX_REG2[[0..15]],output:NXM_NX_REG2[[]]
+in_port=5            actions=pop:NXM_NX_REG3[[]],output:NXM_NX_REG3[[]]
+
+])
+AT_CHECK([ovs-ofctl add-flows br0 flows.txt])
+AT_CHECK([ovs-appctl ofproto/trace br0 'in_port(90),eth(src=50:54:00:00:00:05,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=1,tos=0,ttl=128,frag=no),icmp(type=8,code=0)'], [0], [stdout])
+AT_CHECK([tail -1 stdout], [0],
+  [Datapath actions: 33,22,21,20
 ])
 OVS_VSWITCHD_STOP
 AT_CLEANUP
@@ -233,6 +267,10 @@ cookie=0x9 table=7 in_port=86 actions=mod_tp_dst:86,controller,controller
 cookie=0xa dl_src=40:44:44:44:44:42 actions=push_mpls:0x8847,load:10->OXM_OF_MPLS_LABEL[[]],load:3->OXM_OF_MPLS_TC[[]],controller
 cookie=0xa dl_src=40:44:44:44:44:43 actions=push_mpls:0x8847,load:10->OXM_OF_MPLS_LABEL[[]],load:3->OXM_OF_MPLS_TC[[]],controller
 cookie=0xa dl_src=40:44:44:44:44:44 actions=push_mpls:0x8847,load:10->OXM_OF_MPLS_LABEL[[]],load:3->OXM_OF_MPLS_TC[[]],controller
+cookie=0xa dl_src=40:44:44:44:44:45 actions=push_mpls:0x8847,load:10->OXM_OF_MPLS_LABEL[[]],load:3->OXM_OF_MPLS_TC[[]],dec_mpls_ttl,controller
+cookie=0xa dl_src=40:44:44:44:44:46 actions=push_mpls:0x8847,load:10->OXM_OF_MPLS_LABEL[[]],load:3->OXM_OF_MPLS_TC[[]],set_mpls_ttl(10),controller
+cookie=0xa dl_src=40:44:44:44:44:47 actions=push_mpls:0x8847,load:10->OXM_OF_MPLS_LABEL[[]],load:3->OXM_OF_MPLS_TC[[]],dec_mpls_ttl,set_mpls_ttl(10),controller
+cookie=0xa dl_src=40:44:44:44:44:48 actions=push_mpls:0x8847,load:10->OXM_OF_MPLS_LABEL[[]],load:3->OXM_OF_MPLS_TC[[]],set_mpls_ttl(10),dec_mpls_ttl,controller
 cookie=0xb dl_src=50:55:55:55:55:55 dl_type=0x8847 actions=load:1000->OXM_OF_MPLS_LABEL[[]],controller
 cookie=0xd dl_src=60:66:66:66:66:66 actions=pop_mpls:0x0800,controller
 cookie=0xc dl_src=70:77:77:77:77:77 actions=push_mpls:0x8848,load:1000->OXM_OF_MPLS_LABEL[[]],load:7->OXM_OF_MPLS_TC[[]],controller
@@ -355,6 +393,82 @@ NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len
 mpls(label:10,tc:3,ttl:64,bos:1),metadata=0,in_port=0,dl_vlan=99,dl_vlan_pcp=7,dl_src=40:44:44:44:44:44,dl_dst=50:54:00:00:00:07
 ])
 
+dnl Modified MPLS controller action.
+AT_CHECK([ovs-ofctl monitor br0 65534 -P nxm --detach --pidfile 2> ofctl_monitor.log])
+
+for i in 1 2 3; do
+    ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=40:44:44:44:44:45,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=6,tos=0,ttl=64,frag=no)'
+done
+
+OVS_WAIT_UNTIL([ovs-appctl -t ovs-ofctl exit])
+AT_CHECK([cat ofctl_monitor.log], [0], [dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len=64 (unbuffered)
+mpls(label:10,tc:3,ttl:63,bos:1),metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:45,dl_dst=50:54:00:00:00:07
+dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len=64 (unbuffered)
+mpls(label:10,tc:3,ttl:63,bos:1),metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:45,dl_dst=50:54:00:00:00:07
+dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len=64 (unbuffered)
+mpls(label:10,tc:3,ttl:63,bos:1),metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:45,dl_dst=50:54:00:00:00:07
+])
+
+dnl Modified MPLS controller action.
+AT_CHECK([ovs-ofctl monitor br0 65534 -P nxm --detach --pidfile 2> ofctl_monitor.log])
+
+for i in 1 2 3; do
+    ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=40:44:44:44:44:46,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=6,tos=0,ttl=64,frag=no)'
+done
+
+OVS_WAIT_UNTIL([ovs-appctl -t ovs-ofctl exit])
+AT_CHECK([cat ofctl_monitor.log], [0], [dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len=64 (unbuffered)
+mpls(label:10,tc:3,ttl:10,bos:1),metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:46,dl_dst=50:54:00:00:00:07
+dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len=64 (unbuffered)
+mpls(label:10,tc:3,ttl:10,bos:1),metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:46,dl_dst=50:54:00:00:00:07
+dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len=64 (unbuffered)
+mpls(label:10,tc:3,ttl:10,bos:1),metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:46,dl_dst=50:54:00:00:00:07
+])
+
+dnl Modified MPLS controller action.
+AT_CHECK([ovs-ofctl monitor br0 65534 -P nxm --detach --pidfile 2> ofctl_monitor.log])
+
+for i in 1 2 3; do
+    ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=40:44:44:44:44:47,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=6,tos=0,ttl=64,frag=no)'
+done
+
+OVS_WAIT_UNTIL([ovs-appctl -t ovs-ofctl exit])
+AT_CHECK([cat ofctl_monitor.log], [0], [dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len=64 (unbuffered)
+mpls(label:10,tc:3,ttl:10,bos:1),metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:47,dl_dst=50:54:00:00:00:07
+dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len=64 (unbuffered)
+mpls(label:10,tc:3,ttl:10,bos:1),metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:47,dl_dst=50:54:00:00:00:07
+dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len=64 (unbuffered)
+mpls(label:10,tc:3,ttl:10,bos:1),metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:47,dl_dst=50:54:00:00:00:07
+])
+
+dnl Modified MPLS controller action.
+AT_CHECK([ovs-ofctl monitor br0 65534 -P nxm --detach --pidfile 2> ofctl_monitor.log])
+
+for i in 1 2 3; do
+    ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=40:44:44:44:44:48,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=6,tos=0,ttl=64,frag=no)'
+done
+
+OVS_WAIT_UNTIL([ovs-appctl -t ovs-ofctl exit])
+AT_CHECK([cat ofctl_monitor.log], [0], [dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len=64 (unbuffered)
+mpls(label:10,tc:3,ttl:9,bos:1),metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:48,dl_dst=50:54:00:00:00:07
+dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len=64 (unbuffered)
+mpls(label:10,tc:3,ttl:9,bos:1),metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:48,dl_dst=50:54:00:00:00:07
+dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len=64 (unbuffered)
+mpls(label:10,tc:3,ttl:9,bos:1),metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:48,dl_dst=50:54:00:00:00:07
+])
+
 dnl Modified MPLS actions.
 AT_CHECK([ovs-ofctl monitor br0 65534 -P nxm --detach --pidfile 2> ofctl_monitor.log])
 
@@ -395,22 +509,29 @@ mplsm(label:1000,tc:7,ttl:64,bos:1),metadata=0,in_port=0,vlan_tci=0x0000,dl_src=
 
 
 dnl Modified MPLS pop action.
+dnl The input is a frame with two MPLS headers which tcpdump -vve shows as:
+dnl 60:66:66:66:66:66 > 50:54:00:00:00:07, ethertype MPLS multicast (0x8847), length 66: MPLS (label 20, exp 0, ttl 32)
+dnl             (tos 0x0, ttl 64, id 0, offset 0, flags [none], proto TCP (6), length 44)
+
 AT_CHECK([ovs-ofctl monitor br0 65534 -P nxm --detach --pidfile 2> ofctl_monitor.log])
 
 for i in 1 2 3; do
-    ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=60:66:66:66:66:66,dst=50:54:00:00:00:07),eth_type(0x8847),mpls(label=10,tc=3,ttl=100,bos=1),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=6,tos=0,ttl=64,frag=no)'
+    ovs-appctl netdev-dummy/receive p1 '50 54 00 00 00 07 60 66 66 66 66 66 88 47 00 01 41 20 45 00 00 2c 00 00 00 00 40 06 3b 78 c0 a8 00 01 c0 a8 00 02 00 50 00 00 00 00 00 2a 00 00 00 2a 50 00 27 10 77 44 00 00 48 4f 47 45'
 done
+#for i in 2 3; do
+#    ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=60:66:66:66:66:66,dst=50:54:00:00:00:07),eth_type(0x8847),mpls(label=10,tc=3,ttl=100,bos=1)'
+#done
 
 OVS_WAIT_UNTIL([ovs-appctl -t ovs-ofctl exit])
 AT_CHECK([cat ofctl_monitor.log], [0], [dnl
-NXT_PACKET_IN (xid=0x0): cookie=0xd total_len=56 in_port=1 (via action) data_len=56 (unbuffered)
-tcp,metadata=0,in_port=0,vlan_tci=0x0000,dl_src=60:66:66:66:66:66,dl_dst=50:54:00:00:00:07,nw_src=192.168.0.1,nw_dst=192.168.0.2,nw_tos=0,nw_ecn=0,nw_ttl=64 tcp_csum:0
+NXT_PACKET_IN (xid=0x0): cookie=0xd total_len=58 in_port=1 (via action) data_len=58 (unbuffered)
+tcp,metadata=0,in_port=0,vlan_tci=0x0000,dl_src=60:66:66:66:66:66,dl_dst=50:54:00:00:00:07,nw_src=192.168.0.1,nw_dst=192.168.0.2,nw_tos=0,nw_ecn=0,nw_ttl=64,tp_src=80,tp_dst=0 tcp_csum:7744
 dnl
-NXT_PACKET_IN (xid=0x0): cookie=0xd total_len=56 in_port=1 (via action) data_len=56 (unbuffered)
-tcp,metadata=0,in_port=0,vlan_tci=0x0000,dl_src=60:66:66:66:66:66,dl_dst=50:54:00:00:00:07,nw_src=192.168.0.1,nw_dst=192.168.0.2,nw_tos=0,nw_ecn=0,nw_ttl=64 tcp_csum:0
+NXT_PACKET_IN (xid=0x0): cookie=0xd total_len=58 in_port=1 (via action) data_len=58 (unbuffered)
+tcp,metadata=0,in_port=0,vlan_tci=0x0000,dl_src=60:66:66:66:66:66,dl_dst=50:54:00:00:00:07,nw_src=192.168.0.1,nw_dst=192.168.0.2,nw_tos=0,nw_ecn=0,nw_ttl=64,tp_src=80,tp_dst=0 tcp_csum:7744
 dnl
-NXT_PACKET_IN (xid=0x0): cookie=0xd total_len=56 in_port=1 (via action) data_len=56 (unbuffered)
-tcp,metadata=0,in_port=0,vlan_tci=0x0000,dl_src=60:66:66:66:66:66,dl_dst=50:54:00:00:00:07,nw_src=192.168.0.1,nw_dst=192.168.0.2,nw_tos=0,nw_ecn=0,nw_ttl=64 tcp_csum:0
+NXT_PACKET_IN (xid=0x0): cookie=0xd total_len=58 in_port=1 (via action) data_len=58 (unbuffered)
+tcp,metadata=0,in_port=0,vlan_tci=0x0000,dl_src=60:66:66:66:66:66,dl_dst=50:54:00:00:00:07,nw_src=192.168.0.1,nw_dst=192.168.0.2,nw_tos=0,nw_ecn=0,nw_ttl=64,tp_src=80,tp_dst=0 tcp_csum:7744
 ])
 
 dnl Checksum TCP.
@@ -487,6 +608,7 @@ NXT_PACKET_IN (xid=0x0): table_id=7 cookie=0x9 total_len=64 in_port=1 tun_id=0x6
 udp,metadata=0,in_port=0,dl_vlan=80,dl_vlan_pcp=0,dl_src=80:81:81:81:81:81,dl_dst=82:82:82:82:82:82,nw_src=83.83.83.83,nw_dst=84.84.84.84,nw_tos=0,nw_ecn=0,nw_ttl=0,tp_src=85,tp_dst=86 udp_csum:43a1
 ])
 
+AT_CHECK([ovs-appctl time/warp 5000], [0], [ignore])
 AT_CHECK([ovs-ofctl dump-flows br0 | ofctl_strip | sort], [0], [dnl
  cookie=0x1, n_packets=2, n_bytes=120, dl_src=20:22:22:22:22:22 actions=CONTROLLER:65535,resubmit(80,1)
  cookie=0x2, n_packets=3, n_bytes=180, dl_src=30:33:33:33:33:33 actions=mod_vlan_vid:15,CONTROLLER:65535
@@ -500,9 +622,13 @@ AT_CHECK([ovs-ofctl dump-flows br0 | ofctl_strip | sort], [0], [dnl
  cookie=0xa, n_packets=3, n_bytes=180, dl_src=40:44:44:44:44:42 actions=push_mpls:0x8847,load:0xa->OXM_OF_MPLS_LABEL[[]],load:0x3->OXM_OF_MPLS_TC[[]],CONTROLLER:65535
  cookie=0xa, n_packets=3, n_bytes=180, dl_src=40:44:44:44:44:43 actions=push_mpls:0x8847,load:0xa->OXM_OF_MPLS_LABEL[[]],load:0x3->OXM_OF_MPLS_TC[[]],CONTROLLER:65535
  cookie=0xa, n_packets=3, n_bytes=180, dl_src=40:44:44:44:44:44 actions=push_mpls:0x8847,load:0xa->OXM_OF_MPLS_LABEL[[]],load:0x3->OXM_OF_MPLS_TC[[]],CONTROLLER:65535
+ cookie=0xa, n_packets=3, n_bytes=180, dl_src=40:44:44:44:44:45 actions=push_mpls:0x8847,load:0xa->OXM_OF_MPLS_LABEL[[]],load:0x3->OXM_OF_MPLS_TC[[]],dec_mpls_ttl,CONTROLLER:65535
+ cookie=0xa, n_packets=3, n_bytes=180, dl_src=40:44:44:44:44:46 actions=push_mpls:0x8847,load:0xa->OXM_OF_MPLS_LABEL[[]],load:0x3->OXM_OF_MPLS_TC[[]],set_mpls_ttl(10),CONTROLLER:65535
+ cookie=0xa, n_packets=3, n_bytes=180, dl_src=40:44:44:44:44:47 actions=push_mpls:0x8847,load:0xa->OXM_OF_MPLS_LABEL[[]],load:0x3->OXM_OF_MPLS_TC[[]],dec_mpls_ttl,set_mpls_ttl(10),CONTROLLER:65535
+ cookie=0xa, n_packets=3, n_bytes=180, dl_src=40:44:44:44:44:48 actions=push_mpls:0x8847,load:0xa->OXM_OF_MPLS_LABEL[[]],load:0x3->OXM_OF_MPLS_TC[[]],set_mpls_ttl(10),dec_mpls_ttl,CONTROLLER:65535
  cookie=0xb, n_packets=3, n_bytes=180, dl_src=50:55:55:55:55:55,dl_type=0x8847 actions=load:0x3e8->OXM_OF_MPLS_LABEL[[]],CONTROLLER:65535
  cookie=0xc, n_packets=3, n_bytes=180, dl_src=70:77:77:77:77:77 actions=push_mpls:0x8848,load:0x3e8->OXM_OF_MPLS_LABEL[[]],load:0x7->OXM_OF_MPLS_TC[[]],CONTROLLER:65535
- cookie=0xd, n_packets=3, n_bytes=180, dl_src=60:66:66:66:66:66 actions=pop_mpls:0x0800,CONTROLLER:65535
+ cookie=0xd, n_packets=3, n_bytes=186, dl_src=60:66:66:66:66:66 actions=pop_mpls:0x0800,CONTROLLER:65535
  n_packets=3, n_bytes=180, dl_src=10:11:11:11:11:11 actions=CONTROLLER:65535
 NXST_FLOW reply:
 ])
@@ -1080,6 +1206,297 @@ AT_CHECK_UNQUOTED([ovs-appctl fdb/show br0 | sed 's/[[0-9]]\{1,\}$/?/' | sort],
 OVS_VSWITCHD_STOP
 AT_CLEANUP
 
+dnl Test that sFlow samples packets correctly.
+AT_SETUP([ofproto-dpif - sFlow packet sampling])
+AT_CHECK([perl $srcdir/choose-port.pl], [0], [stdout])
+SFLOW_PORT=`cat stdout`
+OVS_VSWITCHD_START([set Bridge br0 fail-mode=standalone])
+
+ovs-appctl time/stop
+
+ADD_OF_PORTS([br0], 1, 2)
+ovs-vsctl \
+   set Interface br0 options:ifindex=1002 -- \
+   set Interface p1 options:ifindex=1004 -- \
+   set Interface p2 options:ifindex=1003 -- \
+   set Bridge br0 sflow=@sf -- \
+   --id=@sf create sflow targets=\"127.0.0.1:$SFLOW_PORT\" \
+     header=128 sampling=1 polling=1
+ON_EXIT([kill `cat test-sflow.pid`])
+AT_CHECK([test-sflow --detach --no-chdir --pidfile $SFLOW_PORT:127.0.0.1 > sflow.log])
+AT_CAPTURE_FILE([sflow.log])
+
+dnl open with ARP packets to seed the bridge-learning.  The output
+dnl ifIndex numbers should be reported predictably after that.
+dnl Since we set sampling=1 we should see all of these packets
+dnl reported. Sorting the output by data-source and seqNo makes
+dnl it deterministic. Ensuring that we send at least two packets
+dnl into each port means we get to check the seq nos are
+dnl incrementing correctly.
+
+ovs-appctl netdev-dummy/receive p1 'in_port(2),eth(src=50:54:00:00:00:05,dst=FF:FF:FF:FF:FF:FF),eth_type(0x0806),arp(sip=192.168.0.2,tip=192.168.0.1,op=1,sha=50:54:00:00:00:05,tha=00:00:00:00:00:00)'
+ovs-appctl netdev-dummy/receive p2 'in_port(1),eth(src=50:54:00:00:00:07,dst=FF:FF:FF:FF:FF:FF),eth_type(0x0806),arp(sip=192.168.0.1,tip=192.168.0.2,op=1,sha=50:54:00:00:00:07,tha=00:00:00:00:00:00)'
+ovs-appctl netdev-dummy/receive p1 'in_port(2),eth(src=50:54:00:00:00:05,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0)'
+ovs-appctl netdev-dummy/receive p2 'in_port(1),eth(src=50:54:00:00:00:07,dst=50:54:00:00:00:05),eth_type(0x0800),ipv4(src=192.168.0.2,dst=192.168.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=0,code=0)'
+ovs-appctl netdev-dummy/receive p2 'in_port(1),eth(src=50:54:00:00:00:07,dst=50:54:00:00:00:05),eth_type(0x86dd),ipv6(src=fe80::1,dst=fe80::2,label=0,proto=10,tclass=0x70,hlimit=128,frag=no)'
+
+dnl sleep long enough to get more than one counter sample
+dnl from each datasource so we can check sequence numbers
+for i in `seq 1 30`; do
+    ovs-appctl time/warp 100
+done
+OVS_VSWITCHD_STOP
+ovs-appctl -t test-sflow exit
+
+AT_CHECK([[sort sflow.log | $EGREP 'HEADER|ERROR' | sed 's/ /\
+	/g']], [0], [dnl
+HEADER
+	dgramSeqNo=1
+	ds=127.0.0.1>0:1003
+	fsSeqNo=1
+	in_vlan=0
+	in_priority=0
+	out_vlan=0
+	out_priority=0
+	meanSkip=1
+	samplePool=1
+	dropEvents=0
+	in_ifindex=1003
+	in_format=0
+	out_ifindex=2
+	out_format=2
+	hdr_prot=1
+	pkt_len=64
+	stripped=4
+	hdr_len=60
+	hdr=FF-FF-FF-FF-FF-FF-50-54-00-00-00-07-08-06-00-01-08-00-06-04-00-01-50-54-00-00-00-07-C0-A8-00-01-00-00-00-00-00-00-C0-A8-00-02-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00
+HEADER
+	dgramSeqNo=1
+	ds=127.0.0.1>0:1003
+	fsSeqNo=2
+	in_vlan=0
+	in_priority=0
+	out_vlan=0
+	out_priority=0
+	meanSkip=1
+	samplePool=2
+	dropEvents=0
+	in_ifindex=1003
+	in_format=0
+	out_ifindex=1004
+	out_format=0
+	hdr_prot=1
+	pkt_len=64
+	stripped=4
+	hdr_len=60
+	hdr=50-54-00-00-00-05-50-54-00-00-00-07-08-00-45-00-00-1C-00-00-00-00-40-01-F9-8D-C0-A8-00-02-C0-A8-00-01-00-00-FF-FF-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00
+HEADER
+	dgramSeqNo=1
+	ds=127.0.0.1>0:1003
+	fsSeqNo=3
+	in_vlan=0
+	in_priority=0
+	out_vlan=0
+	out_priority=0
+	meanSkip=1
+	samplePool=3
+	dropEvents=0
+	in_ifindex=1003
+	in_format=0
+	out_ifindex=1004
+	out_format=0
+	hdr_prot=1
+	pkt_len=64
+	stripped=4
+	hdr_len=60
+	hdr=50-54-00-00-00-05-50-54-00-00-00-07-86-DD-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00
+HEADER
+	dgramSeqNo=1
+	ds=127.0.0.1>0:1004
+	fsSeqNo=1
+	in_vlan=0
+	in_priority=0
+	out_vlan=0
+	out_priority=0
+	meanSkip=1
+	samplePool=1
+	dropEvents=0
+	in_ifindex=1004
+	in_format=0
+	out_ifindex=2
+	out_format=2
+	hdr_prot=1
+	pkt_len=64
+	stripped=4
+	hdr_len=60
+	hdr=FF-FF-FF-FF-FF-FF-50-54-00-00-00-05-08-06-00-01-08-00-06-04-00-01-50-54-00-00-00-05-C0-A8-00-02-00-00-00-00-00-00-C0-A8-00-01-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00
+HEADER
+	dgramSeqNo=1
+	ds=127.0.0.1>0:1004
+	fsSeqNo=2
+	in_vlan=0
+	in_priority=0
+	out_vlan=0
+	out_priority=0
+	meanSkip=1
+	samplePool=2
+	dropEvents=0
+	in_ifindex=1004
+	in_format=0
+	out_ifindex=1003
+	out_format=0
+	hdr_prot=1
+	pkt_len=64
+	stripped=4
+	hdr_len=60
+	hdr=50-54-00-00-00-07-50-54-00-00-00-05-08-00-45-00-00-1C-00-00-00-00-40-01-F9-8D-C0-A8-00-01-C0-A8-00-02-08-00-F7-FF-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00
+])
+
+AT_CHECK([[sort sflow.log | $EGREP 'IFCOUNTERS|ERROR' | head -6 | sed 's/ /\
+	/g']], [0], [dnl
+IFCOUNTERS
+	dgramSeqNo=2
+	ds=127.0.0.1>0:1002
+	csSeqNo=1
+	ifindex=1002
+	type=6
+	ifspeed=100000000
+	direction=0
+	status=3
+	in_octets=0
+	in_unicasts=0
+	in_multicasts=0
+	in_broadcasts=4294967295
+	in_discards=0
+	in_errors=0
+	in_unknownprotos=4294967295
+	out_octets=120
+	out_unicasts=2
+	out_multicasts=4294967295
+	out_broadcasts=4294967295
+	out_discards=0
+	out_errors=0
+	promiscuous=0
+IFCOUNTERS
+	dgramSeqNo=2
+	ds=127.0.0.1>0:1003
+	csSeqNo=1
+	ifindex=1003
+	type=6
+	ifspeed=100000000
+	direction=0
+	status=0
+	in_octets=98
+	in_unicasts=3
+	in_multicasts=0
+	in_broadcasts=4294967295
+	in_discards=0
+	in_errors=0
+	in_unknownprotos=4294967295
+	out_octets=120
+	out_unicasts=2
+	out_multicasts=4294967295
+	out_broadcasts=4294967295
+	out_discards=0
+	out_errors=0
+	promiscuous=0
+IFCOUNTERS
+	dgramSeqNo=2
+	ds=127.0.0.1>0:1004
+	csSeqNo=1
+	ifindex=1004
+	type=6
+	ifspeed=100000000
+	direction=0
+	status=0
+	in_octets=84
+	in_unicasts=2
+	in_multicasts=0
+	in_broadcasts=4294967295
+	in_discards=0
+	in_errors=0
+	in_unknownprotos=4294967295
+	out_octets=180
+	out_unicasts=3
+	out_multicasts=4294967295
+	out_broadcasts=4294967295
+	out_discards=0
+	out_errors=0
+	promiscuous=0
+IFCOUNTERS
+	dgramSeqNo=3
+	ds=127.0.0.1>0:1002
+	csSeqNo=2
+	ifindex=1002
+	type=6
+	ifspeed=100000000
+	direction=0
+	status=3
+	in_octets=0
+	in_unicasts=0
+	in_multicasts=0
+	in_broadcasts=4294967295
+	in_discards=0
+	in_errors=0
+	in_unknownprotos=4294967295
+	out_octets=120
+	out_unicasts=2
+	out_multicasts=4294967295
+	out_broadcasts=4294967295
+	out_discards=0
+	out_errors=0
+	promiscuous=0
+IFCOUNTERS
+	dgramSeqNo=3
+	ds=127.0.0.1>0:1003
+	csSeqNo=2
+	ifindex=1003
+	type=6
+	ifspeed=100000000
+	direction=0
+	status=0
+	in_octets=98
+	in_unicasts=3
+	in_multicasts=0
+	in_broadcasts=4294967295
+	in_discards=0
+	in_errors=0
+	in_unknownprotos=4294967295
+	out_octets=120
+	out_unicasts=2
+	out_multicasts=4294967295
+	out_broadcasts=4294967295
+	out_discards=0
+	out_errors=0
+	promiscuous=0
+IFCOUNTERS
+	dgramSeqNo=3
+	ds=127.0.0.1>0:1004
+	csSeqNo=2
+	ifindex=1004
+	type=6
+	ifspeed=100000000
+	direction=0
+	status=0
+	in_octets=84
+	in_unicasts=2
+	in_multicasts=0
+	in_broadcasts=4294967295
+	in_discards=0
+	in_errors=0
+	in_unknownprotos=4294967295
+	out_octets=180
+	out_unicasts=3
+	out_multicasts=4294967295
+	out_broadcasts=4294967295
+	out_discards=0
+	out_errors=0
+	promiscuous=0
+])
+AT_CLEANUP
+
+
+
 dnl Test that basic NetFlow reports flow statistics correctly:
 dnl - The initial packet of a flow are correctly accounted.
 dnl - Later packets within a flow are correctly accounted.
@@ -1354,22 +1771,25 @@ ADD_OF_PORTS([br1], [3])
 
 AT_CHECK([ovs-appctl dpif/show], [0], [dnl
 br0 (dummy@ovs-dummy):
-	lookups: hit:0 missed:0 lost:0
-	flows: 0
+	lookups: hit:0 missed:0
+	flows: cur: 0, avg: 0.000, max: 0, life span: 0(ms)
+		overall avg: add rate: 0.000/min, del rate: 0.000/min
 	br0 65534/100: (dummy)
 	p1 1/1: (dummy)
 	p2 2/2: (dummy)
 br1 (dummy@ovs-dummy):
-	lookups: hit:0 missed:0 lost:0
-	flows: 0
+	lookups: hit:0 missed:0
+	flows: cur: 0, avg: 0.000, max: 0, life span: 0(ms)
+		overall avg: add rate: 0.000/min, del rate: 0.000/min
 	br1 65534/101: (dummy)
 	p3 3/3: (dummy)
 ])
 
 AT_CHECK([ovs-appctl dpif/show br0], [0], [dnl
 br0 (dummy@ovs-dummy):
-	lookups: hit:0 missed:0 lost:0
-	flows: 0
+	lookups: hit:0 missed:0
+	flows: cur: 0, avg: 0.000, max: 0, life span: 0(ms)
+		overall avg: add rate: 0.000/min, del rate: 0.000/min
 	br0 65534/100: (dummy)
 	p1 1/1: (dummy)
 	p2 2/2: (dummy)
@@ -1391,12 +1811,12 @@ AT_CHECK([ovs-appctl netdev-dummy/receive p3 'in_port(3),eth(src=50:54:00:00:00:
 ])
 
 AT_CHECK([ovs-appctl dpif/dump-flows br0 | sort | STRIP_USED], [0], [dnl
-in_port(1),eth(src=50:54:00:00:00:05,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:0, bytes:0, used:0.0s, actions:drop
-in_port(2),eth(src=50:54:00:00:00:07,dst=50:54:00:00:00:05),eth_type(0x0800),ipv4(src=192.168.0.2,dst=192.168.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=0,code=0), packets:0, bytes:0, used:0.0s, actions:drop
+in_port(1),eth(src=50:54:00:00:00:05,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:0, bytes:0, used:0.0s, actions:userspace(pid=0,slow_path(controller))
+in_port(2),eth(src=50:54:00:00:00:07,dst=50:54:00:00:00:05),eth_type(0x0800),ipv4(src=192.168.0.2,dst=192.168.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=0,code=0), packets:0, bytes:0, used:0.0s, actions:userspace(pid=0,slow_path(controller))
 ])
 
 AT_CHECK([ovs-appctl dpif/dump-flows br1 | sort | STRIP_USED], [0], [dnl
-in_port(3),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x0800),ipv4(src=10.0.0.2,dst=10.0.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:0, bytes:0, used:0.0s, actions:drop
+in_port(3),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x0800),ipv4(src=10.0.0.2,dst=10.0.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:0, bytes:0, used:0.0s, actions:userspace(pid=0,slow_path(controller))
 ])
 
 OVS_VSWITCHD_STOP
@@ -1416,12 +1836,12 @@ AT_CHECK([ovs-appctl netdev-dummy/receive p3 'in_port(3),eth(src=50:54:00:00:00:
 ])
 
 AT_CHECK([ovs-appctl dpif/dump-flows br0 | sort | STRIP_USED], [0], [dnl
-in_port(1),eth(src=50:54:00:00:00:05,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:0, bytes:0, used:0.0s, actions:drop
-in_port(2),eth(src=50:54:00:00:00:07,dst=50:54:00:00:00:05),eth_type(0x0800),ipv4(src=192.168.0.2,dst=192.168.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=0,code=0), packets:0, bytes:0, used:0.0s, actions:drop
+in_port(1),eth(src=50:54:00:00:00:05,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:0, bytes:0, used:0.0s, actions:userspace(pid=0,slow_path(controller))
+in_port(2),eth(src=50:54:00:00:00:07,dst=50:54:00:00:00:05),eth_type(0x0800),ipv4(src=192.168.0.2,dst=192.168.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=0,code=0), packets:0, bytes:0, used:0.0s, actions:userspace(pid=0,slow_path(controller))
 ])
 
 AT_CHECK([ovs-appctl dpif/dump-flows br1 | sort | STRIP_USED], [0], [dnl
-in_port(3),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x0800),ipv4(src=10.0.0.2,dst=10.0.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:0, bytes:0, used:0.0s, actions:drop
+in_port(3),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x0800),ipv4(src=10.0.0.2,dst=10.0.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:0, bytes:0, used:0.0s, actions:userspace(pid=0,slow_path(controller))
 ])
 
 AT_CHECK([ovs-appctl dpif/del-flows br0])
@@ -1429,7 +1849,7 @@ AT_CHECK([ovs-appctl dpif/dump-flows br0 | sort | STRIP_USED], [0], [dnl
 ])
 
 AT_CHECK([ovs-appctl dpif/dump-flows br1 | sort | STRIP_USED], [0], [dnl
-in_port(3),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x0800),ipv4(src=10.0.0.2,dst=10.0.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:0, bytes:0, used:0.0s, actions:drop
+in_port(3),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x0800),ipv4(src=10.0.0.2,dst=10.0.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:0, bytes:0, used:0.0s, actions:userspace(pid=0,slow_path(controller))
 ])
 
 OVS_VSWITCHD_STOP
@@ -1455,16 +1875,22 @@ for i in $(seq 1 5); do
     ovs-appctl netdev-dummy/receive br1 'in_port(101),eth(src=50:54:00:00:00:07,dst=50:54:00:00:00:05),eth_type(0x0800),ipv4(src=192.168.0.2,dst=192.168.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0)'
 done
 
+AT_CHECK([ovs-appctl time/warp 1000 && ovs-appctl time/warp 1000], [0], [warped
+warped
+])
+
 AT_CHECK([ovs-appctl dpif/show], [0], [dnl
 br0 (dummy@ovs-dummy):
-	lookups: hit:13 missed:2 lost:0
-	flows: 1
+	lookups: hit:9 missed:1
+	flows: cur: 1, avg: 1.000, max: 1, life span: 0(ms)
+		overall avg: add rate: 0.000/min, del rate: 0.000/min
 	br0 65534/100: (dummy)
 	p2 2/2: (dummy)
 	pbr0 1/none: (patch: peer=pbr1)
 br1 (dummy@ovs-dummy):
-	lookups: hit:13 missed:2 lost:0
-	flows: 1
+	lookups: hit:4 missed:1
+	flows: cur: 1, avg: 1.000, max: 1, life span: 0(ms)
+		overall avg: add rate: 0.000/min, del rate: 0.000/min
 	br1 65534/101: (dummy)
 	p3 3/3: (dummy)
 	pbr1 1/none: (patch: peer=pbr0)
@@ -1487,6 +1913,35 @@ AT_CHECK([ovs-ofctl dump-ports br1 pbr1], [0], [dnl
 OFPST_PORT reply (xid=0x4): 1 ports
   port  1: rx pkts=10, bytes=600, drop=0, errs=0, frame=0, over=0, crc=0
            tx pkts=5, bytes=300, drop=0, errs=0, coll=0
+])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+AT_SETUP([ofproto-dpif - ovs-appctl dpif/show rates])
+OVS_VSWITCHD_START([set Bridge br0 fail-mode=secure])
+ADD_OF_PORTS([br0], 1, 2)
+
+AT_CHECK([ovs-ofctl add-flow br0 actions=LOCAL,output:1,output:2])
+
+for i in $(seq 1 61); do
+    ovs-appctl netdev-dummy/receive br0 'in_port(1),eth(src=50:54:00:00:00:05,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0)'
+    ovs-appctl time/warp 10000
+    ovs-appctl time/warp 50000
+done
+
+AT_CHECK([ovs-appctl time/warp 10000], [0], [warped
+])
+
+AT_CHECK([ovs-appctl dpif/show | sed 's/ 10[[0-9]]\{3\}(ms)$/ 10000(ms)/'], [0], [dnl
+br0 (dummy@ovs-dummy):
+	lookups: hit:0 missed:61
+	flows: cur: 0, avg: 1.000, max: 1, life span: 10000(ms)
+		hourly avg: add rate: 0.641/min, del rate: 0.635/min
+		overall avg: add rate: 1.000/min, del rate: 0.984/min
+	br0 65534/100: (dummy)
+	p1 1/1: (dummy)
+	p2 2/2: (dummy)
 ])
 
 OVS_VSWITCHD_STOP

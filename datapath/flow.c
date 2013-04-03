@@ -207,27 +207,12 @@ struct sw_flow_actions *ovs_flow_actions_alloc(int size)
 	if (size > MAX_ACTIONS_BUFSIZE)
 		return ERR_PTR(-EINVAL);
 
-	size += sizeof(*sfa);
-	if (size <= MAX_ACTIONS_BUFSIZE_KMALLOC)
-		sfa = kmalloc(size, GFP_KERNEL);
-	else
-		sfa = vmalloc(size);
-
+	sfa = kmalloc(sizeof(*sfa) + size, GFP_KERNEL);
 	if (!sfa)
 		return ERR_PTR(-ENOMEM);
 
 	sfa->actions_len = 0;
-	sfa->buf_size = size;
-
 	return sfa;
-}
-
-void ovs_flow_actions_free(struct sw_flow_actions *sfa)
-{
-	if (sfa->buf_size <= MAX_ACTIONS_BUFSIZE_KMALLOC)
-		kfree(sfa);
-	else
-		vfree(sfa);
 }
 
 struct sw_flow *ovs_flow_alloc(void)
@@ -314,10 +299,10 @@ void ovs_flow_tbl_destroy(struct flow_table *table)
 	for (i = 0; i < table->n_buckets; i++) {
 		struct sw_flow *flow;
 		struct hlist_head *head = flex_array_get(table->buckets, i);
-		struct hlist_node *node, *n;
+		struct hlist_node *n;
 		int ver = table->node_ver;
 
-		hlist_for_each_entry_safe(flow, node, n, head, hash_node[ver]) {
+		hlist_for_each_entry_safe(flow, n, head, hash_node[ver]) {
 			hlist_del_rcu(&flow->hash_node[ver]);
 			ovs_flow_free(flow);
 		}
@@ -347,7 +332,6 @@ struct sw_flow *ovs_flow_tbl_next(struct flow_table *table, u32 *bucket, u32 *la
 {
 	struct sw_flow *flow;
 	struct hlist_head *head;
-	struct hlist_node *n;
 	int ver;
 	int i;
 
@@ -355,7 +339,7 @@ struct sw_flow *ovs_flow_tbl_next(struct flow_table *table, u32 *bucket, u32 *la
 	while (*bucket < table->n_buckets) {
 		i = 0;
 		head = flex_array_get(table->buckets, *bucket);
-		hlist_for_each_entry_rcu(flow, n, head, hash_node[ver]) {
+		hlist_for_each_entry_rcu(flow, head, hash_node[ver]) {
 			if (i < *last) {
 				i++;
 				continue;
@@ -390,11 +374,10 @@ static void flow_table_copy_flows(struct flow_table *old, struct flow_table *new
 	for (i = 0; i < old->n_buckets; i++) {
 		struct sw_flow *flow;
 		struct hlist_head *head;
-		struct hlist_node *n;
 
 		head = flex_array_get(old->buckets, i);
 
-		hlist_for_each_entry(flow, n, head, hash_node[old_ver])
+		hlist_for_each_entry(flow, head, hash_node[old_ver])
 			__flow_tbl_insert(new, flow);
 	}
 	old->keep_flows = true;
@@ -452,7 +435,7 @@ static void rcu_free_acts_callback(struct rcu_head *rcu)
 {
 	struct sw_flow_actions *sf_acts = container_of(rcu,
 			struct sw_flow_actions, rcu);
-	ovs_flow_actions_free(sf_acts);
+	kfree(sf_acts);
 }
 
 /* Schedules 'sf_acts' to be freed after the next RCU grace period.
@@ -499,7 +482,7 @@ static __be16 parse_ethertype(struct sk_buff *skb)
 	proto = *(__be16 *) skb->data;
 	__skb_pull(skb, sizeof(__be16));
 
-	if (ntohs(proto) >= 1536)
+	if (ntohs(proto) >= ETH_P_802_3_MIN)
 		return proto;
 
 	if (skb->len < sizeof(struct llc_snap_hdr))
@@ -516,7 +499,7 @@ static __be16 parse_ethertype(struct sk_buff *skb)
 
 	__skb_pull(skb, sizeof(struct llc_snap_hdr));
 
-	if (ntohs(llc->ethertype) >= 1536)
+	if (ntohs(llc->ethertype) >= ETH_P_802_3_MIN)
 		return llc->ethertype;
 
 	return htons(ETH_P_802_2);
@@ -812,7 +795,6 @@ struct sw_flow *ovs_flow_tbl_lookup(struct flow_table *table,
 				struct sw_flow_key *key, int key_len)
 {
 	struct sw_flow *flow;
-	struct hlist_node *n;
 	struct hlist_head *head;
 	u8 *_key;
 	int key_start;
@@ -823,7 +805,7 @@ struct sw_flow *ovs_flow_tbl_lookup(struct flow_table *table,
 
 	_key = (u8 *) key + key_start;
 	head = find_bucket(table, hash);
-	hlist_for_each_entry_rcu(flow, n, head, hash_node[table->node_ver]) {
+	hlist_for_each_entry_rcu(flow, head, hash_node[table->node_ver]) {
 
 		if (flow->hash == hash &&
 		    !memcmp((u8 *)&flow->key + key_start, _key, key_len - key_start)) {
@@ -843,9 +825,9 @@ void ovs_flow_tbl_insert(struct flow_table *table, struct sw_flow *flow,
 
 void ovs_flow_tbl_remove(struct flow_table *table, struct sw_flow *flow)
 {
+	BUG_ON(table->count == 0);
 	hlist_del_rcu(&flow->hash_node[table->node_ver]);
 	table->count--;
-	BUG_ON(table->count < 0);
 }
 
 /* The size of the argument for each %OVS_KEY_ATTR_* Netlink attribute.  */
@@ -866,9 +848,6 @@ const int ovs_key_lens[OVS_KEY_ATTR_MAX + 1] = {
 	[OVS_KEY_ATTR_ARP] = sizeof(struct ovs_key_arp),
 	[OVS_KEY_ATTR_ND] = sizeof(struct ovs_key_nd),
 	[OVS_KEY_ATTR_TUNNEL] = -1,
-
-	/* Not upstream. */
-	[OVS_KEY_ATTR_TUN_ID] = sizeof(__be64),
 };
 
 static int ipv4_flow_from_nlattrs(struct sw_flow_key *swkey, int *key_len,
@@ -1152,25 +1131,7 @@ int ovs_flow_from_nlattrs(struct sw_flow_key *swkey, int *key_lenp,
 		attrs &= ~(1 << OVS_KEY_ATTR_SKB_MARK);
 	}
 
-	if (attrs & (1ULL << OVS_KEY_ATTR_TUN_ID) &&
-	    attrs & (1ULL << OVS_KEY_ATTR_TUNNEL)) {
-		__be64 tun_id;
-
-		err = ipv4_tun_from_nlattr(a[OVS_KEY_ATTR_TUNNEL], &swkey->tun_key);
-		if (err)
-			return err;
-
-		if (!(swkey->tun_key.tun_flags & OVS_TNL_F_KEY))
-			return -EINVAL;
-
-		tun_id = nla_get_be64(a[OVS_KEY_ATTR_TUN_ID]);
-		if (tun_id != swkey->tun_key.tun_id)
-			return -EINVAL;
-
-		attrs &= ~(1ULL << OVS_KEY_ATTR_TUN_ID);
-		attrs &= ~(1ULL << OVS_KEY_ATTR_TUNNEL);
-	} else if (attrs & (1ULL << OVS_KEY_ATTR_TUNNEL)) {
-
+	if (attrs & (1ULL << OVS_KEY_ATTR_TUNNEL)) {
 		err = ipv4_tun_from_nlattr(a[OVS_KEY_ATTR_TUNNEL], &swkey->tun_key);
 		if (err)
 			return err;
@@ -1220,7 +1181,7 @@ int ovs_flow_from_nlattrs(struct sw_flow_key *swkey, int *key_lenp,
 
 	if (attrs & (1 << OVS_KEY_ATTR_ETHERTYPE)) {
 		swkey->eth.type = nla_get_be16(a[OVS_KEY_ATTR_ETHERTYPE]);
-		if (ntohs(swkey->eth.type) < 1536)
+		if (ntohs(swkey->eth.type) < ETH_P_802_3_MIN)
 			return -EINVAL;
 		attrs &= ~(1 << OVS_KEY_ATTR_ETHERTYPE);
 	} else {
@@ -1320,7 +1281,6 @@ int ovs_flow_metadata_from_nlattrs(struct sw_flow *flow, int key_len, const stru
 	struct ovs_key_ipv4_tunnel *tun_key = &flow->key.tun_key;
 	const struct nlattr *nla;
 	int rem;
-	__be64 tun_id = 0;
 
 	flow->key.phy.in_port = DP_MAX_PORTS;
 	flow->key.phy.priority = 0;
@@ -1341,38 +1301,10 @@ int ovs_flow_metadata_from_nlattrs(struct sw_flow *flow, int key_len, const stru
 				flow->key.phy.priority = nla_get_u32(nla);
 				break;
 
-			case OVS_KEY_ATTR_TUN_ID:
-				tun_id = nla_get_be64(nla);
-
-				if (tun_key->ipv4_dst) {
-					if (!(tun_key->tun_flags & OVS_TNL_F_KEY))
-						return -EINVAL;
-					if (tun_key->tun_id != tun_id)
-						return -EINVAL;
-					break;
-				}
-				tun_key->tun_id = tun_id;
-				tun_key->tun_flags |= OVS_TNL_F_KEY;
-
-				break;
-
 			case OVS_KEY_ATTR_TUNNEL:
-				if (tun_key->tun_flags & OVS_TNL_F_KEY) {
-					tun_id = tun_key->tun_id;
-					err = ipv4_tun_from_nlattr(nla, tun_key);
-					if (err)
-						return err;
-
-					if (!(tun_key->tun_flags & OVS_TNL_F_KEY))
-						return -EINVAL;
-
-					if (tun_key->tun_id != tun_id)
-						return -EINVAL;
-				} else {
-					err = ipv4_tun_from_nlattr(nla, tun_key);
-					if (err)
-						return err;
-				}
+				err = ipv4_tun_from_nlattr(nla, tun_key);
+				if (err)
+					return err;
 				break;
 
 			case OVS_KEY_ATTR_IN_PORT:
@@ -1411,10 +1343,6 @@ int ovs_flow_to_nlattrs(const struct sw_flow_key *swkey, struct sk_buff *skb)
 
 	if (swkey->tun_key.ipv4_dst &&
 	    ipv4_tun_to_nlattr(skb, &swkey->tun_key))
-		goto nla_put_failure;
-
-	if ((swkey->tun_key.tun_flags & OVS_TNL_F_KEY) &&
-	    nla_put_be64(skb, OVS_KEY_ATTR_TUN_ID, swkey->tun_key.tun_id))
 		goto nla_put_failure;
 
 	if (swkey->phy.in_port != DP_MAX_PORTS &&

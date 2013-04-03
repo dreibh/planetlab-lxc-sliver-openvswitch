@@ -30,6 +30,10 @@ struct vport;
 struct vport_parms;
 
 /* The following definitions are for users of the vport subsytem: */
+struct vport_net {
+	struct vport __rcu *gre_vport;
+	struct vport __rcu *gre64_vport;
+};
 
 int ovs_vport_init(void);
 void ovs_vport_exit(void);
@@ -102,8 +106,7 @@ struct vport {
 };
 
 #define VPORT_F_REQUIRED	(1 << 0) /* If init fails, module loading fails. */
-#define VPORT_F_FLOW		(1 << 1) /* Sets OVS_CB(skb)->flow. */
-#define VPORT_F_TUN_ID		(1 << 2) /* Sets OVS_CB(skb)->tun_id. */
+#define VPORT_F_TUN_ID		(1 << 1) /* Sets OVS_CB(skb)->tun_id. */
 
 /**
  * struct vport_parms - parameters for creating a new vport

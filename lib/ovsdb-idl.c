@@ -157,6 +157,9 @@ static void ovsdb_idl_parse_lock_notify(struct ovsdb_idl *,
  * 'class'.  (Ordinarily 'class' is compiled from an OVSDB schema automatically
  * by ovsdb-idlc.)
  *
+ * Passes 'retry' to jsonrpc_session_open().  See that function for
+ * documentation.
+ *
  * If 'monitor_everything_by_default' is true, then everything in the remote
  * database will be replicated by default.  ovsdb_idl_omit() and
  * ovsdb_idl_omit_alert() may be used to selectively drop some columns from
@@ -168,7 +171,7 @@ static void ovsdb_idl_parse_lock_notify(struct ovsdb_idl *,
  */
 struct ovsdb_idl *
 ovsdb_idl_create(const char *remote, const struct ovsdb_idl_class *class,
-                 bool monitor_everything_by_default)
+                 bool monitor_everything_by_default, bool retry)
 {
     struct ovsdb_idl *idl;
     uint8_t default_mode;
@@ -180,7 +183,7 @@ ovsdb_idl_create(const char *remote, const struct ovsdb_idl_class *class,
 
     idl = xzalloc(sizeof *idl);
     idl->class = class;
-    idl->session = jsonrpc_session_open(remote);
+    idl->session = jsonrpc_session_open(remote, retry);
     shash_init(&idl->table_by_name);
     idl->tables = xmalloc(class->n_tables * sizeof *idl->tables);
     for (i = 0; i < class->n_tables; i++) {
@@ -411,6 +414,18 @@ void
 ovsdb_idl_verify_write_only(struct ovsdb_idl *idl)
 {
     idl->verify_write_only = true;
+}
+
+bool
+ovsdb_idl_is_alive(const struct ovsdb_idl *idl)
+{
+    return jsonrpc_session_is_alive(idl->session);
+}
+
+int
+ovsdb_idl_get_last_error(const struct ovsdb_idl *idl)
+{
+    return jsonrpc_session_get_last_error(idl->session);
 }
 
 static unsigned char *
@@ -1826,10 +1841,10 @@ ovsdb_idl_txn_complete(struct ovsdb_idl_txn *txn,
  * Takes ownership of what 'datum' points to (and in some cases destroys that
  * data before returning) but makes a copy of 'datum' itself.  (Commonly
  * 'datum' is on the caller's stack.) */
-void
-ovsdb_idl_txn_write(const struct ovsdb_idl_row *row_,
-                    const struct ovsdb_idl_column *column,
-                    struct ovsdb_datum *datum)
+static void
+ovsdb_idl_txn_write__(const struct ovsdb_idl_row *row_,
+                      const struct ovsdb_idl_column *column,
+                      struct ovsdb_datum *datum, bool owns_datum)
 {
     struct ovsdb_idl_row *row = CONST_CAST(struct ovsdb_idl_row *, row_);
     const struct ovsdb_idl_table_class *class;
@@ -1837,8 +1852,7 @@ ovsdb_idl_txn_write(const struct ovsdb_idl_row *row_,
     bool write_only;
 
     if (ovsdb_idl_row_is_synthetic(row)) {
-        ovsdb_datum_destroy(datum, &column->type);
-        return;
+        goto discard_datum;
     }
 
     class = row->table->class;
@@ -1853,8 +1867,7 @@ ovsdb_idl_txn_write(const struct ovsdb_idl_row *row_,
     if (row->table->idl->verify_write_only && !write_only) {
         VLOG_ERR("Bug: Attempt to write to a read/write column (%s:%s) when"
                  " explicitly configured not to.", class->name, column->name);
-        ovsdb_datum_destroy(datum, &column->type);
-        return;
+        goto discard_datum;
     }
 
     /* If this is a write-only column and the datum being written is the same
@@ -1870,8 +1883,7 @@ ovsdb_idl_txn_write(const struct ovsdb_idl_row *row_,
      * ovsdb_idl_txn_commit().) */
     if (write_only && ovsdb_datum_equals(ovsdb_idl_read(row, column),
                                          datum, &column->type)) {
-        ovsdb_datum_destroy(datum, &column->type);
-        return;
+        goto discard_datum;
     }
 
     if (hmap_node_is_null(&row->txn_node)) {
@@ -1889,9 +1901,36 @@ ovsdb_idl_txn_write(const struct ovsdb_idl_row *row_,
     } else {
         bitmap_set1(row->written, column_idx);
     }
-    row->new[column_idx] = *datum;
+    if (owns_datum) {
+        row->new[column_idx] = *datum;
+    } else {
+        ovsdb_datum_clone(&row->new[column_idx], datum, &column->type);
+    }
     (column->unparse)(row);
     (column->parse)(row, &row->new[column_idx]);
+    return;
+
+discard_datum:
+    if (owns_datum) {
+        ovsdb_datum_destroy(datum, &column->type);
+    }
+}
+
+void
+ovsdb_idl_txn_write(const struct ovsdb_idl_row *row,
+                    const struct ovsdb_idl_column *column,
+                    struct ovsdb_datum *datum)
+{
+    ovsdb_idl_txn_write__(row, column, datum, true);
+}
+
+void
+ovsdb_idl_txn_write_clone(const struct ovsdb_idl_row *row,
+                          const struct ovsdb_idl_column *column,
+                          const struct ovsdb_datum *datum)
+{
+    ovsdb_idl_txn_write__(row, column,
+                          CONST_CAST(struct ovsdb_datum *, datum), false);
 }
 
 /* Causes the original contents of 'column' in 'row_' to be verified as a

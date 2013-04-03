@@ -549,7 +549,8 @@ exclude those logs from the archive.
     cmd_output(CAP_NETWORK_STATUS, [NETSTAT, '-an'])
     for dir in DHCP_LEASE_DIR:
         tree_output(CAP_NETWORK_STATUS, dir)
-    cmd_output(CAP_NETWORK_STATUS, [IPTABLES, '-nL'])
+    for table in ['filter', 'nat', 'mangle', 'raw', 'security']:
+        cmd_output(CAP_NETWORK_STATUS, [IPTABLES, '-t', table, '-nL'])
     for p in os.listdir('/sys/class/net/'):
         try:
             f = open('/sys/class/net/%s/type' % p, 'r')
@@ -575,8 +576,6 @@ exclude those logs from the archive.
     if os.path.exists(OPENVSWITCH_VSWITCHD_PID):
         cmd_output(CAP_NETWORK_STATUS, [OVS_DPCTL, 'show', '-s'])
         for d in dp_list():
-            cmd_output(CAP_NETWORK_STATUS, [OVS_OFCTL, 'show', d])
-            cmd_output(CAP_NETWORK_STATUS, [OVS_OFCTL, 'dump-flows', d])
             cmd_output(CAP_NETWORK_STATUS, [OVS_DPCTL, 'dump-flows', d])
         try:
             vspidfile = open(OPENVSWITCH_VSWITCHD_PID)
@@ -597,7 +596,7 @@ exclude those logs from the archive.
         'syslog', 'messages', 'secure', 'debug', 'dmesg', 'boot']])
     ovs_logs = ([ OPENVSWITCH_LOG_DIR + x for x in
         ['ovs-vswitchd.log', 'ovsdb-server.log',
-        'ovs-xapi-sync.log', 'ovs-monitor-ipsec.log']])
+        'ovs-xapi-sync.log', 'ovs-monitor-ipsec.log', 'ovs-ctl.log']])
     log_output(CAP_SYSTEM_LOGS, system_logs)
     log_output(CAP_OPENVSWITCH_LOGS, ovs_logs)
 

@@ -26,11 +26,12 @@
 extern "C" {
 #endif
 
-/* Generic interface to network devices.
+/* Generic interface to network devices ("netdev"s).
  *
- * Currently, there is a single implementation of this interface that supports
- * Linux.  The interface should be generic enough to be implementable on other
- * operating systems as well. */
+ * Every port on a switch must have a corresponding netdev that must minimally
+ * support a few operations, such as the ability to read the netdev's MTU.
+ * The PORTING file at the top of the source tree has more information in the
+ * "Writing a netdev Provider" section. */
 
 struct ofpbuf;
 struct in_addr;
@@ -112,9 +113,6 @@ void netdev_enumerate_types(struct sset *types);
 /* Open and close. */
 int netdev_open(const char *name, const char *type, struct netdev **);
 void netdev_close(struct netdev *);
-
-bool netdev_exists(const char *name);
-bool netdev_is_open(const char *name);
 
 void netdev_parse_name(const char *netdev_name, char **name, char **type);
 

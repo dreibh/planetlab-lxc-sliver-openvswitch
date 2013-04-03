@@ -14,7 +14,6 @@ openvswitch_sources += \
 	linux/compat/workqueue.c
 openvswitch_headers += \
 	linux/compat/include/asm/percpu.h \
-	linux/compat/include/linux/bug.h \
 	linux/compat/include/linux/compiler.h \
 	linux/compat/include/linux/compiler-gcc.h \
 	linux/compat/include/linux/cpumask.h \
@@ -36,6 +35,7 @@ openvswitch_headers += \
 	linux/compat/include/linux/jiffies.h \
 	linux/compat/include/linux/kernel.h \
 	linux/compat/include/linux/kobject.h \
+	linux/compat/include/linux/list.h \
 	linux/compat/include/linux/lockdep.h \
 	linux/compat/include/linux/log2.h \
 	linux/compat/include/linux/mutex.h \

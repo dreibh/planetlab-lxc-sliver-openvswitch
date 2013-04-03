@@ -14,6 +14,11 @@
 # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
 # USA
 #
-# Copyright (C) 2012, 2013 Nicira, Inc.
+# Copyright (C) 2013 Nicira, Inc.
 
-ovs-vsctl show
+for bridge in `ovs-vsctl list-br`
+do
+    echo "ovs-ofctl show ${bridge}"
+    ovs-ofctl show "$bridge"
+    echo ""
+done

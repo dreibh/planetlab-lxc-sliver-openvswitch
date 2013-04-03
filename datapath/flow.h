@@ -37,7 +37,6 @@ struct sk_buff;
 struct sw_flow_actions {
 	struct rcu_head rcu;
 	u32 actions_len;
-	int buf_size;
 	struct nlattr actions[];
 };
 
@@ -152,7 +151,6 @@ void ovs_flow_deferred_free(struct sw_flow *);
 void ovs_flow_free(struct sw_flow *);
 
 struct sw_flow_actions *ovs_flow_actions_alloc(int actions_len);
-void ovs_flow_actions_free(struct sw_flow_actions *sfa);
 void ovs_flow_deferred_free_acts(struct sw_flow_actions *);
 
 int ovs_flow_extract(struct sk_buff *, u16 in_port, struct sw_flow_key *,
@@ -160,44 +158,13 @@ int ovs_flow_extract(struct sk_buff *, u16 in_port, struct sw_flow_key *,
 void ovs_flow_used(struct sw_flow *, struct sk_buff *);
 u64 ovs_flow_used_time(unsigned long flow_jiffies);
 
-/* Upper bound on the length of a nlattr-formatted flow key.  The longest
- * nlattr-formatted flow key would be:
- *
- *                                     struct  pad  nl hdr  total
- *                                     ------  ---  ------  -----
- *  OVS_KEY_ATTR_PRIORITY                4    --     4      8
- *  OVS_KEY_ATTR_TUN_ID                  8    --     4     12
- *  OVS_KEY_ATTR_TUNNEL                  0    --     4      4
- *  - OVS_TUNNEL_KEY_ATTR_ID             8    --     4     12
- *  - OVS_TUNNEL_KEY_ATTR_IPV4_SRC       4    --     4      8
- *  - OVS_TUNNEL_KEY_ATTR_IPV4_DST       4    --     4      8
- *  - OVS_TUNNEL_KEY_ATTR_TOS            1    3      4      8
- *  - OVS_TUNNEL_KEY_ATTR_TTL            1    3      4      8
- *  - OVS_TUNNEL_KEY_ATTR_DONT_FRAGMENT  0    --     4      4
- *  - OVS_TUNNEL_KEY_ATTR_CSUM           0    --     4      4
- *  OVS_KEY_ATTR_IN_PORT                 4    --     4      8
- *  OVS_KEY_ATTR_SKB_MARK                4    --     4      8
- *  OVS_KEY_ATTR_ETHERNET               12    --     4     16
- *  OVS_KEY_ATTR_ETHERTYPE               2     2     4      8  (outer VLAN ethertype)
- *  OVS_KEY_ATTR_8021Q                   4    --     4      8
- *  OVS_KEY_ATTR_ENCAP                   0    --     4      4  (VLAN encapsulation)
- *  OVS_KEY_ATTR_ETHERTYPE               2     2     4      8  (inner VLAN ethertype)
- *  OVS_KEY_ATTR_IPV6                   40    --     4     44
- *  OVS_KEY_ATTR_ICMPV6                  2     2     4      8
- *  OVS_KEY_ATTR_ND                     28    --     4     32
- *  ----------------------------------------------------------
- *  total                                                 220
- */
-#define FLOW_BUFSIZE 220
-
 int ovs_flow_to_nlattrs(const struct sw_flow_key *, struct sk_buff *);
 int ovs_flow_from_nlattrs(struct sw_flow_key *swkey, int *key_lenp,
 		      const struct nlattr *);
 int ovs_flow_metadata_from_nlattrs(struct sw_flow *flow, int key_len,
 				   const struct nlattr *attr);
 
-#define MAX_ACTIONS_BUFSIZE		(32 * 1024)
-#define MAX_ACTIONS_BUFSIZE_KMALLOC	PAGE_SIZE
+#define MAX_ACTIONS_BUFSIZE	(32 * 1024)
 #define TBL_MIN_BUCKETS		1024
 
 struct flow_table {

@@ -41,6 +41,7 @@
 #define _LINUX_OPENVSWITCH_H 1
 
 #include <linux/types.h>
+#include <linux/if_ether.h>
 
 /**
  * struct ovs_header - header for OVS Generic Netlink messages.
@@ -234,14 +235,15 @@ enum ovs_vport_attr {
 
 #define OVS_VPORT_ATTR_MAX (__OVS_VPORT_ATTR_MAX - 1)
 
-/* OVS_VPORT_ATTR_OPTIONS attributes for patch vports. */
+/* OVS_VPORT_ATTR_OPTIONS attributes for tunnels.
+ */
 enum {
-	OVS_PATCH_ATTR_UNSPEC,
-	OVS_PATCH_ATTR_PEER,	/* name of peer vport, as a string */
-	__OVS_PATCH_ATTR_MAX
+	OVS_TUNNEL_ATTR_UNSPEC,
+	OVS_TUNNEL_ATTR_DST_PORT, /* 16-bit UDP port, used by L4 tunnels. */
+	__OVS_TUNNEL_ATTR_MAX
 };
 
-#define OVS_PATCH_ATTR_MAX (__OVS_PATCH_ATTR_MAX - 1)
+#define OVS_TUNNEL_ATTR_MAX (__OVS_TUNNEL_ATTR_MAX - 1)
 
 /* Flows. */
 
@@ -286,7 +288,6 @@ enum ovs_key_attr {
 #endif
 
 	OVS_KEY_ATTR_MPLS = 62, /* struct ovs_key_mpls */
-	OVS_KEY_ATTR_TUN_ID = 63,  /* be64 tunnel ID */
 	__OVS_KEY_ATTR_MAX
 };
 
@@ -324,8 +325,8 @@ enum ovs_frag_type {
 #define OVS_FRAG_TYPE_MAX (__OVS_FRAG_TYPE_MAX - 1)
 
 struct ovs_key_ethernet {
-	__u8	 eth_src[6];
-	__u8	 eth_dst[6];
+	__u8	 eth_src[ETH_ALEN];
+	__u8	 eth_dst[ETH_ALEN];
 };
 
 struct ovs_key_mpls {
@@ -375,14 +376,14 @@ struct ovs_key_arp {
 	__be32 arp_sip;
 	__be32 arp_tip;
 	__be16 arp_op;
-	__u8   arp_sha[6];
-	__u8   arp_tha[6];
+	__u8   arp_sha[ETH_ALEN];
+	__u8   arp_tha[ETH_ALEN];
 };
 
 struct ovs_key_nd {
 	__u32 nd_target[4];
-	__u8  nd_sll[6];
-	__u8  nd_tll[6];
+	__u8  nd_sll[ETH_ALEN];
+	__u8  nd_tll[ETH_ALEN];
 };
 
 /**
