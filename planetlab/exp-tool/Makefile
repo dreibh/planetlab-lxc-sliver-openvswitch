@@ -532,6 +532,12 @@ $(foreach link,$(EXTERNAL_LINKS),cache/iface.$(link)@2): ;
 $(foreach link,$(EXTERNAL_LINKS),cache/port.$(link)@2): ;
 $(foreach link,$(EXTERNAL_LINKS),del-iface.$(link)@2): ;
 
+$(foreach host,$(EXTERNAL_HOSTS),cache/rsnap.ip.$(host)): ;
+	@touch $@
+
+$(foreach host,$(EXTERNAL_HOSTS),cache/rsnap.links.$(host)): ;
+	@touch $@
+
 # we assume that a program called tunproxy is available on the
 # external nodes.  
 
