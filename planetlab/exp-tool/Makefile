@@ -529,14 +529,14 @@ $(foreach host,$(EXTERNAL_HOSTS),cache/bridge.$(host)): ;
 $(foreach host,$(EXTERNAL_HOSTS),cache/switch.$(host)): ;
 $(foreach host,$(EXTERNAL_HOSTS),cache/controller.$(host)): ;
 $(foreach link,$(EXTERNAL_LINKS),cache/iface.$(link)@2): ;
-$(foreach link,$(EXTERNAL_LINKS),cache/endpoint.$(link)@2): ;
+$(foreach link,$(EXTERNAL_LINKS),cache/port.$(link)@2): ;
 $(foreach link,$(EXTERNAL_LINKS),del-iface.$(link)@2): ;
 
 # we assume that a program called tunproxy is available on the
 # external nodes.  
 
 .SECONDEXPANSION:
-$(foreach link,$(EXTERNAL_LINKS),cache/port.$(link)@2): cache/port.%@2: cache/port.%@1 cache/host.$$(call leftnode,%)
+$(foreach link,$(EXTERNAL_LINKS),cache/endpoint.$(link)@2): cache/endpoint.%@2: cache/port.%@1 cache/host.$$(call leftnode,%)
 	@#echo $* [$<] [$^] $(call rightnode,$*)
 	@echo $(call default,EXTERNAL_PORT,$(call rightnode,$*)) > $@
 	@echo "===>" $(call rightnode,$*): \
