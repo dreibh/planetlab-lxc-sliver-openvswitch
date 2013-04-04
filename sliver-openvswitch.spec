@@ -12,7 +12,12 @@ Vendor: OneLab
 Packager: OneLab <support@planet-lab.eu>
 Distribution: PlanetLab %{plrelease}
 URL: %{SCMURL}
-#Requires: 
+# Dependencies
+# mar 2013 - because of the move to f18 I have to turn off auto requires
+# this is because rpm would otherwise find deps to /bin/python and /bin/perl
+# In other modules I was able to solve this by referring to /usr/bin/python 
+# instead of just python in the builds scripts, but here it looks too complex
+AutoReq: no
 
 Summary: Openvswitch modified for running from a PlanetLab sliver
 Name: %{name}
@@ -42,7 +47,10 @@ make install DESTDIR=$RPM_BUILD_ROOT
 rm -rf $RPM_BUILD_ROOT
 
 %files
-/usr
+/usr/bin/*
+/usr/sbin/*
+/usr/share/openvswitch
+/usr/share/man
 
 %post
 
