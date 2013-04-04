@@ -160,7 +160,7 @@ showdpid-%: FORCE
 	@echo $*_DPID=0x$$( $(SSH) $(HOST_$*) $(SUDO) ovs-vsctl get bridge $(BRIDGE) datapath_id | sed -e 's,",,g')
 
 showmac-%: FORCE
-	@echo $*_MAC=\"$$( $(SSH) $(HOST_$*) $(SUDO) sliver-ovs show-mac)\"
+	@echo $*_MAC=\"$$( $(SSH) $(HOST_$*) $(SUDO) sliver-ovs get-mac $(BRIDGE))\"
 
 showports-%: FORCE
 	@$(SSH) $(HOST_$*) $(SUDO) ovs-ofctl show $(BRIDGE) \
