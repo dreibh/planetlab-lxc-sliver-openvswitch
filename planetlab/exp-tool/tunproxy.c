@@ -112,7 +112,7 @@ int main(int argc, char *argv[])
 		if (select(fd+s+1, &fdset,NULL,NULL,NULL) < 0) PERROR("select");
 		if (FD_ISSET(fd, &fdset)) {
 			if (DEBUG)
-			  write(1,">", 1);
+			  if (write(1,">", 1) < 0) PERROR("write");
 			l = read(fd, buf, sizeof(buf));
 			if (l < 0) 
 			  PERROR("read");
@@ -121,11 +121,11 @@ int main(int argc, char *argv[])
 		}
 		if (FD_ISSET(s, &fdset)) {
 			if (DEBUG) 
-			  write(1,"<", 1);
+			  if (write(1,"<", 1) < 0) PERROR("write");
 			soutlen = sizeof(sout);
 			l = recvfrom(s, buf, sizeof(buf), 0, (struct sockaddr *)&sout, &soutlen);
 			if (l == -1) {
-			  write(1,"(", 1);
+			  if (write(1,"(", 1) < 0) PERROR("write");
 			  fprintf(stderr, "[%s,%d]", strerror(errno), l);
 			  continue;
 			}
