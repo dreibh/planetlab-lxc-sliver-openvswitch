@@ -513,7 +513,8 @@ help:
 
 # external nodes and links
 #
-EXTERNAL_LINKS := $(filter $(foreach host,$(EXTERNAL_HOSTS),%-$(host)),$(LINKS))
+ALL_LINKS := $(LINKS) $(patsubst L/%,%,$(filter L/%,$(MAKECMDGOALS)))
+EXTERNAL_LINKS := $(filter $(foreach host,$(EXTERNAL_HOSTS),%-$(host)),$(ALL_LINKS))
 
 $(foreach host,$(EXTERNAL_HOSTS),sshcheck-$(host)): ;
 $(foreach host,$(EXTERNAL_HOSTS),ovsversion-$(host)): ;
@@ -529,6 +530,7 @@ $(foreach host,$(EXTERNAL_HOSTS),cache/switch.$(host)): ;
 $(foreach host,$(EXTERNAL_HOSTS),cache/controller.$(host)): ;
 $(foreach link,$(EXTERNAL_LINKS),cache/iface.$(link)@2): ;
 $(foreach link,$(EXTERNAL_LINKS),cache/endpoint.$(link)@2): ;
+$(foreach link,$(EXTERNAL_LINKS),del-iface.$(link)@2): ;
 
 # we assume that a program called tunproxy is available on the
 # external nodes.  
