@@ -524,13 +524,7 @@ $(foreach host,$(EXTERNAL_HOSTS),showports-$(host)): ;
 $(foreach host,$(EXTERNAL_HOSTS),update-$(host)): ;
 $(foreach host,$(EXTERNAL_HOSTS),del-controller-$(host)): ;
 $(foreach host,$(EXTERNAL_HOSTS),cache/status.$(host)): ;
-$(foreach host,$(EXTERNAL_HOSTS),cache/db.$(host)): ;
-$(foreach host,$(EXTERNAL_HOSTS),cache/bridge.$(host)): ;
-$(foreach host,$(EXTERNAL_HOSTS),cache/switch.$(host)): ;
 $(foreach host,$(EXTERNAL_HOSTS),cache/controller.$(host)): ;
-$(foreach link,$(EXTERNAL_LINKS),cache/iface.$(link)@2): ;
-$(foreach link,$(EXTERNAL_LINKS),cache/port.$(link)@2): ;
-$(foreach link,$(EXTERNAL_LINKS),del-iface.$(link)@2): ;
 
 $(foreach host,$(EXTERNAL_HOSTS),cache/rsnap.ip.$(host)): ;
 	@touch $@
@@ -538,13 +532,47 @@ $(foreach host,$(EXTERNAL_HOSTS),cache/rsnap.ip.$(host)): ;
 $(foreach host,$(EXTERNAL_HOSTS),cache/rsnap.links.$(host)): ;
 	@touch $@
 
-# we assume that a program called tunproxy is available on the
-# external nodes.  
+$(foreach host,$(EXTERNAL_HOSTS),cache/db.$(host)):
+	@touch $@
+
+$(foreach host,$(EXTERNAL_HOSTS),cache/switch.$(host)): ;
+	@touch $@
+
 
 .SECONDEXPANSION:
+
+$(foreach host,$(EXTERNAL_HOSTS),cache/bridge.$(host)): cache/bridge.%: | cache/db.%
+	@echo "Creating fake bridge on external host $(call display,$*)"
+	@touch $@
+
+$(foreach link,$(EXTERNAL_LINKS),cache/iface.$(link)@2): cache/iface.%: cache/bridge.$$(call get,%) | cache/db.$$(call get,%)
+	@echo "Creating fake interface for link $(call linkpart,$*) on external host $(call get,$*)"
+	@touch $@
+
+$(foreach link,$(EXTERNAL_LINKS),cache/port.$(link)@2): cache/port.%: cache/iface.% cache/switch.$$(call get,%)
+	@echo "Getting port number for link $(call linkpart,$(*F)) on external host $(call display,$(call get,$(*F)))"
+	@echo $(call default,EXTERNAL_PORT,$(call rightnode,$*)) > $@
+
+
+$(foreach link,$(EXTERNAL_LINKS),del-iface.$(link)@2): del-iface.%: | cache/db.$$(call get,%)
+	@echo "Removing fake interface for link $(call linkpart,$*) from external host $(call get,$*)"
+	@rm -f cache/iface.$* \
+	       cache/port.$* cache/endpoint.$* cache/endpoint.$(call opp,$*) \
+	       L/$(call linkpart,$*)
+
+$(foreach host,$(EXTERNAL_HOSTS),del-bridge.$(host)): del-bridge.%: | cache/db.%
+	@echo "Deleting fake bridge on external host $(call display,$*)"
+	@rm -f cache/bridge.$* \
+	      cache/iface.$*$(SEP)*@1 cache/iface.*$(SEP)$*@2 \
+	      cache/port.$*$(SEP)*@1  cache/port.*$(SEP)$*@2  \
+	      cache/endpoint.$*$(SEP)*@?  cache/endpoint.*$(SEP)$*@?  \
+	      L/$*$(SEP)*	      L/*$(SEP)$* \
+	      cache/controller.$*
+
+# we assume that a program called tunproxy is available on the
+# external nodes.  
 $(foreach link,$(EXTERNAL_LINKS),cache/endpoint.$(link)@2): cache/endpoint.%@2: cache/port.%@1 cache/host.$$(call leftnode,%)
 	@#echo $* [$<] [$^] $(call rightnode,$*)
-	@echo $(call default,EXTERNAL_PORT,$(call rightnode,$*)) > $@
 	@echo "===>" $(call rightnode,$*): \
 	   ./tunproxy -t $$(cat cache/host.$(call leftnode,$*)):$$(cat cache/port.$*@1) \
            -p $(call default,EXTERNAL_PORT,$(call rightnode,$*)) -e -d
