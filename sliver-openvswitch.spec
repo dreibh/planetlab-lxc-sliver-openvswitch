@@ -1,8 +1,8 @@
 %define name sliver-openvswitch
 # to check for any change:
 # grep AC_INIT configure.ac 
-%define version 1.9.90
-%define taglevel 3
+%define version 1.10.90
+%define taglevel 1
 
 %define debug_package %{nil}
 
@@ -57,6 +57,10 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Mon Apr 22 2013 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.10.90-1
+- merged with upstream (develoment version 1.10.90)
+- integrated ALLEGRA contributions for the termination of virtual cables in external nodes.
+
 * Fri Feb 22 2013 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.9.90-3
 - pulled mainstream - amazingly this is still known as 1.9.90 despite the size of changes
 
