@@ -535,9 +535,18 @@ $(foreach host,$(EXTERNAL_HOSTS),cache/rsnap.links.$(host)): ;
 $(foreach host,$(EXTERNAL_HOSTS),cache/db.$(host)):
 	@touch $@
 
+$(foreach host,$(EXTERNAL_HOSTS),del-db.$(host)): del-db.%:
+	@rm cache/db.$*
+
 $(foreach host,$(EXTERNAL_HOSTS),cache/switch.$(host)): ;
 	@touch $@
 
+$(foreach host,$(EXTERNAL_HOSTS),del-switch.$(host)): del-switch.%:
+	@rm -f cache/switch.$* \
+	       cache/port.$*$(SEP)*@1  cache/port.*$(SEP)$*@2  \
+	       cache/endpoint.$*$(SEP)*@2  cache/endpoint.*$(SEP)$*@1  \
+	       L/$*$(SEP)*	      L/*$(SEP)$* \
+	       cache/controller.$*
 
 .SECONDEXPANSION:
 
