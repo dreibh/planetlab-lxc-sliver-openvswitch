@@ -388,7 +388,7 @@ cache/port.%: cache/iface.% cache/switch.$$(call get,%)
 #
 # We need the IP address and the UDP port of the other side and the interace of this side.
 # We need to set the info again if any of these change.
-cache/endpoint.%: cache/host.$$(call rget,%) cache/port.$$(call opp,%) cache/iface.%
+cache/endpoint.%: cache/host.$$(call rget,%) cache/port.$$(call opp,%) cache/iface.% | cache/db.$$(call get,%)
 	@echo "Setting port number of link $(call linkpart,$(*F)) on $(call display,$(call get,$(*F))) - logs in $(call log,$@)"
 	@$(SSH) $(call solve,$(call get,$(*F))) $(SUDO) sliver-ovs set-remote-endpoint L$(call linkpart,$(*F)) \
 			$$(cat cache/host.$(call rget,$(*F))) \
