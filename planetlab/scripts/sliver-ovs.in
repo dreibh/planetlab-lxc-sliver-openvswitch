@@ -67,10 +67,10 @@ function wait_server () {
 }
 
 function wait_device () {
-    tapname=$1; shift
-    timeout=$1; shift
+    local tapname=$1; shift
+    local timeout=$1; shift
 
-    expire=$(($(date +%s) + $timeout))
+    local expire=$(($(date +%s) + $timeout))
 
     while ! ip link show up | egrep -q "^[0-9]+: +$tapname:"; do
 	echo "Waiting for $tapname to come UP...$(($expire - $(date +%s)))s left" >&2
@@ -177,6 +177,12 @@ function create_bridge () {
     	-- set bridge "$bridge" datapath_type=planetlab \
 	-- set interface "$bridge" options:local_ip="$IP" option:local_netmask="$PREFIX" \
 	-- "$@"
+
+    # check that the bridge has actually been created
+    if [ -z "$W" ]; then
+	    local tap=$(ovs-appctl netdev-pltap/get-tapname "$bridge")
+	    wait_device $tap 10
+    fi
 }
 
 function create_port () {
