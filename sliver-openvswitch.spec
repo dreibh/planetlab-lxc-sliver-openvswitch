@@ -2,7 +2,7 @@
 # to check for any change:
 # grep AC_INIT configure.ac 
 %define version 1.10.90
-%define taglevel 1
+%define taglevel 2
 
 %define debug_package %{nil}
 
@@ -57,6 +57,10 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Wed May 01 2013 Giuseppe Lettieri <g.lettieri@iet.unipi.it> - sliver-openvswitch-1.10.90-2
+- - fixed several bugs in the external-nodes support in exp-tool/Makefile
+- - let sliver-ovs return an error if tap device configuration failed
+
 * Mon Apr 22 2013 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-1.10.90-1
 - merged with upstream (develoment version 1.10.90)
 - integrated ALLEGRA contributions for the termination of virtual cables in external nodes.
