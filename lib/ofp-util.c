@@ -1039,16 +1039,6 @@ regs_fully_wildcarded(const struct flow_wildcards *wc)
     return true;
 }
 
-static bool
-tun_parms_fully_wildcarded(const struct flow_wildcards *wc)
-{
-    return (!wc->masks.tunnel.ip_src &&
-            !wc->masks.tunnel.ip_dst &&
-            !wc->masks.tunnel.ip_ttl &&
-            !wc->masks.tunnel.ip_tos &&
-            !wc->masks.tunnel.flags);
-}
-
 /* Returns a bit-mask of ofputil_protocols that can be used for sending 'match'
  * to a switch (e.g. to add or remove a flow).  Only NXM can handle tunnel IDs,
  * registers, or fixing the Ethernet multicast bit.  Otherwise, it's better to
@@ -1060,8 +1050,9 @@ ofputil_usable_protocols(const struct match *match)
 
     BUILD_ASSERT_DECL(FLOW_WC_SEQ == 20);
 
-    /* tunnel params other than tun_id can't be sent in a flow_mod */
-    if (!tun_parms_fully_wildcarded(wc)) {
+    /* These tunnel params can't be sent in a flow_mod */
+    if (wc->masks.tunnel.ip_ttl
+        || wc->masks.tunnel.ip_tos || wc->masks.tunnel.flags) {
         return OFPUTIL_P_NONE;
     }
 
@@ -1107,8 +1098,10 @@ ofputil_usable_protocols(const struct match *match)
             | OFPUTIL_P_OF13_OXM;
     }
 
-    /* NXM and OXM support matching tun_id. */
-    if (wc->masks.tunnel.tun_id != htonll(0)) {
+    /* NXM and OXM support matching tun_id, tun_src, and tun_dst. */
+    if (wc->masks.tunnel.tun_id != htonll(0)
+        || wc->masks.tunnel.ip_src != htonl(0)
+        || wc->masks.tunnel.ip_dst != htonl(0)) {
         return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
             | OFPUTIL_P_OF13_OXM;
     }
@@ -2450,6 +2443,8 @@ ofputil_decode_packet_in_finish(struct ofputil_packet_in *pin,
 
     pin->fmd.in_port = match->flow.in_port;
     pin->fmd.tun_id = match->flow.tunnel.tun_id;
+    pin->fmd.tun_src = match->flow.tunnel.ip_src;
+    pin->fmd.tun_dst = match->flow.tunnel.ip_dst;
     pin->fmd.metadata = match->flow.metadata;
     memcpy(pin->fmd.regs, match->flow.regs, sizeof pin->fmd.regs);
 }
@@ -2549,6 +2544,12 @@ ofputil_packet_in_to_match(const struct ofputil_packet_in *pin,
     match_init_catchall(match);
     if (pin->fmd.tun_id != htonll(0)) {
         match_set_tun_id(match, pin->fmd.tun_id);
+    }
+    if (pin->fmd.tun_src != htonl(0)) {
+        match_set_tun_src(match, pin->fmd.tun_src);
+    }
+    if (pin->fmd.tun_dst != htonl(0)) {
+        match_set_tun_dst(match, pin->fmd.tun_dst);
     }
     if (pin->fmd.metadata != htonll(0)) {
         match_set_metadata(match, pin->fmd.metadata);
@@ -4235,7 +4236,7 @@ size_t ofputil_count_phy_ports(uint8_t ofp_version, struct ofpbuf *b)
 int
 ofputil_action_code_from_name(const char *name)
 {
-    static const char *names[OFPUTIL_N_ACTIONS] = {
+    static const char *const names[OFPUTIL_N_ACTIONS] = {
         NULL,
 #define OFPAT10_ACTION(ENUM, STRUCT, NAME)             NAME,
 #define OFPAT11_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME) NAME,
@@ -4243,7 +4244,7 @@ ofputil_action_code_from_name(const char *name)
 #include "ofp-util.def"
     };
 
-    const char **p;
+    const char *const *p;
 
     for (p = names; p < &names[ARRAY_SIZE(names)]; p++) {
         if (*p && !strcasecmp(name, *p)) {
@@ -4520,7 +4521,7 @@ ofputil_parse_key_value(char **stringp, char **keyp, char **valuep)
  * will be for Open Flow version 'ofp_version'. Returns message
  * as a struct ofpbuf. Returns encoded message on success, NULL on error */
 struct ofpbuf *
-ofputil_encode_dump_ports_request(enum ofp_version ofp_version, int16_t port)
+ofputil_encode_dump_ports_request(enum ofp_version ofp_version, uint16_t port)
 {
     struct ofpbuf *request;
 

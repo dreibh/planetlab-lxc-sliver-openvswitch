@@ -43,6 +43,8 @@ struct tnl_match {
     uint32_t odp_port;
     uint32_t skb_mark;
     bool in_key_flow;
+    bool ip_src_flow;
+    bool ip_dst_flow;
 };
 
 struct tnl_port {
@@ -90,6 +92,8 @@ tnl_port_add__(const struct ofport *ofport, uint32_t odp_port,
     tnl_port->match.in_key = cfg->in_key;
     tnl_port->match.ip_src = cfg->ip_src;
     tnl_port->match.ip_dst = cfg->ip_dst;
+    tnl_port->match.ip_src_flow = cfg->ip_src_flow;
+    tnl_port->match.ip_dst_flow = cfg->ip_dst_flow;
     tnl_port->match.skb_mark = cfg->ipsec ? IPSEC_MARK : 0;
     tnl_port->match.in_key_flow = cfg->in_key_flow;
     tnl_port->match.odp_port = odp_port;
@@ -159,17 +163,14 @@ tnl_port_del(struct tnl_port *tnl_port)
     }
 }
 
-/* Transforms 'flow' so that it appears to have been received by a tunnel
- * OpenFlow port controlled by this module instead of the datapath port it
- * actually came in on.  Sets 'flow''s in_port to the appropriate OpenFlow port
- * number.  Returns the 'ofport' corresponding to the new in_port.
+/* Looks in the table of tunnels for a tunnel matching the metadata in 'flow'.
+ * Returns the 'ofport' corresponding to the new in_port, or a null pointer if
+ * none is found.
  *
  * Callers should verify that 'flow' needs to be received by calling
- * tnl_port_should_receive() before this function.
- *
- * Leaves 'flow' untouched and returns null if unsuccessful. */
+ * tnl_port_should_receive() before this function. */
 const struct ofport *
-tnl_port_receive(struct flow *flow)
+tnl_port_receive(const struct flow *flow)
 {
     char *pre_flow_str = NULL;
     struct tnl_port *tnl_port;
@@ -195,10 +196,6 @@ tnl_port_receive(struct flow *flow)
     if (!VLOG_DROP_DBG(&dbg_rl)) {
         pre_flow_str = flow_to_string(flow);
     }
-
-    flow->in_port = tnl_port->ofport->ofp_port;
-    memset(&flow->tunnel, 0, sizeof flow->tunnel);
-    flow->tunnel.tun_id = match.in_key;
 
     if (pre_flow_str) {
         char *post_flow_str = flow_to_string(flow);
@@ -236,8 +233,12 @@ tnl_port_send(const struct tnl_port *tnl_port, struct flow *flow)
         pre_flow_str = flow_to_string(flow);
     }
 
-    flow->tunnel.ip_src = tnl_port->match.ip_src;
-    flow->tunnel.ip_dst = tnl_port->match.ip_dst;
+    if (!cfg->ip_src_flow) {
+        flow->tunnel.ip_src = tnl_port->match.ip_src;
+    }
+    if (!cfg->ip_dst_flow) {
+        flow->tunnel.ip_dst = tnl_port->match.ip_dst;
+    }
     flow->skb_mark = tnl_port->match.skb_mark;
 
     if (!cfg->out_key_flow) {
@@ -338,14 +339,36 @@ tnl_find(struct tnl_match *match_)
         return tnl_port;
     }
 
+    /* Flow-based remote */
+    match.ip_dst = 0;
+    match.ip_dst_flow = true;
+    tnl_port = tnl_find_exact(&match);
+    if (tnl_port) {
+        return tnl_port;
+    }
+
+    /* Flow-based everything */
+    match.ip_src = 0;
+    match.ip_src_flow = true;
+    tnl_port = tnl_find_exact(&match);
+    if (tnl_port) {
+        return tnl_port;
+    }
+
     return NULL;
 }
 
 static void
 tnl_match_fmt(const struct tnl_match *match, struct ds *ds)
 {
-    ds_put_format(ds, IP_FMT"->"IP_FMT, IP_ARGS(match->ip_src),
-                  IP_ARGS(match->ip_dst));
+    if (!match->ip_dst_flow) {
+        ds_put_format(ds, IP_FMT"->"IP_FMT, IP_ARGS(match->ip_src),
+                      IP_ARGS(match->ip_dst));
+    } else if (!match->ip_src_flow) {
+        ds_put_format(ds, IP_FMT"->flow", IP_ARGS(match->ip_src));
+    } else {
+        ds_put_cstr(ds, "flow->flow");
+    }
 
     if (match->in_key_flow) {
         ds_put_cstr(ds, ", key=flow");

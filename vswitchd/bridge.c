@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <stdlib.h>
+#include "bfd.h"
 #include "bitmap.h"
 #include "bond.h"
 #include "cfm.h"
@@ -373,6 +374,7 @@ bridge_init(const char *remote)
     ovsdb_idl_omit_alert(idl, &ovsrec_interface_col_cfm_remote_mpids);
     ovsdb_idl_omit_alert(idl, &ovsrec_interface_col_cfm_health);
     ovsdb_idl_omit_alert(idl, &ovsrec_interface_col_cfm_remote_opstate);
+    ovsdb_idl_omit_alert(idl, &ovsrec_interface_col_bfd_status);
     ovsdb_idl_omit_alert(idl, &ovsrec_interface_col_lacp_current);
     ovsdb_idl_omit(idl, &ovsrec_interface_col_external_ids);
 
@@ -605,6 +607,8 @@ bridge_reconfigure_continue(const struct ovsrec_open_vswitch *ovs_cfg)
                 iface_configure_cfm(iface);
                 iface_configure_qos(iface, port->cfg->qos);
                 iface_set_mac(iface);
+                ofproto_port_set_bfd(br->ofproto, iface->ofp_port,
+                                     &iface->cfg->bfd);
             }
         }
         bridge_configure_mirrors(br);
@@ -1445,7 +1449,7 @@ iface_do_create(const struct bridge *br,
 
     if ((port_cfg->vlan_mode && !strcmp(port_cfg->vlan_mode, "splinter"))
         || iface_is_internal(iface_cfg, br->cfg)) {
-        netdev_turn_flags_on(netdev, NETDEV_UP, true);
+        netdev_turn_flags_on(netdev, NETDEV_UP, NULL);
     }
 
     *netdevp = netdev;
@@ -1898,11 +1902,12 @@ iface_refresh_stats(struct iface *iface)
     IFACE_STAT(rx_crc_errors,   "rx_crc_err")   \
     IFACE_STAT(collisions,      "collisions")
 
-#define IFACE_STAT(MEMBER, NAME) NAME,
-    static char *keys[] = { IFACE_STATS };
+#define IFACE_STAT(MEMBER, NAME) + 1
+    enum { N_IFACE_STATS = IFACE_STATS };
 #undef IFACE_STAT
-    int64_t values[ARRAY_SIZE(keys)];
-    int i;
+    int64_t values[N_IFACE_STATS];
+    char *keys[N_IFACE_STATS];
+    int n;
 
     struct netdev_stats stats;
 
@@ -1914,15 +1919,19 @@ iface_refresh_stats(struct iface *iface)
      * all-1s, and we will deal with that correctly below. */
     netdev_get_stats(iface->netdev, &stats);
 
-    /* Copy statistics into values[] array. */
-    i = 0;
-#define IFACE_STAT(MEMBER, NAME) values[i++] = stats.MEMBER;
+    /* Copy statistics into keys[] and values[]. */
+    n = 0;
+#define IFACE_STAT(MEMBER, NAME)                \
+    if (stats.MEMBER != UINT64_MAX) {           \
+        keys[n] = NAME;                         \
+        values[n] = stats.MEMBER;               \
+        n++;                                    \
+    }
     IFACE_STATS;
 #undef IFACE_STAT
-    ovs_assert(i == ARRAY_SIZE(keys));
+    ovs_assert(n <= N_IFACE_STATS);
 
-    ovsrec_interface_set_statistics(iface->cfg, keys, values,
-                                    ARRAY_SIZE(keys));
+    ovsrec_interface_set_statistics(iface->cfg, keys, values, n);
 #undef IFACE_STATS
 }
 
@@ -2170,6 +2179,7 @@ instant_stats_run(void)
 
             HMAP_FOR_EACH (iface, name_node, &br->iface_by_name) {
                 enum netdev_flags flags;
+                struct smap smap;
                 const char *link_state;
                 int64_t link_resets;
                 int current, error;
@@ -2202,6 +2212,13 @@ instant_stats_run(void)
                 ovsrec_interface_set_link_resets(iface->cfg, &link_resets, 1);
 
                 iface_refresh_cfm_stats(iface);
+
+                smap_init(&smap);
+                if (!ofproto_port_get_bfd_status(br->ofproto, iface->ofp_port,
+                                                 &smap)) {
+                    ovsrec_interface_set_bfd_status(iface->cfg, &smap);
+                    smap_destroy(&smap);
+                }
             }
         }
     }
@@ -2875,7 +2892,7 @@ bridge_configure_local_iface_netdev(struct bridge *br,
 
     /* Bring up the local interface. */
     netdev = local_iface->netdev;
-    netdev_turn_flags_on(netdev, NETDEV_UP, true);
+    netdev_turn_flags_on(netdev, NETDEV_UP, NULL);
 
     /* Configure the IP address and netmask. */
     if (!c->local_netmask

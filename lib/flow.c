@@ -229,9 +229,8 @@ parse_ipv6(struct ofpbuf *packet, struct flow *flow)
 
             /* We only process the first fragment. */
             if (frag_hdr->ip6f_offlg != htons(0)) {
-                if ((frag_hdr->ip6f_offlg & IP6F_OFF_MASK) == htons(0)) {
-                    flow->nw_frag = FLOW_NW_FRAG_ANY;
-                } else {
+                flow->nw_frag = FLOW_NW_FRAG_ANY;
+                if ((frag_hdr->ip6f_offlg & IP6F_OFF_MASK) != htons(0)) {
                     flow->nw_frag |= FLOW_NW_FRAG_LATER;
                     nexthdr = IPPROTO_FRAGMENT;
                     break;
@@ -495,6 +494,8 @@ flow_get_metadata(const struct flow *flow, struct flow_metadata *fmd)
     BUILD_ASSERT_DECL(FLOW_WC_SEQ == 20);
 
     fmd->tun_id = flow->tunnel.tun_id;
+    fmd->tun_src = flow->tunnel.ip_src;
+    fmd->tun_dst = flow->tunnel.ip_dst;
     fmd->metadata = flow->metadata;
     memcpy(fmd->regs, flow->regs, sizeof fmd->regs);
     fmd->in_port = flow->in_port;

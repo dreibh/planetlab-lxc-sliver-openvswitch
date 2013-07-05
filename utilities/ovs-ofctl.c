@@ -516,9 +516,9 @@ dump_trivial_stats_transaction(const char *vconn_name, enum ofpraw raw)
     vconn_close(vconn);
 }
 
-/* Sends 'request', which should be a request that only has a reply if an error
- * occurs, and waits for it to succeed or fail.  If an error does occur, prints
- * it and exits with an error.
+/* Sends all of the 'requests', which should be requests that only have replies
+ * if an error occurs, and waits for them to succeed or fail.  If an error does
+ * occur, prints it and exits with an error.
  *
  * Destroys all of the 'requests'. */
 static void
@@ -1312,8 +1312,12 @@ ofctl_unblock(struct unixctl_conn *conn, int argc OVS_UNUSED,
     }
 }
 
+/* Prints to stdout all of the messages received on 'vconn'.
+ *
+ * Iff 'reply_to_echo_requests' is true, sends a reply to any echo request
+ * received on 'vconn'. */
 static void
-monitor_vconn(struct vconn *vconn)
+monitor_vconn(struct vconn *vconn, bool reply_to_echo_requests)
 {
     struct barrier_aux barrier_aux = { vconn, NULL };
     struct unixctl_server *server;
@@ -1357,23 +1361,35 @@ monitor_vconn(struct vconn *vconn)
             run(retval, "vconn_recv");
 
             if (timestamp) {
-                time_t now = time_wall();
-                struct tm tm;
-                char s[32];
-
-                strftime(s, sizeof s, "%Y-%m-%d %H:%M:%S: ",
-                         gmtime_r(&now, &tm));
+                char *s = xastrftime("%Y-%m-%d %H:%M:%S: ", time_wall(), true);
                 fputs(s, stderr);
+                free(s);
             }
 
             ofptype_decode(&type, b->data);
             ofp_print(stderr, b->data, b->size, verbosity + 2);
-            ofpbuf_delete(b);
 
-            if (barrier_aux.conn && type == OFPTYPE_BARRIER_REPLY) {
-                unixctl_command_reply(barrier_aux.conn, NULL);
-                barrier_aux.conn = NULL;
+            switch ((int) type) {
+            case OFPTYPE_BARRIER_REPLY:
+                if (barrier_aux.conn) {
+                    unixctl_command_reply(barrier_aux.conn, NULL);
+                    barrier_aux.conn = NULL;
+                }
+                break;
+
+            case OFPTYPE_ECHO_REQUEST:
+                if (reply_to_echo_requests) {
+                    struct ofpbuf *reply;
+
+                    reply = make_echo_reply(b->data);
+                    retval = vconn_send_block(vconn, reply);
+                    if (retval) {
+                        ovs_fatal(retval, "failed to send echo reply");
+                    }
+                }
+                break;
             }
+            ofpbuf_delete(b);
         }
 
         if (exiting) {
@@ -1456,7 +1472,7 @@ ofctl_monitor(int argc, char *argv[])
         }
     }
 
-    monitor_vconn(vconn);
+    monitor_vconn(vconn, true);
 }
 
 static void
@@ -1465,7 +1481,7 @@ ofctl_snoop(int argc OVS_UNUSED, char *argv[])
     struct vconn *vconn;
 
     open_vconn__(argv[1], SNOOP, &vconn);
-    monitor_vconn(vconn);
+    monitor_vconn(vconn, false);
 }
 
 static void

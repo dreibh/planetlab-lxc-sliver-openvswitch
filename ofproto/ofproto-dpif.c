@@ -20,6 +20,7 @@
 
 #include <errno.h>
 
+#include "bfd.h"
 #include "bond.h"
 #include "bundle.h"
 #include "byte-order.h"
@@ -217,6 +218,17 @@ struct action_xlate_ctx {
      * this flow when actions change header fields. */
     struct flow flow;
 
+    /* Flow at the last commit. */
+    struct flow base_flow;
+
+    /* Tunnel IP destination address as received.  This is stored separately
+     * as the base_flow.tunnel is cleared on init to reflect the datapath
+     * behavior.  Used to make sure not to send tunneled output to ourselves,
+     * which might lead to an infinite loop.  This could happen easily
+     * if a tunnel is marked as 'ip_remote=flow', and the flow does not
+     * actually set the tun_dst field. */
+    ovs_be32 orig_tunnel_ip_dst;
+
     /* stack for the push and pop actions.
      * Each stack element is of the type "union mf_subvalue". */
     struct ofpbuf stack;
@@ -282,7 +294,6 @@ struct action_xlate_ctx {
 
     int recurse;                /* Recursion level, via xlate_table_action. */
     bool max_resubmit_trigger;  /* Recursed too deeply during translation. */
-    struct flow base_flow;      /* Flow at the last commit. */
     uint32_t orig_skb_priority; /* Priority when packet arrived. */
     uint8_t table_id;           /* OpenFlow table ID where flow was found. */
     uint32_t sflow_n_outputs;   /* Number of output ports. */
@@ -304,9 +315,6 @@ struct initial_vals {
     * This member should be removed when the VLAN splinters feature is no
     * longer needed. */
     ovs_be16 vlan_tci;
-
-    /* If received on a tunnel, the IP TOS value of the tunnel. */
-    uint8_t tunnel_ip_tos;
 };
 
 static void action_xlate_ctx_init(struct action_xlate_ctx *,
@@ -531,6 +539,7 @@ struct ofport_dpif {
     struct ofbundle *bundle;    /* Bundle that contains this port, if any. */
     struct list bundle_node;    /* In struct ofbundle's "ports" list. */
     struct cfm *cfm;            /* Connectivity Fault Management, if any. */
+    struct bfd *bfd;            /* BFD, if any. */
     tag_type tag;               /* Tag associated with this port. */
     bool may_enable;            /* May be enabled in bonds. */
     long long int carrier_seq;  /* Carrier status changes. */
@@ -591,7 +600,6 @@ static uint16_t odp_port_to_ofp_port(const struct ofproto_dpif *,
 static struct ofport_dpif *
 ofport_dpif_cast(const struct ofport *ofport)
 {
-    ovs_assert(ofport->ofproto->ofproto_class == &ofproto_dpif_class);
     return ofport ? CONTAINER_OF(ofport, struct ofport_dpif, up) : NULL;
 }
 
@@ -1778,6 +1786,7 @@ port_construct(struct ofport *port_)
     ofproto->backer->need_revalidate = REV_RECONFIGURE;
     port->bundle = NULL;
     port->cfm = NULL;
+    port->bfd = NULL;
     port->tag = tag_create_random();
     port->may_enable = true;
     port->stp_port = NULL;
@@ -1992,6 +2001,35 @@ get_cfm_status(const struct ofport *ofport_,
         return true;
     } else {
         return false;
+    }
+}
+
+static int
+set_bfd(struct ofport *ofport_, const struct smap *cfg)
+{
+    struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofport_->ofproto);
+    struct ofport_dpif *ofport = ofport_dpif_cast(ofport_);
+    struct bfd *old;
+
+    old = ofport->bfd;
+    ofport->bfd = bfd_configure(old, netdev_get_name(ofport->up.netdev), cfg);
+    if (ofport->bfd != old) {
+        ofproto->backer->need_revalidate = REV_RECONFIGURE;
+    }
+
+    return 0;
+}
+
+static int
+get_bfd_status(struct ofport *ofport_, struct smap *smap)
+{
+    struct ofport_dpif *ofport = ofport_dpif_cast(ofport_);
+
+    if (ofport->bfd) {
+        bfd_get_status(ofport->bfd, smap);
+        return 0;
+    } else {
+        return ENOENT;
     }
 }
 
@@ -3133,6 +3171,15 @@ port_run_fast(struct ofport_dpif *ofport)
         send_packet(ofport, &packet);
         ofpbuf_uninit(&packet);
     }
+
+    if (ofport->bfd && bfd_should_send_packet(ofport->bfd)) {
+        struct ofpbuf packet;
+
+        ofpbuf_init(&packet, 0);
+        bfd_put_packet(ofport->bfd, &packet, ofport->up.pp.hw_addr);
+        send_packet(ofport, &packet);
+        ofpbuf_uninit(&packet);
+    }
 }
 
 static void
@@ -3163,6 +3210,11 @@ port_run(struct ofport_dpif *ofport)
         }
     }
 
+    if (ofport->bfd) {
+        bfd_run(ofport->bfd);
+        enable = enable && bfd_forwarding(ofport->bfd);
+    }
+
     if (ofport->bundle) {
         enable = enable && lacp_slave_may_enable(ofport->bundle->lacp, ofport);
         if (carrier_changed) {
@@ -3186,6 +3238,10 @@ port_wait(struct ofport_dpif *ofport)
 {
     if (ofport->cfm) {
         cfm_wait(ofport->cfm);
+    }
+
+    if (ofport->bfd) {
+        bfd_wait(ofport->bfd);
     }
 }
 
@@ -3326,23 +3382,6 @@ port_get_stats(const struct ofport *ofport_, struct netdev_stats *stats)
     }
 
     return error;
-}
-
-/* Account packets for LOCAL port. */
-static void
-ofproto_update_local_port_stats(const struct ofproto *ofproto_,
-                                size_t tx_size, size_t rx_size)
-{
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
-
-    if (rx_size) {
-        ofproto->stats.rx_packets++;
-        ofproto->stats.rx_bytes += rx_size;
-    }
-    if (tx_size) {
-        ofproto->stats.tx_packets++;
-        ofproto->stats.tx_bytes += tx_size;
-    }
 }
 
 struct port_dump_state {
@@ -3510,6 +3549,11 @@ process_special(struct ofproto_dpif *ofproto, const struct flow *flow,
             cfm_process_heartbeat(ofport->cfm, packet);
         }
         return SLOW_CFM;
+    } else if (ofport->bfd && bfd_should_process_flow(flow)) {
+        if (packet) {
+            bfd_process_packet(ofport->bfd, flow, packet);
+        }
+        return SLOW_BFD;
     } else if (ofport->bundle && ofport->bundle->lacp
                && flow->dl_type == htons(ETH_TYPE_LACP)) {
         if (packet) {
@@ -3837,8 +3881,7 @@ drop_key_clear(struct dpif_backer *backer)
  * to the VLAN TCI with which the packet was really received, that is, the
  * actual VLAN TCI extracted by odp_flow_key_to_flow().  (This differs from
  * the value returned in flow->vlan_tci only for packets received on
- * VLAN splinters.)  Also, if received on an IP tunnel, sets
- * 'initial_vals->tunnel_ip_tos' to the tunnel's IP TOS.
+ * VLAN splinters.)
  *
  * Similarly, this function also includes some logic to help with tunnels.  It
  * may modify 'flow' as necessary to make the tunneling implementation
@@ -3865,60 +3908,47 @@ ofproto_receive(const struct dpif_backer *backer, struct ofpbuf *packet,
 
     if (initial_vals) {
         initial_vals->vlan_tci = flow->vlan_tci;
-        initial_vals->tunnel_ip_tos = flow->tunnel.ip_tos;
     }
 
     if (odp_in_port) {
         *odp_in_port = flow->in_port;
     }
 
-    if (tnl_port_should_receive(flow)) {
-        const struct ofport *ofport = tnl_port_receive(flow);
-        if (!ofport) {
-            flow->in_port = OFPP_NONE;
-            goto exit;
-        }
-        port = ofport_dpif_cast(ofport);
+    port = (tnl_port_should_receive(flow)
+            ? ofport_dpif_cast(tnl_port_receive(flow))
+            : odp_port_to_ofport(backer, flow->in_port));
+    flow->in_port = port ? port->up.ofp_port : OFPP_NONE;
+    if (!port) {
+        goto exit;
+    }
 
+    /* XXX: Since the tunnel module is not scoped per backer, for a tunnel port
+     * it's theoretically possible that we'll receive an ofport belonging to an
+     * entirely different datapath.  In practice, this can't happen because no
+     * platforms has two separate datapaths which each support tunneling. */
+    ovs_assert(ofproto_dpif_cast(port->up.ofproto)->backer == backer);
+
+    if (vsp_adjust_flow(ofproto_dpif_cast(port->up.ofproto), flow)) {
+        if (packet) {
+            /* Make the packet resemble the flow, so that it gets sent to
+             * an OpenFlow controller properly, so that it looks correct
+             * for sFlow, and so that flow_extract() will get the correct
+             * vlan_tci if it is called on 'packet'.
+             *
+             * The allocated space inside 'packet' probably also contains
+             * 'key', that is, both 'packet' and 'key' are probably part of
+             * a struct dpif_upcall (see the large comment on that
+             * structure definition), so pushing data on 'packet' is in
+             * general not a good idea since it could overwrite 'key' or
+             * free it as a side effect.  However, it's OK in this special
+             * case because we know that 'packet' is inside a Netlink
+             * attribute: pushing 4 bytes will just overwrite the 4-byte
+             * "struct nlattr", which is fine since we don't need that
+             * header anymore. */
+            eth_push_vlan(packet, flow->vlan_tci);
+        }
         /* We can't reproduce 'key' from 'flow'. */
         fitness = fitness == ODP_FIT_PERFECT ? ODP_FIT_TOO_MUCH : fitness;
-
-        /* XXX: Since the tunnel module is not scoped per backer, it's
-         * theoretically possible that we'll receive an ofport belonging to an
-         * entirely different datapath.  In practice, this can't happen because
-         * no platforms has two separate datapaths which each support
-         * tunneling. */
-        ovs_assert(ofproto_dpif_cast(port->up.ofproto)->backer == backer);
-    } else {
-        port = odp_port_to_ofport(backer, flow->in_port);
-        if (!port) {
-            flow->in_port = OFPP_NONE;
-            goto exit;
-        }
-
-        flow->in_port = port->up.ofp_port;
-        if (vsp_adjust_flow(ofproto_dpif_cast(port->up.ofproto), flow)) {
-            if (packet) {
-                /* Make the packet resemble the flow, so that it gets sent to
-                 * an OpenFlow controller properly, so that it looks correct
-                 * for sFlow, and so that flow_extract() will get the correct
-                 * vlan_tci if it is called on 'packet'.
-                 *
-                 * The allocated space inside 'packet' probably also contains
-                 * 'key', that is, both 'packet' and 'key' are probably part of
-                 * a struct dpif_upcall (see the large comment on that
-                 * structure definition), so pushing data on 'packet' is in
-                 * general not a good idea since it could overwrite 'key' or
-                 * free it as a side effect.  However, it's OK in this special
-                 * case because we know that 'packet' is inside a Netlink
-                 * attribute: pushing 4 bytes will just overwrite the 4-byte
-                 * "struct nlattr", which is fine since we don't need that
-                 * header anymore. */
-                eth_push_vlan(packet, flow->vlan_tci);
-            }
-            /* We can't reproduce 'key' from 'flow'. */
-            fitness = fitness == ODP_FIT_PERFECT ? ODP_FIT_TOO_MUCH : fitness;
-        }
     }
     error = 0;
 
@@ -4527,7 +4557,7 @@ expire_subfacets(struct ofproto_dpif *ofproto, int dp_max_idle)
                         &ofproto->subfacets) {
         long long int cutoff;
 
-        cutoff = (subfacet->slow & (SLOW_CFM | SLOW_LACP | SLOW_STP)
+        cutoff = (subfacet->slow & (SLOW_CFM | SLOW_BFD | SLOW_LACP | SLOW_STP)
                   ? special_cutoff
                   : normal_cutoff);
         if (subfacet->used < cutoff) {
@@ -4813,9 +4843,6 @@ facet_flush_stats(struct facet *facet)
         expired.used = facet->used;
         netflow_expire(ofproto->netflow, &facet->nf_flow, &expired);
     }
-
-    facet->rule->packet_count += facet->packet_count;
-    facet->rule->byte_count += facet->byte_count;
 
     /* Reset counters to prevent double counting if 'facet' ever gets
      * reinstalled. */
@@ -5198,6 +5225,7 @@ facet_push_stats(struct facet *facet)
         facet->prev_byte_count = facet->byte_count;
         facet->prev_used = facet->used;
 
+        rule_credit_stats(facet->rule, &stats);
         flow_push_stats(facet, &stats);
 
         update_mirror_stats(ofproto_dpif_cast(facet->rule->up.ofproto),
@@ -5715,7 +5743,6 @@ static void
 rule_get_stats(struct rule *rule_, uint64_t *packets, uint64_t *bytes)
 {
     struct rule_dpif *rule = rule_dpif_cast(rule_);
-    struct facet *facet;
 
     /* push_all_stats() can handle flow misses which, when using the learn
      * action, can cause rules to be added and deleted.  This can corrupt our
@@ -5727,14 +5754,6 @@ rule_get_stats(struct rule *rule_, uint64_t *packets, uint64_t *bytes)
      * in facets.  This counts, for example, facets that have expired. */
     *packets = rule->packet_count;
     *bytes = rule->byte_count;
-
-    /* Add any statistics that are tracked by facets.  This includes
-     * statistical data recently updated by ofproto_update_stats() as well as
-     * stats for packets that were executed "by hand" via dpif_execute(). */
-    LIST_FOR_EACH (facet, list_node, &rule->facets) {
-        *packets += facet->packet_count;
-        *bytes += facet->byte_count;
-    }
 }
 
 static void
@@ -5752,7 +5771,6 @@ rule_dpif_execute(struct rule_dpif *rule, const struct flow *flow,
     rule_credit_stats(rule, &stats);
 
     initial_vals.vlan_tci = flow->vlan_tci;
-    initial_vals.tunnel_ip_tos = flow->tunnel.ip_tos;
     ofpbuf_use_stub(&odp_actions, odp_actions_stub, sizeof odp_actions_stub);
     action_xlate_ctx_init(&ctx, ofproto, flow, &initial_vals,
                           rule, stats.tcp_flags, packet);
@@ -5788,69 +5806,33 @@ rule_modify_actions(struct rule *rule_)
 static int
 send_packet(const struct ofport_dpif *ofport, struct ofpbuf *packet)
 {
-    const struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofport->up.ofproto);
+    struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofport->up.ofproto);
     uint64_t odp_actions_stub[1024 / 8];
     struct ofpbuf key, odp_actions;
+    struct dpif_flow_stats stats;
     struct odputil_keybuf keybuf;
-    uint32_t odp_port;
+    struct ofpact_output output;
+    struct action_xlate_ctx ctx;
     struct flow flow;
     int error;
 
-    flow_extract(packet, 0, 0, NULL, OFPP_LOCAL, &flow);
-    if (netdev_vport_is_patch(ofport->up.netdev)) {
-        struct ofproto_dpif *peer_ofproto;
-        struct dpif_flow_stats stats;
-        struct ofport_dpif *peer;
-        struct rule_dpif *rule;
-
-        peer = ofport_get_peer(ofport);
-        if (!peer) {
-            return ENODEV;
-        }
-
-        dpif_flow_stats_extract(&flow, packet, time_msec(), &stats);
-        netdev_vport_inc_tx(ofport->up.netdev, &stats);
-        netdev_vport_inc_rx(peer->up.netdev, &stats);
-
-        flow.in_port = peer->up.ofp_port;
-        peer_ofproto = ofproto_dpif_cast(peer->up.ofproto);
-        rule = rule_dpif_lookup(peer_ofproto, &flow);
-        rule_dpif_execute(rule, &flow, packet);
-
-        return 0;
-    }
-
     ofpbuf_use_stub(&odp_actions, odp_actions_stub, sizeof odp_actions_stub);
-
-    if (ofport->tnl_port) {
-        struct dpif_flow_stats stats;
-
-        odp_port = tnl_port_send(ofport->tnl_port, &flow);
-        if (odp_port == OVSP_NONE) {
-            return ENODEV;
-        }
-
-        dpif_flow_stats_extract(&flow, packet, time_msec(), &stats);
-        netdev_vport_inc_tx(ofport->up.netdev, &stats);
-        odp_put_tunnel_action(&flow.tunnel, &odp_actions);
-        odp_put_skb_mark_action(flow.skb_mark, &odp_actions);
-    } else {
-        odp_port = vsp_realdev_to_vlandev(ofproto, ofport->odp_port,
-                                          flow.vlan_tci);
-        if (odp_port != ofport->odp_port) {
-            eth_pop_vlan(packet);
-            flow.vlan_tci = htons(0);
-        }
-    }
-
     ofpbuf_use_stack(&key, &keybuf, sizeof keybuf);
-    odp_flow_key_from_flow(&key, &flow,
-                           ofp_port_to_odp_port(ofproto, flow.in_port));
 
-    compose_sflow_action(ofproto, &odp_actions, &flow, odp_port);
-    compose_ipfix_action(ofproto, &odp_actions, &flow);
+    /* Use OFPP_NONE as the in_port to avoid special packet processing. */
+    flow_extract(packet, 0, 0, NULL, OFPP_NONE, &flow);
+    odp_flow_key_from_flow(&key, &flow, ofp_port_to_odp_port(ofproto,
+                                                             OFPP_LOCAL));
+    dpif_flow_stats_extract(&flow, packet, time_msec(), &stats);
 
-    nl_msg_put_u32(&odp_actions, OVS_ACTION_ATTR_OUTPUT, odp_port);
+    ofpact_init(&output.ofpact, OFPACT_OUTPUT, sizeof output);
+    output.port = ofport->up.ofp_port;
+    output.max_len = 0;
+
+    action_xlate_ctx_init(&ctx, ofproto, &flow, NULL, NULL, 0, packet);
+    ctx.resubmit_stats = &stats;
+    xlate_actions(&ctx, &output.ofpact, sizeof output, &odp_actions);
+
     error = dpif_execute(ofproto->backer->dpif,
                          key.data, key.size,
                          odp_actions.data, odp_actions.size,
@@ -5858,10 +5840,13 @@ send_packet(const struct ofport_dpif *ofport, struct ofpbuf *packet)
     ofpbuf_uninit(&odp_actions);
 
     if (error) {
-        VLOG_WARN_RL(&rl, "%s: failed to send packet on port %"PRIu32" (%s)",
-                     ofproto->up.name, odp_port, strerror(error));
+        VLOG_WARN_RL(&rl, "%s: failed to send packet on port %s (%s)",
+                     ofproto->up.name, netdev_get_name(ofport->up.netdev),
+                     strerror(error));
     }
-    ofproto_update_local_port_stats(ofport->up.ofproto, packet->size, 0);
+
+    ofproto->stats.tx_packets++;
+    ofproto->stats.tx_bytes += packet->size;
     return error;
 }
 
@@ -5896,7 +5881,7 @@ compose_slow_path(const struct ofproto_dpif *ofproto, const struct flow *flow,
     cookie.slow_path.reason = slow;
 
     ofpbuf_use_stack(&buf, stub, stub_size);
-    if (slow & (SLOW_CFM | SLOW_LACP | SLOW_STP)) {
+    if (slow & (SLOW_CFM | SLOW_BFD | SLOW_LACP | SLOW_STP)) {
         uint32_t pid = dpif_port_get_pid(ofproto->backer->dpif, UINT32_MAX);
         odp_put_userspace_action(pid, &cookie, sizeof cookie.slow_path, &buf);
     } else {
@@ -6185,7 +6170,10 @@ compose_output_action__(struct action_xlate_ctx *ctx, uint16_t ofp_port,
             xlate_report(ctx, "Tunneling decided against output");
             goto out; /* restore flow_nw_tos */
         }
-
+        if (ctx->flow.tunnel.ip_dst == ctx->orig_tunnel_ip_dst) {
+            xlate_report(ctx, "Not tunneling to our own address");
+            goto out; /* restore flow_nw_tos */
+        }
         if (ctx->resubmit_stats) {
             netdev_vport_inc_tx(ofport->up.netdev, ctx->resubmit_stats);
         }
@@ -6750,7 +6738,7 @@ static bool
 tunnel_ecn_ok(struct action_xlate_ctx *ctx)
 {
     if (is_ip_any(&ctx->base_flow)
-        && (ctx->base_flow.tunnel.ip_tos & IP_ECN_MASK) == IP_ECN_CE) {
+        && (ctx->flow.tunnel.ip_tos & IP_ECN_MASK) == IP_ECN_CE) {
         if ((ctx->base_flow.nw_tos & IP_ECN_MASK) == IP_ECN_NOT_ECT) {
             VLOG_WARN_RL(&rl, "dropping tunnel packet marked ECN CE"
                          " but is not ECN capable");
@@ -7025,8 +7013,6 @@ action_xlate_ctx_init(struct action_xlate_ctx *ctx,
                       struct rule_dpif *rule,
                       uint8_t tcp_flags, const struct ofpbuf *packet)
 {
-    ovs_be64 initial_tun_id = flow->tunnel.tun_id;
-
     /* Flow initialization rules:
      * - 'base_flow' must match the kernel's view of the packet at the
      *   time that action processing starts.  'flow' represents any
@@ -7038,23 +7024,21 @@ action_xlate_ctx_init(struct action_xlate_ctx *ctx,
      *   to another device without any modifications this will cause us to
      *   insert a new tag since the original one was stripped off by the
      *   VLAN device.
-     * - Tunnel 'flow' is largely cleared when transitioning between
-     *   the input and output stages since it does not make sense to output
-     *   a packet with the exact headers that it was received with (i.e.
-     *   the destination IP is us).  The one exception is the tun_id, which
-     *   is preserved to allow use in later resubmit lookups and loads into
-     *   registers.
+     * - Tunnel metadata as received is retained in 'flow'. This allows
+     *   tunnel metadata matching also in later tables.
+     *   Since a kernel action for setting the tunnel metadata will only be
+     *   generated with actual tunnel output, changing the tunnel metadata
+     *   values in 'flow' (such as tun_id) will only have effect with a later
+     *   tunnel output action.
      * - Tunnel 'base_flow' is completely cleared since that is what the
      *   kernel does.  If we wish to maintain the original values an action
      *   needs to be generated. */
 
     ctx->ofproto = ofproto;
     ctx->flow = *flow;
-    memset(&ctx->flow.tunnel, 0, sizeof ctx->flow.tunnel);
     ctx->base_flow = ctx->flow;
-    ctx->base_flow.vlan_tci = initial_vals->vlan_tci;
-    ctx->base_flow.tunnel.ip_tos = initial_vals->tunnel_ip_tos;
-    ctx->flow.tunnel.tun_id = initial_tun_id;
+    memset(&ctx->base_flow.tunnel, 0, sizeof ctx->base_flow.tunnel);
+    ctx->orig_tunnel_ip_dst = flow->tunnel.ip_dst;
     ctx->rule = rule;
     ctx->packet = packet;
     ctx->may_learn = packet != NULL;
@@ -7062,6 +7046,10 @@ action_xlate_ctx_init(struct action_xlate_ctx *ctx,
     ctx->resubmit_hook = NULL;
     ctx->report_hook = NULL;
     ctx->resubmit_stats = NULL;
+
+    if (initial_vals) {
+        ctx->base_flow.vlan_tci = initial_vals->vlan_tci;
+    }
 }
 
 /* Translates the 'ofpacts_len' bytes of "struct ofpacts" starting at 'ofpacts'
@@ -7137,13 +7125,14 @@ xlate_actions(struct action_xlate_ctx *ctx,
     } else {
         static struct vlog_rate_limit trace_rl = VLOG_RATE_LIMIT_INIT(1, 1);
         struct initial_vals initial_vals;
+        size_t sample_actions_len;
         uint32_t local_odp_port;
 
         initial_vals.vlan_tci = ctx->base_flow.vlan_tci;
-        initial_vals.tunnel_ip_tos = ctx->base_flow.tunnel.ip_tos;
 
         add_sflow_action(ctx);
         add_ipfix_action(ctx);
+        sample_actions_len = ctx->odp_actions->size;
 
         if (tunnel_ecn_ok(ctx) && (!in_port || may_receive(in_port, ctx))) {
             do_xlate_actions(ofpacts, ofpacts_len, ctx);
@@ -7151,9 +7140,7 @@ xlate_actions(struct action_xlate_ctx *ctx,
             /* We've let OFPP_NORMAL and the learning action look at the
              * packet, so drop it now if forwarding is disabled. */
             if (in_port && !stp_forward_in_state(in_port->stp_state)) {
-                ofpbuf_clear(ctx->odp_actions);
-                add_sflow_action(ctx);
-                add_ipfix_action(ctx);
+                ctx->odp_actions->size = sample_actions_len;
             }
         }
 
@@ -7905,7 +7892,6 @@ packet_out(struct ofproto *ofproto_, struct ofpbuf *packet,
     dpif_flow_stats_extract(flow, packet, time_msec(), &stats);
 
     initial_vals.vlan_tci = flow->vlan_tci;
-    initial_vals.tunnel_ip_tos = 0;
     action_xlate_ctx_init(&ctx, ofproto, flow, &initial_vals, NULL,
                           packet_get_tcp_flags(packet, flow), packet);
     ctx.resubmit_stats = &stats;
@@ -8208,7 +8194,6 @@ ofproto_unixctl_trace(struct unixctl_conn *conn, int argc, const char *argv[],
             }
 
             initial_vals.vlan_tci = flow.vlan_tci;
-            initial_vals.tunnel_ip_tos = flow.tunnel.ip_tos;
         }
 
         /* Generate a packet, if requested. */
@@ -8243,7 +8228,6 @@ ofproto_unixctl_trace(struct unixctl_conn *conn, int argc, const char *argv[],
         flow_extract(packet, priority, mark, NULL, in_port, &flow);
         flow.tunnel.tun_id = tun_id;
         initial_vals.vlan_tci = flow.vlan_tci;
-        initial_vals.tunnel_ip_tos = flow.tunnel.ip_tos;
     } else {
         unixctl_command_reply_error(conn, "Bad command syntax");
         goto exit;
@@ -8321,6 +8305,9 @@ ofproto_trace(struct ofproto_dpif *ofproto, const struct flow *flow,
                     break;
                 case SLOW_STP:
                     ds_put_cstr(ds, "\n\t- Consists of STP packets.");
+                    break;
+                case SLOW_BFD:
+                    ds_put_cstr(ds, "\n\t- Consists of BFD packets.");
                     break;
                 case SLOW_IN_BAND:
                     ds_put_cstr(ds, "\n\t- Needs in-band special case "
@@ -9046,6 +9033,8 @@ const struct ofproto_class ofproto_dpif_class = {
     set_ipfix,
     set_cfm,
     get_cfm_status,
+    set_bfd,
+    get_bfd_status,
     set_stp,
     get_stp_status,
     set_stp_port,

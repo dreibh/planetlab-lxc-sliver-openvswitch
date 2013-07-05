@@ -49,14 +49,14 @@ COVERAGE_DEFINE(vlog_recursive);
 #define ovs_assert use_assert_instead_of_ovs_assert_in_this_module
 
 /* Name for each logging level. */
-static const char *level_names[VLL_N_LEVELS] = {
+static const char *const level_names[VLL_N_LEVELS] = {
 #define VLOG_LEVEL(NAME, SYSLOG_LEVEL) #NAME,
     VLOG_LEVELS
 #undef VLOG_LEVEL
 };
 
 /* Syslog value for each logging level. */
-static int syslog_levels[VLL_N_LEVELS] = {
+static const int syslog_levels[VLL_N_LEVELS] = {
 #define VLOG_LEVEL(NAME, SYSLOG_LEVEL) SYSLOG_LEVEL,
     VLOG_LEVELS
 #undef VLOG_LEVEL
@@ -110,7 +110,7 @@ static void vlog_update_async_log_fd(void);
 /* Searches the 'n_names' in 'names'.  Returns the index of a match for
  * 'target', or 'n_names' if no name matches. */
 static size_t
-search_name_array(const char *target, const char **names, size_t n_names)
+search_name_array(const char *target, const char *const *names, size_t n_names)
 {
     size_t i;
 
@@ -570,12 +570,9 @@ vlog_init(void)
 
     now = time_wall();
     if (now < 0) {
-        struct tm tm;
-        char s[128];
-
-        gmtime_r(&now, &tm);
-        strftime(s, sizeof s, "%a, %d %b %Y %H:%M:%S", &tm);
+        char *s = xastrftime("%a, %d %b %Y %H:%M:%S", now, true);
         VLOG_ERR("current time is negative: %s (%ld)", s, (long int) now);
+        free(s);
     }
 
     unixctl_command_register(
@@ -709,11 +706,11 @@ format_log_message(const struct vlog_module *module, enum vlog_level level,
             break;
         case 'd':
             p = fetch_braces(p, "%Y-%m-%d %H:%M:%S", tmp, sizeof tmp);
-            ds_put_strftime(s, tmp, false);
+            ds_put_strftime(s, tmp, time_wall(), false);
             break;
         case 'D':
             p = fetch_braces(p, "%Y-%m-%d %H:%M:%S", tmp, sizeof tmp);
-            ds_put_strftime(s, tmp, true);
+            ds_put_strftime(s, tmp, time_wall(), true);
             break;
         case 'm':
             /* Format user-supplied log message and trim trailing new-lines. */
