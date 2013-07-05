@@ -628,27 +628,27 @@ netdev_pltap_set_stats(struct netdev *netdev OVS_UNUSED, const struct netdev_sta
 
 
 static int
-netdev_pltap_update_flags(struct netdev *netdev,
+netdev_pltap_update_flags(struct netdev_dev *dev_,
                           enum netdev_flags off, enum netdev_flags on,
                           enum netdev_flags *old_flagsp)
 {
-    struct netdev_dev_pltap *dev =
-        netdev_dev_pltap_cast(netdev_get_dev(netdev));
+    struct netdev_dev_pltap *netdev_dev =
+        netdev_dev_pltap_cast(dev_);
     int error = 0;
 
     if ((off | on) & ~(NETDEV_UP | NETDEV_PROMISC)) {
         return EINVAL;
     }
 
-    if (netdev_pltap_finalized(dev)) {
-        error = get_flags(dev, &dev->flags);
+    if (netdev_pltap_finalized(netdev_dev)) {
+        error = get_flags(netdev_dev, &netdev_dev->flags);
     }
-    *old_flagsp = dev->flags;
-    dev->new_flags |= on;
-    dev->new_flags &= ~off;
-    if (dev->flags != dev->new_flags) {
+    *old_flagsp = netdev_dev->flags;
+    netdev_dev->new_flags |= on;
+    netdev_dev->new_flags &= ~off;
+    if (netdev_dev->flags != netdev_dev->new_flags) {
 	/* we cannot sync here, since we may be in a signal handler */
-        sync_needed(dev);
+        sync_needed(netdev_dev);
     }
 
     return error;
