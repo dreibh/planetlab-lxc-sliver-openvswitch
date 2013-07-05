@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -178,30 +178,57 @@ lookup_ipv6(const char *host_name, struct in6_addr *addr)
  * successful, otherwise a positive errno value.
  *
  * Most Open vSwitch code should not use this because it causes deadlocks:
- * gethostbyname() sends out a DNS request but that starts a new flow for which
+ * getaddrinfo() sends out a DNS request but that starts a new flow for which
  * OVS must set up a flow, but it can't because it's waiting for a DNS reply.
  * The synchronous lookup also delays other activity.  (Of course we can solve
  * this but it doesn't seem worthwhile quite yet.)  */
 int
 lookup_hostname(const char *host_name, struct in_addr *addr)
 {
-    struct hostent *h;
+    struct addrinfo *result;
+    struct addrinfo hints;
 
     if (inet_aton(host_name, addr)) {
         return 0;
     }
 
-    h = gethostbyname(host_name);
-    if (h) {
-        *addr = *(struct in_addr *) h->h_addr;
-        return 0;
-    }
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
 
-    return (h_errno == HOST_NOT_FOUND ? ENOENT
-            : h_errno == TRY_AGAIN ? EAGAIN
-            : h_errno == NO_RECOVERY ? EIO
-            : h_errno == NO_ADDRESS ? ENXIO
-            : EINVAL);
+    switch (getaddrinfo(host_name, NULL, &hints, &result)) {
+    case 0:
+        *addr = ((struct sockaddr_in *) result->ai_addr)->sin_addr;
+        freeaddrinfo(result);
+        return 0;
+
+    case EAI_ADDRFAMILY:
+    case EAI_NONAME:
+    case EAI_SERVICE:
+        return ENOENT;
+
+    case EAI_AGAIN:
+        return EAGAIN;
+
+    case EAI_BADFLAGS:
+    case EAI_FAMILY:
+    case EAI_SOCKTYPE:
+        return EINVAL;
+
+    case EAI_FAIL:
+        return EIO;
+
+    case EAI_MEMORY:
+        return ENOMEM;
+
+    case EAI_NODATA:
+        return ENXIO;
+
+    case EAI_SYSTEM:
+        return errno;
+
+    default:
+        return EPROTO;
+    }
 }
 
 int
@@ -684,6 +711,7 @@ int
 inet_open_passive(int style, const char *target, int default_port,
                   struct sockaddr_in *sinp, uint8_t dscp)
 {
+    bool kernel_chooses_port;
     struct sockaddr_in sin;
     int fd = 0, error;
     unsigned int yes = 1;
@@ -733,9 +761,10 @@ inet_open_passive(int style, const char *target, int default_port,
         goto error;
     }
 
-    if (sinp) {
+    kernel_chooses_port = sin.sin_port == htons(0);
+    if (sinp || kernel_chooses_port) {
         socklen_t sin_len = sizeof sin;
-        if (getsockname(fd, (struct sockaddr *) &sin, &sin_len) < 0){
+        if (getsockname(fd, (struct sockaddr *) &sin, &sin_len) < 0) {
             error = errno;
             VLOG_ERR("%s: getsockname: %s", target, strerror(error));
             goto error;
@@ -745,7 +774,13 @@ inet_open_passive(int style, const char *target, int default_port,
             VLOG_ERR("%s: getsockname: invalid socket name", target);
             goto error;
         }
-        *sinp = sin;
+        if (sinp) {
+            *sinp = sin;
+        }
+        if (kernel_chooses_port) {
+            VLOG_INFO("%s: listening on port %"PRIu16,
+                      target, ntohs(sin.sin_port));
+        }
     }
 
     return fd;

@@ -312,7 +312,7 @@ add_channel(struct dpif_linux *dpif, uint32_t port_no, struct nl_sock *sock)
         int new_size = port_no + 1;
         int i;
 
-        if (new_size > 65535) {
+        if (new_size > MAX_PORTS) {
             VLOG_WARN_RL(&error_rl, "%s: datapath port %"PRIu32" too big",
                          dpif_name(&dpif->dpif), port_no);
             return EFBIG;
@@ -337,6 +337,7 @@ add_channel(struct dpif_linux *dpif, uint32_t port_no, struct nl_sock *sock)
         return errno;
     }
 
+    nl_sock_destroy(dpif->channels[port_no].sock);
     dpif->channels[port_no].sock = sock;
     dpif->channels[port_no].last_poll = LLONG_MIN;
 
@@ -358,6 +359,7 @@ del_channel(struct dpif_linux *dpif, uint32_t port_no)
     }
 
     epoll_ctl(dpif->epoll_fd, EPOLL_CTL_DEL, nl_sock_fd(ch->sock), NULL);
+    dpif->event_offset = dpif->n_events = 0;
 
     nl_sock_destroy(ch->sock);
     ch->sock = NULL;
@@ -793,7 +795,7 @@ static void
 dpif_linux_init_flow_put(struct dpif *dpif_, const struct dpif_flow_put *put,
                          struct dpif_linux_flow *request)
 {
-    static struct nlattr dummy_action;
+    static const struct nlattr dummy_action;
 
     struct dpif_linux *dpif = dpif_linux_cast(dpif_);
 
@@ -804,7 +806,9 @@ dpif_linux_init_flow_put(struct dpif *dpif_, const struct dpif_flow_put *put,
     request->key = put->key;
     request->key_len = put->key_len;
     /* Ensure that OVS_FLOW_ATTR_ACTIONS will always be included. */
-    request->actions = put->actions ? put->actions : &dummy_action;
+    request->actions = (put->actions
+                        ? put->actions
+                        : CONST_CAST(struct nlattr *, &dummy_action));
     request->actions_len = put->actions_len;
     if (put->flags & DPIF_FP_ZERO_STATS) {
         request->clear = true;

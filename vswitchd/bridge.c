@@ -146,6 +146,23 @@ static struct hmap all_bridges = HMAP_INITIALIZER(&all_bridges);
 /* OVSDB IDL used to obtain configuration. */
 static struct ovsdb_idl *idl;
 
+/* We want to complete daemonization, fully detaching from our parent process,
+ * only after we have completed our initial configuration, committed our state
+ * to the database, and received confirmation back from the database server
+ * that it applied the commit.  This allows our parent process to know that,
+ * post-detach, ephemeral fields such as datapath-id and ofport are very likely
+ * to have already been filled in.  (It is only "very likely" rather than
+ * certain because there is always a slim possibility that the transaction will
+ * fail or that some other client has added new bridges, ports, etc. while
+ * ovs-vswitchd was configuring using an old configuration.)
+ *
+ * We only need to do this once for our initial configuration at startup, so
+ * 'initial_config_done' tracks whether we've already done it.  While we are
+ * waiting for a response to our commit, 'daemonize_txn' tracks the transaction
+ * itself and is otherwise NULL. */
+static bool initial_config_done;
+static struct ovsdb_idl_txn *daemonize_txn;
+
 /* Most recently processed IDL sequence number. */
 static unsigned int idl_seqno;
 
@@ -183,6 +200,7 @@ static void bridge_configure_netflow(struct bridge *);
 static void bridge_configure_forward_bpdu(struct bridge *);
 static void bridge_configure_mac_table(struct bridge *);
 static void bridge_configure_sflow(struct bridge *, int *sflow_bridge_number);
+static void bridge_configure_ipfix(struct bridge *);
 static void bridge_configure_stp(struct bridge *);
 static void bridge_configure_tables(struct bridge *);
 static void bridge_configure_dp_desc(struct bridge *);
@@ -371,8 +389,9 @@ bridge_init(const char *remote)
     ovsdb_idl_omit_alert(idl, &ovsrec_mirror_col_statistics);
 
     ovsdb_idl_omit(idl, &ovsrec_netflow_col_external_ids);
-
     ovsdb_idl_omit(idl, &ovsrec_sflow_col_external_ids);
+    ovsdb_idl_omit(idl, &ovsrec_ipfix_col_external_ids);
+    ovsdb_idl_omit(idl, &ovsrec_flow_sample_collector_set_col_external_ids);
 
     ovsdb_idl_omit(idl, &ovsrec_manager_col_external_ids);
     ovsdb_idl_omit(idl, &ovsrec_manager_col_inactivity_probe);
@@ -595,20 +614,12 @@ bridge_reconfigure_continue(const struct ovsrec_open_vswitch *ovs_cfg)
         bridge_configure_remotes(br, managers, n_managers);
         bridge_configure_netflow(br);
         bridge_configure_sflow(br, &sflow_bridge_number);
+        bridge_configure_ipfix(br);
         bridge_configure_stp(br);
         bridge_configure_tables(br);
         bridge_configure_dp_desc(br);
     }
     free(managers);
-
-    if (done) {
-        /* ovs-vswitchd has completed initialization, so allow the process that
-         * forked us to exit successfully. */
-        daemonize_complete();
-        reconfiguring = false;
-
-        VLOG_INFO_ONCE("%s (Open vSwitch) %s", program_name, VERSION);
-    }
 
     return done;
 }
@@ -934,6 +945,79 @@ bridge_configure_sflow(struct bridge *br, int *sflow_bridge_number)
     ofproto_set_sflow(br->ofproto, &oso);
 
     sset_destroy(&oso.targets);
+}
+
+/* Set IPFIX configuration on 'br'. */
+static void
+bridge_configure_ipfix(struct bridge *br)
+{
+    const struct ovsrec_ipfix *be_cfg = br->cfg->ipfix;
+    const struct ovsrec_flow_sample_collector_set *fe_cfg;
+    struct ofproto_ipfix_bridge_exporter_options be_opts;
+    struct ofproto_ipfix_flow_exporter_options *fe_opts = NULL;
+    size_t n_fe_opts = 0;
+
+    OVSREC_FLOW_SAMPLE_COLLECTOR_SET_FOR_EACH(fe_cfg, idl) {
+        if (fe_cfg->bridge == br->cfg) {
+            n_fe_opts++;
+        }
+    }
+
+    if (!be_cfg && n_fe_opts == 0) {
+        ofproto_set_ipfix(br->ofproto, NULL, NULL, 0);
+        return;
+    }
+
+    if (be_cfg) {
+        memset(&be_opts, 0, sizeof be_opts);
+
+        sset_init(&be_opts.targets);
+        sset_add_array(&be_opts.targets, be_cfg->targets, be_cfg->n_targets);
+
+        if (be_cfg->sampling) {
+            be_opts.sampling_rate = *be_cfg->sampling;
+        } else {
+            be_opts.sampling_rate = SFL_DEFAULT_SAMPLING_RATE;
+        }
+        if (be_cfg->obs_domain_id) {
+            be_opts.obs_domain_id = *be_cfg->obs_domain_id;
+        }
+        if (be_cfg->obs_point_id) {
+            be_opts.obs_point_id = *be_cfg->obs_point_id;
+        }
+    }
+
+    if (n_fe_opts > 0) {
+        struct ofproto_ipfix_flow_exporter_options *opts;
+        fe_opts = xcalloc(n_fe_opts, sizeof *fe_opts);
+        opts = fe_opts;
+        OVSREC_FLOW_SAMPLE_COLLECTOR_SET_FOR_EACH(fe_cfg, idl) {
+            if (fe_cfg->bridge == br->cfg) {
+                opts->collector_set_id = fe_cfg->id;
+                sset_init(&opts->targets);
+                sset_add_array(&opts->targets, fe_cfg->ipfix->targets,
+                               fe_cfg->ipfix->n_targets);
+                opts++;
+            }
+        }
+    }
+
+    ofproto_set_ipfix(br->ofproto, be_cfg ? &be_opts : NULL, fe_opts,
+                      n_fe_opts);
+
+    if (be_cfg) {
+        sset_destroy(&be_opts.targets);
+    }
+
+    if (n_fe_opts > 0) {
+        struct ofproto_ipfix_flow_exporter_options *opts = fe_opts;
+        size_t i;
+        for (i = 0; i < n_fe_opts; i++) {
+            sset_destroy(&opts->targets);
+            opts++;
+        }
+        free(fe_opts);
+    }
 }
 
 static void
@@ -2190,11 +2274,16 @@ bridge_run(void)
             struct bridge *br, *next_br;
 
             VLOG_ERR_RL(&rl, "another ovs-vswitchd process is running, "
-                        "disabling this process until it goes away");
+                        "disabling this process (pid %ld) until it goes away",
+                        (long int) getpid());
 
             HMAP_FOR_EACH_SAFE (br, next_br, node, &all_bridges) {
                 bridge_destroy(br);
             }
+            /* Since we will not be running system_stats_run() in this process
+             * with the current situation of multiple ovs-vswitchd daemons,
+             * disable system stats collection. */
+            system_stats_enable(false);
             return;
         } else if (!ovsdb_idl_has_lock(idl)) {
             return;
@@ -2261,15 +2350,25 @@ bridge_run(void)
     }
 
     if (reconfiguring) {
-        if (cfg) {
-            if (!reconf_txn) {
-                reconf_txn = ovsdb_idl_txn_create(idl);
-            }
-            if (bridge_reconfigure_continue(cfg)) {
+        if (!reconf_txn) {
+            reconf_txn = ovsdb_idl_txn_create(idl);
+        }
+
+        if (bridge_reconfigure_continue(cfg ? cfg : &null_cfg)) {
+            reconfiguring = false;
+
+            if (cfg) {
                 ovsrec_open_vswitch_set_cur_cfg(cfg, cfg->next_cfg);
             }
-        } else {
-            bridge_reconfigure_continue(&null_cfg);
+
+            /* If we are completing our initial configuration for this run
+             * of ovs-vswitchd, then keep the transaction around to monitor
+             * it for completion. */
+            if (!initial_config_done) {
+                initial_config_done = true;
+                daemonize_txn = reconf_txn;
+                reconf_txn = NULL;
+            }
         }
     }
 
@@ -2277,6 +2376,20 @@ bridge_run(void)
         ovsdb_idl_txn_commit(reconf_txn);
         ovsdb_idl_txn_destroy(reconf_txn);
         reconf_txn = NULL;
+    }
+
+    if (daemonize_txn) {
+        enum ovsdb_idl_txn_status status = ovsdb_idl_txn_commit(daemonize_txn);
+        if (status != TXN_INCOMPLETE) {
+            ovsdb_idl_txn_destroy(daemonize_txn);
+            daemonize_txn = NULL;
+
+            /* ovs-vswitchd has completed initialization, so allow the
+             * process that forked us to exit successfully. */
+            daemonize_complete();
+
+            VLOG_INFO_ONCE("%s (Open vSwitch) %s", program_name, VERSION);
+        }
     }
 
     /* Refresh interface and mirror stats if necessary. */
@@ -2322,6 +2435,9 @@ bridge_wait(void)
     const char *type;
 
     ovsdb_idl_wait(idl);
+    if (daemonize_txn) {
+        ovsdb_idl_txn_wait(daemonize_txn);
+    }
 
     if (reconfiguring) {
         poll_immediate_wake();

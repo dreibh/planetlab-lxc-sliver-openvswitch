@@ -224,6 +224,8 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
   OVS_GREP_IFELSE([$KSRC/include/linux/netdevice.h], [dev_disable_lro])
   OVS_GREP_IFELSE([$KSRC/include/linux/netdevice.h], [dev_get_stats])
   OVS_GREP_IFELSE([$KSRC/include/linux/netdevice.h], [dev_get_by_index_rcu])
+  OVS_GREP_IFELSE([$KSRC/include/linux/netdevice.h], [__skb_gso_segment])
+  OVS_GREP_IFELSE([$KSRC/include/linux/netdevice.h], [can_checksum_protocol])
 
   OVS_GREP_IFELSE([$KSRC/include/linux/rcupdate.h], [rcu_read_lock_held], [],
                   [OVS_GREP_IFELSE([$KSRC/include/linux/rtnetlink.h],
@@ -268,10 +270,18 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
 
   OVS_GREP_IFELSE([$KSRC/include/net/netlink.h], [NLA_NUL_STRING])
   OVS_GREP_IFELSE([$KSRC/include/net/netlink.h], [nla_get_be16])
+  OVS_GREP_IFELSE([$KSRC/include/net/netlink.h], [nla_put_be16])
+  OVS_GREP_IFELSE([$KSRC/include/net/netlink.h], [nla_put_be32])
+  OVS_GREP_IFELSE([$KSRC/include/net/netlink.h], [nla_put_be64])
   OVS_GREP_IFELSE([$KSRC/include/net/netlink.h], [nla_find_nested])
 
   OVS_GREP_IFELSE([$KSRC/include/linux/if_vlan.h], [ADD_ALL_VLANS_CMD],
                   [OVS_DEFINE([HAVE_VLAN_BUG_WORKAROUND])])
+
+  OVS_GREP_IFELSE([$KSRC/include/linux/percpu.h], [this_cpu_ptr])
+
+  OVS_GREP_IFELSE([$KSRC/include/linux/openvswitch.h], [openvswitch_handle_frame_hook],
+                  [OVS_DEFINE([HAVE_RHEL_OVS_HOOK])])
 
   OVS_CHECK_LOG2_H
 
@@ -478,13 +488,23 @@ AC_DEFUN([OVS_CHECK_SPARSE_TARGET],
    AC_SUBST([SPARSEFLAGS])
    AC_SUBST([CGCCFLAGS])])
 
+dnl OVS_SPARSE_EXTRA_INCLUDES
+dnl
+dnl The cgcc script from "sparse" does not search gcc's default
+dnl search path. Get the default search path from GCC and pass
+dnl them to sparse.
+AC_DEFUN([OVS_SPARSE_EXTRA_INCLUDES],
+    AC_SUBST([SPARSE_EXTRA_INCLUDES],
+           [`$CC -v -E - </dev/null 2>&1 >/dev/null | sed -n -e '/^#include.*search.*starts.*here:/,/^End.*of.*search.*list\./s/^ \(.*\)/-I \1/p' |grep -v /usr/lib | grep -x -v '\-I /usr/include' | tr \\\n ' ' `] ))
+
 dnl OVS_ENABLE_SPARSE
 AC_DEFUN([OVS_ENABLE_SPARSE],
   [AC_REQUIRE([OVS_CHECK_SPARSE_TARGET])
    AC_REQUIRE([OVS_CHECK_MAKE_IF])
+   AC_REQUIRE([OVS_SPARSE_EXTRA_INCLUDES])
    : ${SPARSE=sparse}
    AC_SUBST([SPARSE])
    AC_CONFIG_COMMANDS_PRE(
      [if test $ovs_cv_gnu_make_if = yes; then
-        CC='$(if $(C),REAL_CC="'"$CC"'" CHECK="$(SPARSE) -I $(top_srcdir)/include/sparse $(SPARSEFLAGS)" cgcc $(CGCCFLAGS),'"$CC"')'
+        CC='$(if $(C),REAL_CC="'"$CC"'" CHECK="$(SPARSE) -I $(top_srcdir)/include/sparse $(SPARSEFLAGS) $(SPARSE_EXTRA_INCLUDES) " cgcc $(CGCCFLAGS),'"$CC"')'
       fi])])

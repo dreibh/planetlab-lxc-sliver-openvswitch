@@ -46,6 +46,7 @@
 #include "ofp-parse.h"
 #include "ofp-print.h"
 #include "ofproto-dpif-governor.h"
+#include "ofproto-dpif-ipfix.h"
 #include "ofproto-dpif-sflow.h"
 #include "poll-loop.h"
 #include "simap.h"
@@ -325,7 +326,8 @@ static void xlate_table_action(struct action_xlate_ctx *, uint16_t in_port,
 static size_t put_userspace_action(const struct ofproto_dpif *,
                                    struct ofpbuf *odp_actions,
                                    const struct flow *,
-                                   const union user_action_cookie *);
+                                   const union user_action_cookie *,
+                                   const size_t);
 
 static void compose_slow_path(const struct ofproto_dpif *, const struct flow *,
                               enum slow_path_reason,
@@ -695,6 +697,7 @@ struct ofproto_dpif {
     /* Bridging. */
     struct netflow *netflow;
     struct dpif_sflow *sflow;
+    struct dpif_ipfix *ipfix;
     struct hmap bundles;        /* Contains "struct ofbundle"s. */
     struct mac_learning *ml;
     struct ofmirror *mirrors[MAX_MIRRORS];
@@ -820,6 +823,9 @@ static int send_packet(const struct ofport_dpif *, struct ofpbuf *packet);
 static size_t compose_sflow_action(const struct ofproto_dpif *,
                                    struct ofpbuf *odp_actions,
                                    const struct flow *, uint32_t odp_port);
+static void compose_ipfix_action(const struct ofproto_dpif *,
+                                 struct ofpbuf *odp_actions,
+                                 const struct flow *);
 static void add_mirror_actions(struct action_xlate_ctx *ctx,
                                const struct flow *flow);
 /* Global variables. */
@@ -1349,6 +1355,7 @@ construct(struct ofproto *ofproto_)
 
     ofproto->netflow = NULL;
     ofproto->sflow = NULL;
+    ofproto->ipfix = NULL;
     ofproto->stp = NULL;
     hmap_init(&ofproto->bundles);
     ofproto->ml = mac_learning_create(MAC_ENTRY_DEFAULT_IDLE_TIME);
@@ -1782,7 +1789,11 @@ port_construct(struct ofport *port_)
     port->carrier_seq = netdev_get_carrier_resets(netdev);
 
     if (netdev_vport_is_patch(netdev)) {
-        /* XXX By bailing out here, we don't do required sFlow work. */
+        /* By bailing out here, we don't submit the port to the sFlow module
+	 * to be considered for counter polling export.  This is correct
+	 * because the patch port represents an interface that sFlow considers
+	 * to be "internal" to the switch as a whole, and therefore not an
+	 * candidate for counter polling. */
         port->odp_port = OVSP_NONE;
         return 0;
     }
@@ -1908,6 +1919,32 @@ set_sflow(struct ofproto *ofproto_,
             dpif_sflow_destroy(ds);
             ofproto->backer->need_revalidate = REV_RECONFIGURE;
             ofproto->sflow = NULL;
+        }
+    }
+    return 0;
+}
+
+static int
+set_ipfix(
+    struct ofproto *ofproto_,
+    const struct ofproto_ipfix_bridge_exporter_options *bridge_exporter_options,
+    const struct ofproto_ipfix_flow_exporter_options *flow_exporters_options,
+    size_t n_flow_exporters_options)
+{
+    struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
+    struct dpif_ipfix *di = ofproto->ipfix;
+
+    if (bridge_exporter_options || flow_exporters_options) {
+        if (!di) {
+            di = ofproto->ipfix = dpif_ipfix_create();
+        }
+        dpif_ipfix_set_options(
+            di, bridge_exporter_options, flow_exporters_options,
+            n_flow_exporters_options);
+    } else {
+        if (di) {
+            dpif_ipfix_destroy(di);
+            ofproto->ipfix = NULL;
         }
     }
     return 0;
@@ -4006,9 +4043,11 @@ handle_miss_upcalls(struct dpif_backer *backer, struct dpif_upcall *upcalls,
     hmap_destroy(&todo);
 }
 
-static enum { SFLOW_UPCALL, MISS_UPCALL, BAD_UPCALL }
+static enum { SFLOW_UPCALL, MISS_UPCALL, BAD_UPCALL, FLOW_SAMPLE_UPCALL,
+              IPFIX_UPCALL }
 classify_upcall(const struct dpif_upcall *upcall)
 {
+    size_t userdata_len;
     union user_action_cookie cookie;
 
     /* First look at the upcall type. */
@@ -4030,23 +4069,30 @@ classify_upcall(const struct dpif_upcall *upcall)
         VLOG_WARN_RL(&rl, "action upcall missing cookie");
         return BAD_UPCALL;
     }
-    if (nl_attr_get_size(upcall->userdata) != sizeof(cookie)) {
+    userdata_len = nl_attr_get_size(upcall->userdata);
+    if (userdata_len < sizeof cookie.type
+        || userdata_len > sizeof cookie) {
         VLOG_WARN_RL(&rl, "action upcall cookie has unexpected size %zu",
-                     nl_attr_get_size(upcall->userdata));
+                     userdata_len);
         return BAD_UPCALL;
     }
-    memcpy(&cookie, nl_attr_get(upcall->userdata), sizeof(cookie));
-    switch (cookie.type) {
-    case USER_ACTION_COOKIE_SFLOW:
+    memset(&cookie, 0, sizeof cookie);
+    memcpy(&cookie, nl_attr_get(upcall->userdata), userdata_len);
+    if (userdata_len == sizeof cookie.sflow
+        && cookie.type == USER_ACTION_COOKIE_SFLOW) {
         return SFLOW_UPCALL;
-
-    case USER_ACTION_COOKIE_SLOW_PATH:
+    } else if (userdata_len == sizeof cookie.slow_path
+               && cookie.type == USER_ACTION_COOKIE_SLOW_PATH) {
         return MISS_UPCALL;
-
-    case USER_ACTION_COOKIE_UNSPEC:
-    default:
-        VLOG_WARN_RL(&rl, "invalid user cookie : 0x%"PRIx64,
-                     nl_attr_get_u64(upcall->userdata));
+    } else if (userdata_len == sizeof cookie.flow_sample
+               && cookie.type == USER_ACTION_COOKIE_FLOW_SAMPLE) {
+        return FLOW_SAMPLE_UPCALL;
+    } else if (userdata_len == sizeof cookie.ipfix
+               && cookie.type == USER_ACTION_COOKIE_IPFIX) {
+        return IPFIX_UPCALL;
+    } else {
+        VLOG_WARN_RL(&rl, "invalid user cookie of type %"PRIu16
+                     " and size %zu", cookie.type, userdata_len);
         return BAD_UPCALL;
     }
 }
@@ -4066,9 +4112,54 @@ handle_sflow_upcall(struct dpif_backer *backer,
         return;
     }
 
-    memcpy(&cookie, nl_attr_get(upcall->userdata), sizeof(cookie));
+    memset(&cookie, 0, sizeof cookie);
+    memcpy(&cookie, nl_attr_get(upcall->userdata), sizeof cookie.sflow);
     dpif_sflow_received(ofproto->sflow, upcall->packet, &flow,
                         odp_in_port, &cookie);
+}
+
+static void
+handle_flow_sample_upcall(struct dpif_backer *backer,
+                          const struct dpif_upcall *upcall)
+{
+    struct ofproto_dpif *ofproto;
+    union user_action_cookie cookie;
+    struct flow flow;
+
+    if (ofproto_receive(backer, upcall->packet, upcall->key, upcall->key_len,
+                        &flow, NULL, &ofproto, NULL, NULL)
+        || !ofproto->ipfix) {
+        return;
+    }
+
+    memset(&cookie, 0, sizeof cookie);
+    memcpy(&cookie, nl_attr_get(upcall->userdata), sizeof cookie.flow_sample);
+
+    /* The flow reflects exactly the contents of the packet.  Sample
+     * the packet using it. */
+    dpif_ipfix_flow_sample(ofproto->ipfix, upcall->packet, &flow,
+                           cookie.flow_sample.collector_set_id,
+                           cookie.flow_sample.probability,
+                           cookie.flow_sample.obs_domain_id,
+                           cookie.flow_sample.obs_point_id);
+}
+
+static void
+handle_ipfix_upcall(struct dpif_backer *backer,
+                    const struct dpif_upcall *upcall)
+{
+    struct ofproto_dpif *ofproto;
+    struct flow flow;
+
+    if (ofproto_receive(backer, upcall->packet, upcall->key, upcall->key_len,
+                        &flow, NULL, &ofproto, NULL, NULL)
+        || !ofproto->ipfix) {
+        return;
+    }
+
+    /* The flow reflects exactly the contents of the packet.  Sample
+     * the packet using it. */
+    dpif_ipfix_bridge_sample(ofproto->ipfix, upcall->packet, &flow);
 }
 
 static int
@@ -4105,6 +4196,16 @@ handle_upcalls(struct dpif_backer *backer, unsigned int max_batch)
 
         case SFLOW_UPCALL:
             handle_sflow_upcall(backer, upcall);
+            ofpbuf_uninit(buf);
+            break;
+
+        case FLOW_SAMPLE_UPCALL:
+            handle_flow_sample_upcall(backer, upcall);
+            ofpbuf_uninit(buf);
+            break;
+
+        case IPFIX_UPCALL:
+            handle_ipfix_upcall(backer, upcall);
             ofpbuf_uninit(buf);
             break;
 
@@ -4264,13 +4365,13 @@ update_stats(struct dpif_backer *backer)
     const struct dpif_flow_stats *stats;
     struct dpif_flow_dump dump;
     const struct nlattr *key;
+    struct ofproto_dpif *ofproto;
     size_t key_len;
 
     dpif_flow_dump_start(&dump, backer->dpif);
     while (dpif_flow_dump_next(&dump, &key, &key_len, NULL, NULL, &stats)) {
         struct flow flow;
         struct subfacet *subfacet;
-        struct ofproto_dpif *ofproto;
         struct ofport_dpif *ofport;
         uint32_t key_hash;
 
@@ -4281,7 +4382,6 @@ update_stats(struct dpif_backer *backer)
 
         ofproto->total_subfacet_count += hmap_count(&ofproto->subfacets);
         ofproto->n_update_stats++;
-        update_moving_averages(ofproto);
 
         ofport = get_ofp_port(ofproto, flow.in_port);
         if (ofport && ofport->tnl_port) {
@@ -4313,6 +4413,11 @@ update_stats(struct dpif_backer *backer)
         run_fast_rl();
     }
     dpif_flow_dump_done(&dump);
+
+    HMAP_FOR_EACH (ofproto, all_ofproto_dpifs_node, &all_ofproto_dpifs) {
+        update_moving_averages(ofproto);
+    }
+
 }
 
 /* Calculates and returns the number of milliseconds of idle time after which
@@ -5101,7 +5206,7 @@ facet_push_stats(struct facet *facet)
 }
 
 static void
-push_all_stats(void)
+push_all_stats__(bool run_fast)
 {
     static long long int rl = LLONG_MIN;
     struct ofproto_dpif *ofproto;
@@ -5115,11 +5220,19 @@ push_all_stats(void)
 
         HMAP_FOR_EACH (facet, hmap_node, &ofproto->facets) {
             facet_push_stats(facet);
-            run_fast_rl();
+            if (run_fast) {
+                run_fast_rl();
+            }
         }
     }
 
     rl = time_msec() + 100;
+}
+
+static void
+push_all_stats(void)
+{
+    push_all_stats__(true);
 }
 
 static void
@@ -5604,7 +5717,11 @@ rule_get_stats(struct rule *rule_, uint64_t *packets, uint64_t *bytes)
     struct rule_dpif *rule = rule_dpif_cast(rule_);
     struct facet *facet;
 
-    push_all_stats();
+    /* push_all_stats() can handle flow misses which, when using the learn
+     * action, can cause rules to be added and deleted.  This can corrupt our
+     * caller's datastructures which assume that rule_get_stats() doesn't have
+     * an impact on the flow table. To be safe, we disable miss handling. */
+    push_all_stats__(false);
 
     /* Start from historical data for 'rule' itself that are no longer tracked
      * in facets.  This counts, for example, facets that have expired. */
@@ -5731,6 +5848,7 @@ send_packet(const struct ofport_dpif *ofport, struct ofpbuf *packet)
                            ofp_port_to_odp_port(ofproto, flow.in_port));
 
     compose_sflow_action(ofproto, &odp_actions, &flow, odp_port);
+    compose_ipfix_action(ofproto, &odp_actions, &flow);
 
     nl_msg_put_u32(&odp_actions, OVS_ACTION_ATTR_OUTPUT, odp_port);
     error = dpif_execute(ofproto->backer->dpif,
@@ -5780,9 +5898,10 @@ compose_slow_path(const struct ofproto_dpif *ofproto, const struct flow *flow,
     ofpbuf_use_stack(&buf, stub, stub_size);
     if (slow & (SLOW_CFM | SLOW_LACP | SLOW_STP)) {
         uint32_t pid = dpif_port_get_pid(ofproto->backer->dpif, UINT32_MAX);
-        odp_put_userspace_action(pid, &cookie, sizeof cookie, &buf);
+        odp_put_userspace_action(pid, &cookie, sizeof cookie.slow_path, &buf);
     } else {
-        put_userspace_action(ofproto, &buf, flow, &cookie);
+        put_userspace_action(ofproto, &buf, flow, &cookie,
+                             sizeof cookie.slow_path);
     }
     *actionsp = buf.data;
     *actions_lenp = buf.size;
@@ -5792,14 +5911,43 @@ static size_t
 put_userspace_action(const struct ofproto_dpif *ofproto,
                      struct ofpbuf *odp_actions,
                      const struct flow *flow,
-                     const union user_action_cookie *cookie)
+                     const union user_action_cookie *cookie,
+                     const size_t cookie_size)
 {
     uint32_t pid;
 
     pid = dpif_port_get_pid(ofproto->backer->dpif,
                             ofp_port_to_odp_port(ofproto, flow->in_port));
 
-    return odp_put_userspace_action(pid, cookie, sizeof *cookie, odp_actions);
+    return odp_put_userspace_action(pid, cookie, cookie_size, odp_actions);
+}
+
+/* Compose SAMPLE action for sFlow or IPFIX.  The given probability is
+ * the number of packets out of UINT32_MAX to sample.  The given
+ * cookie is passed back in the callback for each sampled packet.
+ */
+static size_t
+compose_sample_action(const struct ofproto_dpif *ofproto,
+                      struct ofpbuf *odp_actions,
+                      const struct flow *flow,
+                      const uint32_t probability,
+                      const union user_action_cookie *cookie,
+                      const size_t cookie_size)
+{
+    size_t sample_offset, actions_offset;
+    int cookie_offset;
+
+    sample_offset = nl_msg_start_nested(odp_actions, OVS_ACTION_ATTR_SAMPLE);
+
+    nl_msg_put_u32(odp_actions, OVS_SAMPLE_ATTR_PROBABILITY, probability);
+
+    actions_offset = nl_msg_start_nested(odp_actions, OVS_SAMPLE_ATTR_ACTIONS);
+    cookie_offset = put_userspace_action(ofproto, odp_actions, flow, cookie,
+                                         cookie_size);
+
+    nl_msg_end_nested(odp_actions, actions_offset);
+    nl_msg_end_nested(odp_actions, sample_offset);
+    return cookie_offset;
 }
 
 static void
@@ -5834,7 +5982,7 @@ compose_sflow_cookie(const struct ofproto_dpif *ofproto,
     }
 }
 
-/* Compose SAMPLE action for sFlow. */
+/* Compose SAMPLE action for sFlow bridge sampling. */
 static size_t
 compose_sflow_action(const struct ofproto_dpif *ofproto,
                      struct ofpbuf *odp_actions,
@@ -5843,32 +5991,60 @@ compose_sflow_action(const struct ofproto_dpif *ofproto,
 {
     uint32_t probability;
     union user_action_cookie cookie;
-    size_t sample_offset, actions_offset;
-    int cookie_offset;
 
     if (!ofproto->sflow || flow->in_port == OFPP_NONE) {
         return 0;
     }
 
-    sample_offset = nl_msg_start_nested(odp_actions, OVS_ACTION_ATTR_SAMPLE);
-
-    /* Number of packets out of UINT_MAX to sample. */
     probability = dpif_sflow_get_probability(ofproto->sflow);
-    nl_msg_put_u32(odp_actions, OVS_SAMPLE_ATTR_PROBABILITY, probability);
-
-    actions_offset = nl_msg_start_nested(odp_actions, OVS_SAMPLE_ATTR_ACTIONS);
     compose_sflow_cookie(ofproto, htons(0), odp_port,
                          odp_port == OVSP_NONE ? 0 : 1, &cookie);
-    cookie_offset = put_userspace_action(ofproto, odp_actions, flow, &cookie);
 
-    nl_msg_end_nested(odp_actions, actions_offset);
-    nl_msg_end_nested(odp_actions, sample_offset);
-    return cookie_offset;
+    return compose_sample_action(ofproto, odp_actions, flow,  probability,
+                                 &cookie, sizeof cookie.sflow);
 }
 
-/* SAMPLE action must be first action in any given list of actions.
- * At this point we do not have all information required to build it. So try to
- * build sample action as complete as possible. */
+static void
+compose_flow_sample_cookie(uint16_t probability, uint32_t collector_set_id,
+                           uint32_t obs_domain_id, uint32_t obs_point_id,
+                           union user_action_cookie *cookie)
+{
+    cookie->type = USER_ACTION_COOKIE_FLOW_SAMPLE;
+    cookie->flow_sample.probability = probability;
+    cookie->flow_sample.collector_set_id = collector_set_id;
+    cookie->flow_sample.obs_domain_id = obs_domain_id;
+    cookie->flow_sample.obs_point_id = obs_point_id;
+}
+
+static void
+compose_ipfix_cookie(union user_action_cookie *cookie)
+{
+    cookie->type = USER_ACTION_COOKIE_IPFIX;
+}
+
+/* Compose SAMPLE action for IPFIX bridge sampling. */
+static void
+compose_ipfix_action(const struct ofproto_dpif *ofproto,
+                     struct ofpbuf *odp_actions,
+                     const struct flow *flow)
+{
+    uint32_t probability;
+    union user_action_cookie cookie;
+
+    if (!ofproto->ipfix || flow->in_port == OFPP_NONE) {
+        return;
+    }
+
+    probability = dpif_ipfix_get_bridge_exporter_probability(ofproto->ipfix);
+    compose_ipfix_cookie(&cookie);
+
+    compose_sample_action(ofproto, odp_actions, flow,  probability,
+                          &cookie, sizeof cookie.ipfix);
+}
+
+/* SAMPLE action for sFlow must be first action in any given list of
+ * actions.  At this point we do not have all information required to
+ * build it. So try to build sample action as complete as possible. */
 static void
 add_sflow_action(struct action_xlate_ctx *ctx)
 {
@@ -5877,6 +6053,14 @@ add_sflow_action(struct action_xlate_ctx *ctx)
                                                    &ctx->flow, OVSP_NONE);
     ctx->sflow_odp_port = 0;
     ctx->sflow_n_outputs = 0;
+}
+
+/* SAMPLE action for IPFIX must be 1st or 2nd action in any given list
+ * of actions, eventually after the SAMPLE action for sFlow. */
+static void
+add_ipfix_action(struct action_xlate_ctx *ctx)
+{
+    compose_ipfix_action(ctx->ofproto, ctx->odp_actions, &ctx->flow);
 }
 
 /* Fix SAMPLE action according to data collected while composing ODP actions.
@@ -5893,7 +6077,7 @@ fix_sflow_action(struct action_xlate_ctx *ctx)
     }
 
     cookie = ofpbuf_at(ctx->odp_actions, ctx->user_cookie_offset,
-                       sizeof(*cookie));
+                       sizeof cookie->sflow);
     ovs_assert(cookie->type == USER_ACTION_COOKIE_SFLOW);
 
     compose_sflow_cookie(ctx->ofproto, base->vlan_tci,
@@ -5905,9 +6089,9 @@ compose_output_action__(struct action_xlate_ctx *ctx, uint16_t ofp_port,
                         bool check_stp)
 {
     const struct ofport_dpif *ofport = get_ofp_port(ctx->ofproto, ofp_port);
-    ovs_be16 flow_vlan_tci = ctx->flow.vlan_tci;
-    ovs_be64 flow_tun_id = ctx->flow.tunnel.tun_id;
-    uint8_t flow_nw_tos = ctx->flow.nw_tos;
+    ovs_be16 flow_vlan_tci;
+    uint32_t flow_skb_mark;
+    uint8_t flow_nw_tos;
     struct priority_to_dscp *pdscp;
     uint32_t out_port, odp_port;
 
@@ -5980,6 +6164,10 @@ compose_output_action__(struct action_xlate_ctx *ctx, uint16_t ofp_port,
         return;
     }
 
+    flow_vlan_tci = ctx->flow.vlan_tci;
+    flow_skb_mark = ctx->flow.skb_mark;
+    flow_nw_tos = ctx->flow.nw_tos;
+
     pdscp = get_priority(ofport, ctx->flow.skb_priority);
     if (pdscp) {
         ctx->flow.nw_tos &= ~IP_DSCP_MASK;
@@ -5987,10 +6175,15 @@ compose_output_action__(struct action_xlate_ctx *ctx, uint16_t ofp_port,
     }
 
     if (ofport->tnl_port) {
+         /* Save tunnel metadata so that changes made due to
+          * the Logical (tunnel) Port are not visible for any further
+          * matches, while explicit set actions on tunnel metadata are.
+          */
+        struct flow_tnl flow_tnl = ctx->flow.tunnel;
         odp_port = tnl_port_send(ofport->tnl_port, &ctx->flow);
         if (odp_port == OVSP_NONE) {
             xlate_report(ctx, "Tunneling decided against output");
-            return;
+            goto out; /* restore flow_nw_tos */
         }
 
         if (ctx->resubmit_stats) {
@@ -5999,6 +6192,7 @@ compose_output_action__(struct action_xlate_ctx *ctx, uint16_t ofp_port,
         out_port = odp_port;
         commit_odp_tunnel_action(&ctx->flow, &ctx->base_flow,
                                  ctx->odp_actions);
+        ctx->flow.tunnel = flow_tnl; /* Restore tunnel metadata */
     } else {
         odp_port = ofport->odp_port;
         out_port = vsp_realdev_to_vlandev(ctx->ofproto, odp_port,
@@ -6014,8 +6208,11 @@ compose_output_action__(struct action_xlate_ctx *ctx, uint16_t ofp_port,
     ctx->sflow_odp_port = odp_port;
     ctx->sflow_n_outputs++;
     ctx->nf_output_iface = ofp_port;
-    ctx->flow.tunnel.tun_id = flow_tun_id;
+
+    /* Restore flow */
     ctx->flow.vlan_tci = flow_vlan_tci;
+    ctx->flow.skb_mark = flow_skb_mark;
+ out:
     ctx->flow.nw_tos = flow_nw_tos;
 }
 
@@ -6431,11 +6628,6 @@ xlate_set_queue_action(struct action_xlate_ctx *ctx, uint32_t queue_id)
     }
 }
 
-struct xlate_reg_state {
-    ovs_be16 vlan_tci;
-    ovs_be64 tun_id;
-};
-
 static bool
 slave_enabled_cb(uint16_t ofp_port, void *ofproto_)
 {
@@ -6514,6 +6706,23 @@ xlate_fin_timeout(struct action_xlate_ctx *ctx,
         reduce_timeout(oft->fin_idle_timeout, &rule->up.idle_timeout);
         reduce_timeout(oft->fin_hard_timeout, &rule->up.hard_timeout);
     }
+}
+
+static void
+xlate_sample_action(struct action_xlate_ctx *ctx,
+                    const struct ofpact_sample *os)
+{
+  union user_action_cookie cookie;
+  /* Scale the probability from 16-bit to 32-bit while representing
+   * the same percentage. */
+  uint32_t probability = (os->probability << 16) | os->probability;
+
+  commit_odp_actions(&ctx->flow, &ctx->base_flow, ctx->odp_actions);
+
+  compose_flow_sample_cookie(os->probability, os->collector_set_id,
+                             os->obs_domain_id, os->obs_point_id, &cookie);
+  compose_sample_action(ctx->ofproto, ctx->odp_actions, &ctx->flow,
+                        probability, &cookie, sizeof cookie.flow_sample);
 }
 
 static bool
@@ -6796,6 +7005,10 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             }
             break;
         }
+
+        case OFPACT_SAMPLE:
+            xlate_sample_action(ctx, ofpact_get_SAMPLE(a));
+            break;
         }
     }
 
@@ -6930,6 +7143,7 @@ xlate_actions(struct action_xlate_ctx *ctx,
         initial_vals.tunnel_ip_tos = ctx->base_flow.tunnel.ip_tos;
 
         add_sflow_action(ctx);
+        add_ipfix_action(ctx);
 
         if (tunnel_ecn_ok(ctx) && (!in_port || may_receive(in_port, ctx))) {
             do_xlate_actions(ofpacts, ofpacts_len, ctx);
@@ -6939,6 +7153,7 @@ xlate_actions(struct action_xlate_ctx *ctx,
             if (in_port && !stp_forward_in_state(in_port->stp_state)) {
                 ofpbuf_clear(ctx->odp_actions);
                 add_sflow_action(ctx);
+                add_ipfix_action(ctx);
             }
         }
 
@@ -8828,6 +9043,7 @@ const struct ofproto_class ofproto_dpif_class = {
     set_netflow,
     get_netflow_ids,
     set_sflow,
+    set_ipfix,
     set_cfm,
     get_cfm_status,
     set_stp,

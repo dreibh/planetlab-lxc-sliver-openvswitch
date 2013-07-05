@@ -340,7 +340,11 @@
       </column>
 
       <column name="sflow">
-        sFlow configuration.
+        sFlow(R) configuration.
+      </column>
+
+      <column name="ipfix">
+        IPFIX configuration.
       </column>
 
       <column name="flood_vlans">
@@ -1246,10 +1250,9 @@
 	      with kernel version 2.6.26 or later.
 	    </p>
 	    <p>
-	      As an experimental protocol, VXLAN has no officially assigned UDP
-	      port.  Open vSwitch currently uses UDP destination port 8472.
-	      The source port used for VXLAN traffic varies on a per-flow basis
-	      and is in the ephemeral port range.
+	      Open vSwitch uses UDP destination port 4789.  The source port used for
+	      VXLAN traffic varies on a per-flow basis and is in the ephemeral port
+	      range.
 	    </p>
           </dd>
 
@@ -2836,9 +2839,11 @@
           <dd>
             <p>
               Listens for SSL connections on the specified TCP <var>port</var>
-              (default: 6632).  If <var>ip</var>, which must be expressed as an
-              IP address (not a DNS name), is specified, then connections are
-              restricted to the specified local IP address.
+              (default: 6632).  Specify 0 for <var>port</var> to have the
+              kernel automatically choose an available port.  If <var>ip</var>,
+              which must be expressed as an IP address (not a DNS name), is
+              specified, then connections are restricted to the specified local
+              IP address.
             </p>
             <p>
               The <ref table="Open_vSwitch" column="ssl"/> column in the <ref
@@ -2853,9 +2858,10 @@
           <dt><code>ptcp:</code>[<var>port</var>][<code>:<var>ip</var></code>]</dt>
           <dd>
             Listens for connections on the specified TCP <var>port</var>
-            (default: 6632).  If <var>ip</var>, which must be expressed as an
-            IP address (not a DNS name), is specified, then connections are
-            restricted to the specified local IP address.
+            (default: 6632).  Specify 0 for <var>port</var> to have the kernel
+            automatically choose an available port.  If <var>ip</var>, which
+            must be expressed as an IP address (not a DNS name), is specified,
+            then connections are restricted to the specified local IP address.
           </dd>
         </dl>
         <p>When multiple managers are configured, the <ref column="target"/>
@@ -2999,6 +3005,14 @@
           chosen connection.
         </p>
       </column>
+
+      <column name="status" key="bound_port" type='{"type": "integer"}'>
+          When <ref column="target"/> is <code>ptcp:</code> or
+          <code>pssl:</code>, this is the TCP port on which the OVSDB server is
+          listening.  (This is is particularly useful when <ref
+          column="target"/> specifies a port of 0, allowing the kernel to
+          choose any available port.)
+      </column>
     </group>
 
     <group title="Connection Parameters">
@@ -3118,8 +3132,8 @@
   </table>
 
   <table name="sFlow">
-    <p>An sFlow(R) target.  sFlow is a protocol for remote monitoring
-    of switches.</p>
+    <p>A set of sFlow(R) targets.  sFlow is a protocol for remote
+    monitoring of switches.</p>
 
     <column name="agent">
       Name of the network device whose IP address should be reported as the
@@ -3150,6 +3164,77 @@
     <column name="targets">
       sFlow targets in the form
       <code><var>ip</var>:<var>port</var></code>.
+    </column>
+
+    <group title="Common Columns">
+      The overall purpose of these columns is described under <code>Common
+      Columns</code> at the beginning of this document.
+
+      <column name="external_ids"/>
+    </group>
+  </table>
+
+  <table name="IPFIX">
+    <p>A set of IPFIX collectors.  IPFIX is a protocol that exports a
+    number of details about flows.</p>
+
+    <column name="targets">
+      IPFIX target collectors in the form
+      <code><var>ip</var>:<var>port</var></code>.
+    </column>
+
+    <column name="sampling">
+      For per-bridge packet sampling, i.e. when this row is referenced
+      from a <ref table="Bridge"/>, the rate at which packets should
+      be sampled and sent to each target collector.  If not specified,
+      defaults to 400, which means one out of 400 packets, on average,
+      will be sent to each target collector.  Ignored for per-flow
+      sampling, i.e. when this row is referenced from a <ref
+      table="Flow_Sample_Collector_Set"/>.
+    </column>
+
+    <column name="obs_domain_id">
+      For per-bridge packet sampling, i.e. when this row is referenced
+      from a <ref table="Bridge"/>, the IPFIX Observation Domain ID
+      sent in each IPFIX packet.  If not specified, defaults to 0.
+      Ignored for per-flow sampling, i.e. when this row is referenced
+      from a <ref table="Flow_Sample_Collector_Set"/>.
+    </column>
+
+    <column name="obs_point_id">
+      For per-bridge packet sampling, i.e. when this row is referenced
+      from a <ref table="Bridge"/>, the IPFIX Observation Point ID
+      sent in each IPFIX flow record.  If not specified, defaults to
+      0.  Ignored for per-flow sampling, i.e. when this row is
+      referenced from a <ref table="Flow_Sample_Collector_Set"/>.
+    </column>
+
+    <group title="Common Columns">
+      The overall purpose of these columns is described under <code>Common
+      Columns</code> at the beginning of this document.
+
+      <column name="external_ids"/>
+    </group>
+  </table>
+
+  <table name="Flow_Sample_Collector_Set">
+    <p>A set of IPFIX collectors of packet samples generated by
+    OpenFlow <code>sample</code> actions.</p>
+
+    <column name="id">
+      The ID of this collector set, unique among the bridge's
+      collector sets, to be used as the <code>collector_set_id</code>
+      in OpenFlow <code>sample</code> actions.
+    </column>
+
+    <column name="bridge">
+      The bridge into which OpenFlow <code>sample</code> actions can
+      be added to send packet samples to this set of IPFIX collectors.
+    </column>
+
+    <column name="ipfix">
+      Configuration of the set of IPFIX collectors to send one flow
+      record per sampled packet to.
     </column>
 
     <group title="Common Columns">

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -118,7 +118,7 @@ parse_target(const char *s_, struct in_addr *addr,
 static void
 parse_options(int argc, char *argv[])
 {
-    static struct option long_options[] = {
+    static const struct option long_options[] = {
         {"local", required_argument, NULL, 'l'},
         {"remote", required_argument, NULL, 'r'},
         {"batches", required_argument, NULL, 'b'},
@@ -472,6 +472,7 @@ cmd_rate(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
             printf("%.3f s elapsed, %u OK, %u failed, avg %.1f/s\n",
                    elapsed / 1000.0, completed - failures, failures,
                    completed / (elapsed / 1000.0));
+            fflush(stdout);
             prev = now;
 
             if (timeout && elapsed > timeout * 1000LL) {

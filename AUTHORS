@@ -3,10 +3,12 @@ signed off on commits in the Open vSwitch version control repository.
 
 Aaron Rosen             arosen@clemson.edu
 Alexey I. Froloff       raorn@altlinux.org
+Alex Wang               alexw@nicira.com
 Andrew Evans            aevans@nicira.com
 Andrew Lambeth          wal@nicira.com
 Andy Southgate          andy.southgate@citrix.com
 Andy Zhou               azhou@nicira.com
+Ansis Atteka            aatteka@nicira.com
 Anupam Chanda           achanda@nicira.com
 Arun Sharma             arun.sharma@calsoftinc.com
 Ben Pfaff               blp@nicira.com
@@ -25,6 +27,7 @@ David Erickson          derickso@stanford.edu
 David S. Miller         davem@davemloft.net
 Devendra Naga           devendra.aaru@gmail.com
 Dominic Curran          dominic.curran@citrix.com
+Duffie Cooley           dcooley@nicira.com
 Ed Maste                emaste at freebsd.org
 Edward Tomasz Napierała trasz@freebsd.org
 Ethan Jackson           ethan@nicira.com
@@ -90,6 +93,7 @@ Yasuhito Takamiya       yasuhito@gmail.com
 Yu Zhiguo               yuzg@cn.fujitsu.com
 Zoltan Kiss             zoltan.kiss@citrix.com
 Zhi Yong Wu             zwu.kernel@gmail.com
+Zang MingJie            zealot0630@gmail.com
 
 The following additional people are mentioned in commit logs as having
 provided helpful bug reports or suggestions.
@@ -101,7 +105,9 @@ Alan Shieh              ashieh@nicira.com
 Alban Browaeys          prahal@yahoo.com
 Alex Yip                alex@nicira.com
 Alexey I. Froloff       raorn@altlinux.org
+Amar Padmanabhan        amar@nicira.com
 Amey Bhide              abhide@nicira.com
+Amre Shakimov           ashakimov@vmware.com
 André Ruß               andre.russ@hybris.com
 Andreas Beckmann        debian@abeckmann.de
 Atzm Watanabe           atzm@stratosphere.co.jp
@@ -118,7 +124,7 @@ Cedric Hobbs            cedric@nicira.com
 Dave Walker             DaveWalker@ubuntu.com
 David Palma             palma@onesource.pt
 Derek Cormier           derek.cormier@lab.ntt.co.jp
-Duffie Cooley           dcooley@nicira.com
+Dhaval Badiani          dbadiani@vmware.com
 DK Moon                 dkmoon@nicira.com
 Edwin Chiu              echiu@nicira.com
 Eivind Bulie Haanaes
@@ -135,6 +141,7 @@ Hassan Khan             hassan.khan@seecs.edu.pk
 Hector Oron             hector.oron@gmail.com
 Henrik Amren            henrik@nicira.com
 Hiroshi Tanaka          htanaka@nicira.com
+Hiroshi Miyata          miyahiro.dazu@gmail.com
 Igor Ganichev           iganichev@nicira.com
 Jacob Cherkas           jcherkas@nicira.com
 Jad Naous               jnaous@gmail.com
@@ -197,6 +204,7 @@ Vishal Swarankar        vishal.swarnkar@gmail.com
 Vjekoslav Brajkovic     balkan@cs.washington.edu
 Voravit T.              voravit@kth.se
 YAMAMOTO Takashi        yamamoto@valinux.co.jp
+Yeming Zhao             zhaoyeming@gmail.com
 Yongqiang Liu           liuyq7809@gmail.com
 kk yap                  yapkke@stanford.edu
 likunyun                kunyunli@hotmail.com

@@ -21,12 +21,12 @@ openvswitch_headers += \
 	linux/compat/include/linux/err.h \
 	linux/compat/include/linux/etherdevice.h \
 	linux/compat/include/linux/flex_array.h \
-	linux/compat/include/linux/genetlink.h \
 	linux/compat/include/linux/icmp.h \
 	linux/compat/include/linux/icmpv6.h \
 	linux/compat/include/linux/if.h \
 	linux/compat/include/linux/if_arp.h \
 	linux/compat/include/linux/if_ether.h \
+	linux/compat/include/linux/if_tunnel.h \
 	linux/compat/include/linux/if_vlan.h \
 	linux/compat/include/linux/in.h \
 	linux/compat/include/linux/inetdevice.h \

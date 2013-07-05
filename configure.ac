@@ -13,7 +13,7 @@
 # limitations under the License.
 
 AC_PREREQ(2.64)
-AC_INIT(openvswitch, 1.10.90, ovs-bugs@openvswitch.org)
+AC_INIT(openvswitch, 1.11.90, ovs-bugs@openvswitch.org)
 AC_CONFIG_SRCDIR([datapath/datapath.c])
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_AUX_DIR([build-aux])
@@ -60,8 +60,8 @@ OVS_CHECK_IF_DL
 OVS_CHECK_STRTOK_R
 AC_CHECK_MEMBERS([struct stat.st_mtim.tv_nsec, struct stat.st_mtimensec],
   [], [], [[#include <sys/stat.h>]])
-AC_CHECK_FUNCS([mlockall strnlen strsignal getloadavg statvfs setmntent])
-AC_CHECK_HEADERS([mntent.h sys/statvfs.h linux/types.h linux/if_ether.h execinfo.h])
+AC_CHECK_FUNCS([mlockall strnlen strsignal getloadavg statvfs getmntent_r])
+AC_CHECK_HEADERS([mntent.h sys/statvfs.h linux/types.h linux/if_ether.h])
 
 OVS_CHECK_PKIDIR
 OVS_CHECK_RUNDIR

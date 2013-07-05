@@ -35,6 +35,7 @@ TESTSUITE_AT = \
 	tests/tunnel.at \
 	tests/lockfile.at \
 	tests/reconnect.at \
+	tests/ovs-vswitchd.at \
 	tests/ofproto-dpif.at \
 	tests/ofproto-macros.at \
 	tests/ofproto.at \
@@ -299,8 +300,6 @@ tests_test_vconn_LDADD = lib/libopenvswitch.a $(SSL_LIBS)
 noinst_PROGRAMS += tests/test-byte-order
 tests_test_byte_order_SOURCES = tests/test-byte-order.c
 tests_test_byte_order_LDADD = lib/libopenvswitch.a
-
-EXTRA_DIST += tests/choose-port.pl
 
 # Python tests.
 CHECK_PYFILES = \

@@ -420,7 +420,7 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
     port->type = xstrdup(type);
 
     error = netdev_get_mtu(netdev, &mtu);
-    if (!error) {
+    if (!error && mtu > max_mtu) {
         max_mtu = mtu;
     }
 
@@ -501,7 +501,6 @@ static int
 do_del_port(struct dp_netdev *dp, uint32_t port_no)
 {
     struct dp_netdev_port *port;
-    char *name;
     int error;
 
     error = get_port_by_number(dp, port_no, &port);
@@ -513,11 +512,8 @@ do_del_port(struct dp_netdev *dp, uint32_t port_no)
     dp->ports[port->port_no] = NULL;
     dp->serial++;
 
-    name = xstrdup(netdev_vport_get_dpif_port(port->netdev));
     netdev_close(port->netdev);
     free(port->type);
-
-    free(name);
     free(port);
 
     return 0;

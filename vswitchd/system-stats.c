@@ -97,7 +97,11 @@ get_memory_stats(struct smap *stats)
 {
     if (!LINUX_DATAPATH) {
         unsigned int pagesize = get_page_size();
+#ifdef _SC_PHYS_PAGES
         long int phys_pages = sysconf(_SC_PHYS_PAGES);
+#else
+        long int phys_pages = 0;
+#endif
 #ifdef _SC_AVPHYS_PAGES
         long int avphys_pages = sysconf(_SC_AVPHYS_PAGES);
 #else
@@ -443,9 +447,11 @@ get_process_stats(struct smap *stats)
 static void
 get_filesys_stats(struct smap *stats OVS_UNUSED)
 {
-#if HAVE_SETMNTENT && HAVE_STATVFS
+#if HAVE_GETMNTENT_R && HAVE_STATVFS
     static const char file_name[] = "/etc/mtab";
+    struct mntent mntent;
     struct mntent *me;
+    char buf[4096];
     FILE *stream;
     struct ds s;
 
@@ -456,7 +462,7 @@ get_filesys_stats(struct smap *stats OVS_UNUSED)
     }
 
     ds_init(&s);
-    while ((me = getmntent(stream)) != NULL) {
+    while ((me = getmntent_r(stream, &mntent, buf, sizeof buf)) != NULL) {
         unsigned long long int total, free;
         struct statvfs vfs;
         char *p;
@@ -490,7 +496,7 @@ get_filesys_stats(struct smap *stats OVS_UNUSED)
         smap_add(stats, "file_systems", ds_cstr(&s));
     }
     ds_destroy(&s);
-#endif  /* HAVE_SETMNTENT && HAVE_STATVFS */
+#endif  /* HAVE_GETMNTENT_R && HAVE_STATVFS */
 }
 
 #define SYSTEM_STATS_INTERVAL (5 * 1000) /* In milliseconds. */
