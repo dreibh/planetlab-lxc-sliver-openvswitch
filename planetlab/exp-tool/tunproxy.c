@@ -16,6 +16,9 @@
  * http://www.secdev.org/projects/tuntap_udp/files/tunproxy.c
  */
 
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
