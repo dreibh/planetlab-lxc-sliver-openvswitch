@@ -163,6 +163,7 @@ netdev_tunnel_get_config(const struct netdev *dev_, struct smap *args)
 static int
 netdev_tunnel_connect(struct netdev_tunnel *dev)
 {
+    char buf[1024];
     if (dev->sockfd < 0)
         return EBADF;
     if (!dev->valid_remote_ip || !dev->valid_remote_port)
@@ -174,7 +175,7 @@ netdev_tunnel_connect(struct netdev_tunnel *dev)
     dev->connected = true;
     netdev_tunnel_update_seq(dev);
     VLOG_DBG("%s: connected to (%s, %d)", netdev_get_name(&dev->up),
-        inet_ntoa(dev->remote_addr.sin_addr), ntohs(dev->remote_addr.sin_port));
+        inet_ntop(AF_INET, &dev->remote_addr.sin_addr, buf, 1024), ntohs(dev->remote_addr.sin_port));
     return 0;
 }
 
