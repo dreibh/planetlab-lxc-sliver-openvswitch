@@ -46,7 +46,7 @@
 VLOG_DEFINE_THIS_MODULE(netdev_pltap);
 
 struct netdev_dev_pltap {
-    struct netdev_dev netdev_dev;
+    struct netdev_dev up;
     char *real_name;
     struct netdev_stats stats;
     enum netdev_flags new_flags;
@@ -66,7 +66,7 @@ static const struct netdev_rx_class netdev_rx_pltap_class;
 static struct list sync_list;
 
 struct netdev_pltap {
-    struct netdev netdev;
+    struct netdev up;
 };
 
 struct netdev_rx_pltap {
@@ -102,7 +102,7 @@ static struct netdev_dev_pltap *
 netdev_dev_pltap_cast(const struct netdev_dev *netdev_dev)
 {
     ovs_assert(is_netdev_pltap_class(netdev_dev_get_class(netdev_dev)));
-    return CONTAINER_OF(netdev_dev, struct netdev_dev_pltap, netdev_dev);
+    return CONTAINER_OF(netdev_dev, struct netdev_dev_pltap, up);
 }
 
 static struct netdev_pltap *
@@ -110,7 +110,7 @@ netdev_pltap_cast(const struct netdev *netdev)
 {
     struct netdev_dev *netdev_dev = netdev_get_dev(netdev);
     ovs_assert(is_netdev_pltap_class(netdev_dev_get_class(netdev_dev)));
-    return CONTAINER_OF(netdev, struct netdev_pltap, netdev);
+    return CONTAINER_OF(netdev, struct netdev_pltap, up);
 }
 
 static struct netdev_rx_pltap*
@@ -172,9 +172,9 @@ netdev_pltap_create(const struct netdev_class *class OVS_UNUSED, const char *nam
         goto cleanup;
     }
 
-    netdev_dev_init(&netdev_dev->netdev_dev, name, &netdev_pltap_class);
+    netdev_dev_init(&netdev_dev->up, name, &netdev_pltap_class);
     shash_add(&pltap_netdev_devs, name, netdev_dev);
-    *netdev_devp = &netdev_dev->netdev_dev;
+    *netdev_devp = &netdev_dev->up;
     return 0;
 
 cleanup:
@@ -203,9 +203,9 @@ netdev_pltap_open(struct netdev_dev *netdev_dev_, struct netdev **netdevp)
     struct netdev_pltap *netdev;
 
     netdev = xmalloc(sizeof *netdev);
-    netdev_init(&netdev->netdev, netdev_dev_);
+    netdev_init(&netdev->up, netdev_dev_);
 
-    *netdevp = &netdev->netdev;
+    *netdevp = &netdev->up;
     return 0;
 }
 
