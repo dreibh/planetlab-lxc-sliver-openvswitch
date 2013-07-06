@@ -39,7 +39,7 @@
 VLOG_DEFINE_THIS_MODULE(netdev_tunnel);
 
 struct netdev_dev_tunnel {
-    struct netdev_dev netdev_dev;
+    struct netdev_dev up;
     uint8_t hwaddr[ETH_ADDR_LEN];
     struct netdev_stats stats;
     enum netdev_flags flags;
@@ -53,7 +53,7 @@ struct netdev_dev_tunnel {
 };
 
 struct netdev_tunnel {
-    struct netdev netdev;
+    struct netdev up;
 };
 
 struct netdev_rx_tunnel {
@@ -81,7 +81,7 @@ static struct netdev_dev_tunnel *
 netdev_dev_tunnel_cast(const struct netdev_dev *netdev_dev)
 {
     ovs_assert(is_netdev_tunnel_class(netdev_dev_get_class(netdev_dev)));
-    return CONTAINER_OF(netdev_dev, struct netdev_dev_tunnel, netdev_dev);
+    return CONTAINER_OF(netdev_dev, struct netdev_dev_tunnel, up);
 }
 
 static struct netdev_tunnel *
@@ -89,7 +89,7 @@ netdev_tunnel_cast(const struct netdev *netdev)
 {
     struct netdev_dev *netdev_dev = netdev_get_dev(netdev);
     ovs_assert(is_netdev_tunnel_class(netdev_dev_get_class(netdev_dev)));
-    return CONTAINER_OF(netdev, struct netdev_tunnel, netdev);
+    return CONTAINER_OF(netdev, struct netdev_tunnel, up);
 }
 
 static struct netdev_rx_tunnel *
@@ -108,7 +108,7 @@ netdev_tunnel_create(const struct netdev_class *class, const char *name,
     int error;
 
     netdev_dev = xzalloc(sizeof *netdev_dev);
-    netdev_dev_init(&netdev_dev->netdev_dev, name, class);
+    netdev_dev_init(&netdev_dev->up, name, class);
     netdev_dev->hwaddr[0] = 0xfe;
     netdev_dev->hwaddr[1] = 0xff;
     netdev_dev->hwaddr[2] = 0xff;
@@ -134,7 +134,7 @@ netdev_tunnel_create(const struct netdev_class *class, const char *name,
 
     n++;
 
-    *netdev_devp = &netdev_dev->netdev_dev;
+    *netdev_devp = &netdev_dev->up;
 
     VLOG_DBG("tunnel_create: name=%s, fd=%d, port=%d", name, netdev_dev->sockfd, netdev_dev->local_addr.sin_port);
 
@@ -164,9 +164,9 @@ netdev_tunnel_open(struct netdev_dev *netdev_dev_, struct netdev **netdevp)
     struct netdev_tunnel *netdev;
 
     netdev = xmalloc(sizeof *netdev);
-    netdev_init(&netdev->netdev, netdev_dev_);
+    netdev_init(&netdev->up, netdev_dev_);
 
-    *netdevp = &netdev->netdev;
+    *netdevp = &netdev->up;
     return 0;
 }
 
@@ -204,7 +204,7 @@ netdev_tunnel_connect(struct netdev_dev_tunnel *dev)
     }
     dev->connected = true;
     netdev_tunnel_update_seq(dev);
-    VLOG_DBG("%s: connected to (%s, %d)", netdev_dev_get_name(&dev->netdev_dev),
+    VLOG_DBG("%s: connected to (%s, %d)", netdev_dev_get_name(&dev->up),
         inet_ntoa(dev->remote_addr.sin_addr), ntohs(dev->remote_addr.sin_port));
     return 0;
 }
