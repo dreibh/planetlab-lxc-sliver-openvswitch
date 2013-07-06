@@ -38,8 +38,8 @@
 
 VLOG_DEFINE_THIS_MODULE(netdev_tunnel);
 
-struct netdev_dev_tunnel {
-    struct netdev_dev up;
+struct netdev_tunnel {
+    struct netdev up;
     uint8_t hwaddr[ETH_ADDR_LEN];
     struct netdev_stats stats;
     enum netdev_flags flags;
@@ -52,10 +52,6 @@ struct netdev_dev_tunnel {
     unsigned int change_seq;
 };
 
-struct netdev_tunnel {
-    struct netdev up;
-};
-
 struct netdev_rx_tunnel {
     struct netdev_rx up;
     int fd;
@@ -65,11 +61,11 @@ static const struct netdev_rx_class netdev_rx_tunnel_class;
 
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
-static struct shash tunnel_netdev_devs = SHASH_INITIALIZER(&tunnel_netdev_devs);
+static struct shash tunnel_netdevs = SHASH_INITIALIZER(&tunnel_netdevs);
 
 static int netdev_tunnel_create(const struct netdev_class *, const char *,
-                               struct netdev_dev **);
-static void netdev_tunnel_update_seq(struct netdev_dev_tunnel *);
+                               struct netdev **);
+static void netdev_tunnel_update_seq(struct netdev_tunnel *);
 
 static bool
 is_netdev_tunnel_class(const struct netdev_class *class)
@@ -77,18 +73,10 @@ is_netdev_tunnel_class(const struct netdev_class *class)
     return class->create == netdev_tunnel_create;
 }
 
-static struct netdev_dev_tunnel *
-netdev_dev_tunnel_cast(const struct netdev_dev *netdev_dev)
-{
-    ovs_assert(is_netdev_tunnel_class(netdev_dev_get_class(netdev_dev)));
-    return CONTAINER_OF(netdev_dev, struct netdev_dev_tunnel, up);
-}
-
 static struct netdev_tunnel *
 netdev_tunnel_cast(const struct netdev *netdev)
 {
-    struct netdev_dev *netdev_dev = netdev_get_dev(netdev);
-    ovs_assert(is_netdev_tunnel_class(netdev_dev_get_class(netdev_dev)));
+    ovs_assert(is_netdev_tunnel_class(netdev_get_class(netdev)));
     return CONTAINER_OF(netdev, struct netdev_tunnel, up);
 }
 
@@ -101,98 +89,79 @@ netdev_rx_tunnel_cast(const struct netdev_rx *rx)
 
 static int
 netdev_tunnel_create(const struct netdev_class *class, const char *name,
-                    struct netdev_dev **netdev_devp)
+                    struct netdev **netdevp)
 {
     static unsigned int n = 0;
-    struct netdev_dev_tunnel *netdev_dev;
+    struct netdev_tunnel *netdev;
     int error;
 
-    netdev_dev = xzalloc(sizeof *netdev_dev);
-    netdev_dev_init(&netdev_dev->up, name, class);
-    netdev_dev->hwaddr[0] = 0xfe;
-    netdev_dev->hwaddr[1] = 0xff;
-    netdev_dev->hwaddr[2] = 0xff;
-    netdev_dev->hwaddr[3] = n >> 16;
-    netdev_dev->hwaddr[4] = n >> 8;
-    netdev_dev->hwaddr[5] = n;
-    netdev_dev->flags = 0;
-    netdev_dev->change_seq = 1;
-    memset(&netdev_dev->remote_addr, 0, sizeof(netdev_dev->remote_addr));
-    netdev_dev->valid_remote_ip = false;
-    netdev_dev->valid_remote_port = false;
-    netdev_dev->connected = false;
+    netdev = xzalloc(sizeof *netdev);
+    netdev_init(&netdev->up, name, class);
+    netdev->hwaddr[0] = 0xfe;
+    netdev->hwaddr[1] = 0xff;
+    netdev->hwaddr[2] = 0xff;
+    netdev->hwaddr[3] = n >> 16;
+    netdev->hwaddr[4] = n >> 8;
+    netdev->hwaddr[5] = n;
+    netdev->flags = 0;
+    netdev->change_seq = 1;
+    memset(&netdev->remote_addr, 0, sizeof(netdev->remote_addr));
+    netdev->valid_remote_ip = false;
+    netdev->valid_remote_port = false;
+    netdev->connected = false;
 
 
-    netdev_dev->sockfd = inet_open_passive(SOCK_DGRAM, "", 0, &netdev_dev->local_addr, 0);
-    if (netdev_dev->sockfd < 0) {
-    	error = netdev_dev->sockfd;
+    netdev->sockfd = inet_open_passive(SOCK_DGRAM, "", 0, &netdev->local_addr, 0);
+    if (netdev->sockfd < 0) {
+    	error = netdev->sockfd;
         goto error;
     }
 
 
-    shash_add(&tunnel_netdev_devs, name, netdev_dev);
+    shash_add(&tunnel_netdevs, name, netdev);
 
     n++;
 
-    *netdev_devp = &netdev_dev->up;
+    *netdevp = &netdev->up;
 
-    VLOG_DBG("tunnel_create: name=%s, fd=%d, port=%d", name, netdev_dev->sockfd, netdev_dev->local_addr.sin_port);
+    VLOG_DBG("tunnel_create: name=%s, fd=%d, port=%d", name, netdev->sockfd, netdev->local_addr.sin_port);
 
     return 0;
 
 error:
-    free(netdev_dev);
+    free(netdev);
     return error;
 }
 
 static void
-netdev_tunnel_destroy(struct netdev_dev *netdev_dev_)
-{
-    struct netdev_dev_tunnel *netdev_dev = netdev_dev_tunnel_cast(netdev_dev_);
-
-    if (netdev_dev->sockfd != -1)
-    	close(netdev_dev->sockfd);
-
-    shash_find_and_delete(&tunnel_netdev_devs,
-                          netdev_dev_get_name(netdev_dev_));
-    free(netdev_dev);
-}
-
-static int
-netdev_tunnel_open(struct netdev_dev *netdev_dev_, struct netdev **netdevp)
-{
-    struct netdev_tunnel *netdev;
-
-    netdev = xmalloc(sizeof *netdev);
-    netdev_init(&netdev->up, netdev_dev_);
-
-    *netdevp = &netdev->up;
-    return 0;
-}
-
-static void
-netdev_tunnel_close(struct netdev *netdev_)
+netdev_tunnel_destroy(struct netdev *netdev_)
 {
     struct netdev_tunnel *netdev = netdev_tunnel_cast(netdev_);
+
+    if (netdev->sockfd != -1)
+    	close(netdev->sockfd);
+
+    shash_find_and_delete(&tunnel_netdevs,
+                          netdev_get_name(netdev_));
     free(netdev);
 }
 
 static int
-netdev_tunnel_get_config(struct netdev_dev *dev_, struct smap *args)
+netdev_tunnel_get_config(const struct netdev *dev_, struct smap *args)
 {
-    struct netdev_dev_tunnel *netdev_dev = netdev_dev_tunnel_cast(dev_);
+    struct netdev_tunnel *netdev = netdev_tunnel_cast(dev_);
 
-    if (netdev_dev->valid_remote_ip)
+    if (netdev->valid_remote_ip)
     	smap_add_format(args, "remote_ip", IP_FMT,
-		IP_ARGS(netdev_dev->remote_addr.sin_addr.s_addr));
-    if (netdev_dev->valid_remote_port)
+		IP_ARGS(netdev->remote_addr.sin_addr.s_addr));
+    if (netdev->valid_remote_port)
         smap_add_format(args, "remote_port", "%"PRIu16,
-		ntohs(netdev_dev->remote_addr.sin_port));
+		ntohs(netdev->remote_addr.sin_port));
     return 0;
 }
 
 static int
-netdev_tunnel_connect(struct netdev_dev_tunnel *dev)
+netdev_tunnel_connect(struct netdev_tunnel *dev)
 {
     if (dev->sockfd < 0)
         return EBADF;
@@ -204,18 +173,18 @@ netdev_tunnel_connect(struct netdev_dev_tunnel *dev)
     }
     dev->connected = true;
     netdev_tunnel_update_seq(dev);
-    VLOG_DBG("%s: connected to (%s, %d)", netdev_dev_get_name(&dev->up),
+    VLOG_DBG("%s: connected to (%s, %d)", netdev_get_name(&dev->up),
         inet_ntoa(dev->remote_addr.sin_addr), ntohs(dev->remote_addr.sin_port));
     return 0;
 }
 
 static int
-netdev_tunnel_set_config(struct netdev_dev *dev_, const struct smap *args)
+netdev_tunnel_set_config(struct netdev *dev_, const struct smap *args)
 {
-    struct netdev_dev_tunnel *netdev_dev = netdev_dev_tunnel_cast(dev_);
+    struct netdev_tunnel *netdev = netdev_tunnel_cast(dev_);
     struct shash_node *node;
 
-    VLOG_DBG("tunnel_set_config(%s)", netdev_dev_get_name(dev_));
+    VLOG_DBG("tunnel_set_config(%s)", netdev_get_name(dev_));
     SMAP_FOR_EACH(node, args) {
         VLOG_DBG("arg: %s->%s", node->name, (char*)node->data);
     	if (!strcmp(node->name, "remote_ip")) {
@@ -223,29 +192,29 @@ netdev_tunnel_set_config(struct netdev_dev *dev_, const struct smap *args)
 	    if (lookup_ip(node->data, &addr)) {
 		VLOG_WARN("%s: bad 'remote_ip'", node->name);
 	    } else {
-		netdev_dev->remote_addr.sin_addr = addr;
-		netdev_dev->valid_remote_ip = true;
+		netdev->remote_addr.sin_addr = addr;
+		netdev->valid_remote_ip = true;
 	    }
 	} else if (!strcmp(node->name, "remote_port")) {
-	    netdev_dev->remote_addr.sin_port = htons(atoi(node->data));
-	    netdev_dev->valid_remote_port = true;
+	    netdev->remote_addr.sin_port = htons(atoi(node->data));
+	    netdev->valid_remote_port = true;
 	} else {
 	    VLOG_WARN("%s: unknown argument '%s'", 
-	    	netdev_dev_get_name(dev_), node->name);
+	    	netdev_get_name(dev_), node->name);
 	}
     }
-    return netdev_tunnel_connect(netdev_dev);        
+    return netdev_tunnel_connect(netdev);        
 }
 
 static int
 netdev_tunnel_rx_open(struct netdev *netdev_, struct netdev_rx **rxp)
 {   
-    struct netdev_dev_tunnel *netdev_dev =
-        netdev_dev_tunnel_cast(netdev_get_dev(netdev_));
+    struct netdev_tunnel *netdev =
+        netdev_tunnel_cast(netdev_);
     struct netdev_rx_tunnel *rx;
     rx = xmalloc(sizeof *rx);
-    netdev_rx_init(&rx->up, netdev_get_dev(netdev_), &netdev_rx_tunnel_class);
-    rx->fd = netdev_dev->sockfd;
+    netdev_rx_init(&rx->up, netdev_, &netdev_rx_tunnel_class);
+    rx->fd = netdev->sockfd;
     *rxp = &rx->up;
     return 0;
 }
@@ -261,9 +230,9 @@ static int
 netdev_rx_tunnel_recv(struct netdev_rx *rx_, void *buffer, size_t size)
 {
     struct netdev_rx_tunnel *rx = netdev_rx_tunnel_cast(rx_);
-    struct netdev_dev_tunnel *netdev_dev =
-        netdev_dev_tunnel_cast(rx_->netdev_dev);
-    if (!netdev_dev->connected)
+    struct netdev_tunnel *netdev =
+        netdev_tunnel_cast(rx_->netdev);
+    if (!netdev->connected)
         return -EAGAIN;
     for (;;) {
         ssize_t retval;
@@ -271,20 +240,20 @@ netdev_rx_tunnel_recv(struct netdev_rx *rx_, void *buffer, size_t size)
 	    VLOG_DBG("%s: recv(%"PRIxPTR", %zu, MSG_TRUNC) = %zd",
 		    netdev_rx_get_name(rx_), (uintptr_t)buffer, size, retval);
         if (retval >= 0) {
-	    netdev_dev->stats.rx_packets++;
-	    netdev_dev->stats.rx_bytes += retval;
+	    netdev->stats.rx_packets++;
+	    netdev->stats.rx_bytes += retval;
             if (retval <= size) {
 	    	    return retval;
             } else {
-                netdev_dev->stats.rx_errors++;
-                netdev_dev->stats.rx_length_errors++;
+                netdev->stats.rx_errors++;
+                netdev->stats.rx_length_errors++;
                 return -EMSGSIZE;
             }
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error receiveing Ethernet packet on %s: %s",
                     netdev_rx_get_name(rx_), strerror(errno));
-	            netdev_dev->stats.rx_errors++;
+	            netdev->stats.rx_errors++;
             }
             return -errno;
         }
@@ -304,8 +273,8 @@ netdev_rx_tunnel_wait(struct netdev_rx *rx_)
 static int
 netdev_tunnel_send(struct netdev *netdev_, const void *buffer, size_t size)
 {
-    struct netdev_dev_tunnel *dev = 
-    	netdev_dev_tunnel_cast(netdev_get_dev(netdev_));
+    struct netdev_tunnel *dev = 
+    	netdev_tunnel_cast(netdev_);
     if (!dev->connected)
         return EAGAIN;
     for (;;) {
@@ -336,8 +305,7 @@ netdev_tunnel_send(struct netdev *netdev_, const void *buffer, size_t size)
 static void
 netdev_tunnel_send_wait(struct netdev *netdev_)
 {
-    struct netdev_dev_tunnel *dev = 
-    	netdev_dev_tunnel_cast(netdev_get_dev(netdev_));
+    struct netdev_tunnel *dev = netdev_tunnel_cast(netdev_);
     if (dev->sockfd >= 0) {
         poll_fd_wait(dev->sockfd, POLLOUT);
     }
@@ -346,14 +314,14 @@ netdev_tunnel_send_wait(struct netdev *netdev_)
 static int
 netdev_rx_tunnel_drain(struct netdev_rx *rx_)
 {
-    struct netdev_dev_tunnel *netdev_dev =
-        netdev_dev_tunnel_cast(rx_->netdev_dev);
+    struct netdev_tunnel *netdev =
+        netdev_tunnel_cast(rx_->netdev);
     struct netdev_rx_tunnel *rx = 
     	netdev_rx_tunnel_cast(rx_);
     char buffer[128];
     int error;
 
-    if (!netdev_dev->connected)
+    if (!netdev->connected)
     	return 0;
     for (;;) {
     	error = recv(rx->fd, buffer, 128, MSG_TRUNC);
@@ -371,8 +339,7 @@ static int
 netdev_tunnel_set_etheraddr(struct netdev *netdev,
                            const uint8_t mac[ETH_ADDR_LEN])
 {
-    struct netdev_dev_tunnel *dev =
-        netdev_dev_tunnel_cast(netdev_get_dev(netdev));
+    struct netdev_tunnel *dev = netdev_tunnel_cast(netdev);
 
     if (!eth_addr_equals(dev->hwaddr, mac)) {
         memcpy(dev->hwaddr, mac, ETH_ADDR_LEN);
@@ -386,8 +353,7 @@ static int
 netdev_tunnel_get_etheraddr(const struct netdev *netdev,
                            uint8_t mac[ETH_ADDR_LEN])
 {
-    const struct netdev_dev_tunnel *dev =
-        netdev_dev_tunnel_cast(netdev_get_dev(netdev));
+    const struct netdev_tunnel *dev = netdev_tunnel_cast(netdev);
 
     memcpy(mac, dev->hwaddr, ETH_ADDR_LEN);
     return 0;
@@ -397,8 +363,7 @@ netdev_tunnel_get_etheraddr(const struct netdev *netdev,
 static int
 netdev_tunnel_get_stats(const struct netdev *netdev, struct netdev_stats *stats)
 {
-    const struct netdev_dev_tunnel *dev =
-        netdev_dev_tunnel_cast(netdev_get_dev(netdev));
+    const struct netdev_tunnel *dev = netdev_tunnel_cast(netdev);
 
     *stats = dev->stats;
     return 0;
@@ -407,31 +372,30 @@ netdev_tunnel_get_stats(const struct netdev *netdev, struct netdev_stats *stats)
 static int
 netdev_tunnel_set_stats(struct netdev *netdev, const struct netdev_stats *stats)
 {
-    struct netdev_dev_tunnel *dev =
-        netdev_dev_tunnel_cast(netdev_get_dev(netdev));
+    struct netdev_tunnel *dev = netdev_tunnel_cast(netdev);
 
     dev->stats = *stats;
     return 0;
 }
 
 static int
-netdev_tunnel_update_flags(struct netdev_dev *dev_,
+netdev_tunnel_update_flags(struct netdev *dev_,
                           enum netdev_flags off, enum netdev_flags on,
                           enum netdev_flags *old_flagsp)
 {
-    struct netdev_dev_tunnel *netdev_dev =
-        netdev_dev_tunnel_cast(dev_);
+    struct netdev_tunnel *netdev =
+        netdev_tunnel_cast(dev_);
 
     if ((off | on) & ~(NETDEV_UP | NETDEV_PROMISC)) {
         return EINVAL;
     }
 
     // XXX should we actually do something with these flags?
-    *old_flagsp = netdev_dev->flags;
-    netdev_dev->flags |= on;
-    netdev_dev->flags &= ~off;
-    if (*old_flagsp != netdev_dev->flags) {
-        netdev_tunnel_update_seq(netdev_dev);
+    *old_flagsp = netdev->flags;
+    netdev->flags |= on;
+    netdev->flags &= ~off;
+    if (*old_flagsp != netdev->flags) {
+        netdev_tunnel_update_seq(netdev);
     }
     return 0;
 }
@@ -439,13 +403,13 @@ netdev_tunnel_update_flags(struct netdev_dev *dev_,
 static unsigned int
 netdev_tunnel_change_seq(const struct netdev *netdev)
 {
-    return netdev_dev_tunnel_cast(netdev_get_dev(netdev))->change_seq;
+    return netdev_tunnel_cast(netdev)->change_seq;
 }
 
 /* Helper functions. */
 
 static void
-netdev_tunnel_update_seq(struct netdev_dev_tunnel *dev)
+netdev_tunnel_update_seq(struct netdev_tunnel *dev)
 {
     dev->change_seq++;
     if (!dev->change_seq) {
@@ -457,10 +421,10 @@ static void
 netdev_tunnel_get_port(struct unixctl_conn *conn,
                      int argc OVS_UNUSED, const char *argv[], void *aux OVS_UNUSED)
 {
-    struct netdev_dev_tunnel *tunnel_dev;
+    struct netdev_tunnel *tunnel_dev;
     char buf[6];
 
-    tunnel_dev = shash_find_data(&tunnel_netdev_devs, argv[1]);
+    tunnel_dev = shash_find_data(&tunnel_netdevs, argv[1]);
     if (!tunnel_dev) {
         unixctl_command_reply_error(conn, "no such tunnel netdev");
         return;
@@ -474,10 +438,10 @@ static void
 netdev_tunnel_get_tx_bytes(struct unixctl_conn *conn,
                      int argc OVS_UNUSED, const char *argv[], void *aux OVS_UNUSED)
 {
-    struct netdev_dev_tunnel *tunnel_dev;
+    struct netdev_tunnel *tunnel_dev;
     char buf[128];
 
-    tunnel_dev = shash_find_data(&tunnel_netdev_devs, argv[1]);
+    tunnel_dev = shash_find_data(&tunnel_netdevs, argv[1]);
     if (!tunnel_dev) {
         unixctl_command_reply_error(conn, "no such tunnel netdev");
         return;
@@ -491,10 +455,10 @@ static void
 netdev_tunnel_get_rx_bytes(struct unixctl_conn *conn,
                      int argc OVS_UNUSED, const char *argv[], void *aux OVS_UNUSED)
 {
-    struct netdev_dev_tunnel *tunnel_dev;
+    struct netdev_tunnel *tunnel_dev;
     char buf[128];
 
-    tunnel_dev = shash_find_data(&tunnel_netdev_devs, argv[1]);
+    tunnel_dev = shash_find_data(&tunnel_netdevs, argv[1]);
     if (!tunnel_dev) {
         unixctl_command_reply_error(conn, "no such tunnel netdev");
         return;
@@ -528,9 +492,6 @@ const struct netdev_class netdev_tunnel_class = {
     netdev_tunnel_get_config,
     netdev_tunnel_set_config, 
     NULL,			            /* get_tunnel_config */
-
-    netdev_tunnel_open,
-    netdev_tunnel_close,
 
     netdev_tunnel_rx_open,
 

@@ -45,8 +45,8 @@
 
 VLOG_DEFINE_THIS_MODULE(netdev_pltap);
 
-struct netdev_dev_pltap {
-    struct netdev_dev up;
+struct netdev_pltap {
+    struct netdev up;
     char *real_name;
     struct netdev_stats stats;
     enum netdev_flags new_flags;
@@ -65,10 +65,6 @@ static const struct netdev_rx_class netdev_rx_pltap_class;
 
 static struct list sync_list;
 
-struct netdev_pltap {
-    struct netdev up;
-};
-
 struct netdev_rx_pltap {
     struct netdev_rx up;    
     int fd;
@@ -78,16 +74,16 @@ static int af_inet_sock = -1;
 
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
-static struct shash pltap_netdev_devs = SHASH_INITIALIZER(&pltap_netdev_devs);
+static struct shash pltap_netdevs = SHASH_INITIALIZER(&pltap_netdevs);
 
 static int netdev_pltap_create(const struct netdev_class *, const char *,
-                               struct netdev_dev **);
+                               struct netdev **);
 
-static void netdev_pltap_update_seq(struct netdev_dev_pltap *);
-static int get_flags(struct netdev_dev_pltap *dev, enum netdev_flags *flags);
+static void netdev_pltap_update_seq(struct netdev_pltap *);
+static int get_flags(struct netdev_pltap *dev, enum netdev_flags *flags);
 
 static bool
-netdev_pltap_finalized(struct netdev_dev_pltap *dev)
+netdev_pltap_finalized(struct netdev_pltap *dev)
 {
     return dev->valid_local_ip && dev->valid_local_netmask;
 }
@@ -98,18 +94,10 @@ is_netdev_pltap_class(const struct netdev_class *class)
     return class->create == netdev_pltap_create;
 }
 
-static struct netdev_dev_pltap *
-netdev_dev_pltap_cast(const struct netdev_dev *netdev_dev)
-{
-    ovs_assert(is_netdev_pltap_class(netdev_dev_get_class(netdev_dev)));
-    return CONTAINER_OF(netdev_dev, struct netdev_dev_pltap, up);
-}
-
 static struct netdev_pltap *
 netdev_pltap_cast(const struct netdev *netdev)
 {
-    struct netdev_dev *netdev_dev = netdev_get_dev(netdev);
-    ovs_assert(is_netdev_pltap_class(netdev_dev_get_class(netdev_dev)));
+    ovs_assert(is_netdev_pltap_class(netdev_get_class(netdev)));
     return CONTAINER_OF(netdev, struct netdev_pltap, up);
 }
 
@@ -120,7 +108,7 @@ netdev_rx_pltap_cast(const struct netdev_rx *rx)
     return CONTAINER_OF(rx, struct netdev_rx_pltap, up);
 }
 
-static void sync_needed(struct netdev_dev_pltap *dev)
+static void sync_needed(struct netdev_pltap *dev)
 {
     if (dev->sync_flags_needed)
         return;
@@ -130,7 +118,7 @@ static void sync_needed(struct netdev_dev_pltap *dev)
 	
 }
 
-static void sync_done(struct netdev_dev_pltap *dev)
+static void sync_done(struct netdev_pltap *dev)
 {
     if (!dev->sync_flags_needed)
         return;
@@ -141,99 +129,79 @@ static void sync_done(struct netdev_dev_pltap *dev)
 
 static int
 netdev_pltap_create(const struct netdev_class *class OVS_UNUSED, const char *name,
-                    struct netdev_dev **netdev_devp)
+                    struct netdev **netdevp)
 {
-    struct netdev_dev_pltap *netdev_dev;
+    struct netdev_pltap *netdev;
     int error;
 
-    netdev_dev = xzalloc(sizeof *netdev_dev);
+    netdev = xzalloc(sizeof *netdev);
 
-    netdev_dev->real_name = xzalloc(IFNAMSIZ + 1);
-    memset(&netdev_dev->local_addr, 0, sizeof(netdev_dev->local_addr));
-    netdev_dev->valid_local_ip = false;
-    netdev_dev->valid_local_netmask = false;
-    netdev_dev->flags = 0;
-    netdev_dev->sync_flags_needed = false;
-    list_init(&netdev_dev->sync_list);
+    netdev->real_name = xzalloc(IFNAMSIZ + 1);
+    memset(&netdev->local_addr, 0, sizeof(netdev->local_addr));
+    netdev->valid_local_ip = false;
+    netdev->valid_local_netmask = false;
+    netdev->flags = 0;
+    netdev->sync_flags_needed = false;
+    list_init(&netdev->sync_list);
 
 
     /* Open tap device. */
-    netdev_dev->fd = tun_alloc(IFF_TAP, netdev_dev->real_name);
-    if (netdev_dev->fd < 0) {
+    netdev->fd = tun_alloc(IFF_TAP, netdev->real_name);
+    if (netdev->fd < 0) {
         error = errno;
         VLOG_WARN("tun_alloc(IFF_TAP, %s) failed: %s", name, strerror(error));
         goto cleanup;
     }
-    VLOG_DBG("real_name = %s", netdev_dev->real_name);
+    VLOG_DBG("real_name = %s", netdev->real_name);
 
     /* Make non-blocking. */
-    error = set_nonblocking(netdev_dev->fd);
+    error = set_nonblocking(netdev->fd);
     if (error) {
         goto cleanup;
     }
 
-    netdev_dev_init(&netdev_dev->up, name, &netdev_pltap_class);
-    shash_add(&pltap_netdev_devs, name, netdev_dev);
-    *netdev_devp = &netdev_dev->up;
+    netdev_init(&netdev->up, name, &netdev_pltap_class);
+    shash_add(&pltap_netdevs, name, netdev);
+    *netdevp = &netdev->up;
     return 0;
 
 cleanup:
-    free(netdev_dev);
+    free(netdev);
     return error;
 }
 
 static void
-netdev_pltap_destroy(struct netdev_dev *netdev_dev_)
-{
-    struct netdev_dev_pltap *netdev_dev = netdev_dev_pltap_cast(netdev_dev_);
-
-    if (netdev_dev->fd != -1)
-    	close(netdev_dev->fd);
-
-    sync_done(netdev_dev);
-
-    shash_find_and_delete(&pltap_netdev_devs,
-                          netdev_dev_get_name(netdev_dev_));
-    free(netdev_dev);
-}
-
-static int
-netdev_pltap_open(struct netdev_dev *netdev_dev_, struct netdev **netdevp)
-{
-    struct netdev_pltap *netdev;
-
-    netdev = xmalloc(sizeof *netdev);
-    netdev_init(&netdev->up, netdev_dev_);
-
-    *netdevp = &netdev->up;
-    return 0;
-}
-
-static void
-netdev_pltap_close(struct netdev *netdev_)
+netdev_pltap_destroy(struct netdev *netdev_)
 {
     struct netdev_pltap *netdev = netdev_pltap_cast(netdev_);
+
+    if (netdev->fd != -1)
+    	close(netdev->fd);
+
+    sync_done(netdev);
+
+    shash_find_and_delete(&pltap_netdevs,
+                          netdev_get_name(netdev_));
     free(netdev);
 }
 
-
-static int netdev_pltap_up(struct netdev_dev_pltap *dev);
+static int netdev_pltap_up(struct netdev_pltap *dev);
 
 static int
 netdev_pltap_rx_open(struct netdev *netdev_, struct netdev_rx **rxp)
 {
-    struct netdev_dev_pltap *netdev_dev =
-        netdev_dev_pltap_cast(netdev_get_dev(netdev_));
+    struct netdev_pltap *netdev =
+        netdev_pltap_cast(netdev_);
     struct netdev_rx_pltap *rx;
     int err;
 
     rx = xmalloc(sizeof *rx);
-    netdev_rx_init(&rx->up, netdev_get_dev(netdev_), &netdev_rx_pltap_class);
-    rx->fd = netdev_dev->fd;
+    netdev_rx_init(&rx->up, netdev_, &netdev_rx_pltap_class);
+    rx->fd = netdev->fd;
     *rxp = &rx->up;
-    if (!netdev_pltap_finalized(netdev_dev))
+    if (!netdev_pltap_finalized(netdev))
         return 0;
-    err = netdev_pltap_up(netdev_dev);
+    err = netdev_pltap_up(netdev);
     if (err) {
         free(rx);
         *rxp = NULL;
@@ -372,7 +340,7 @@ cleanup:
 }
 
 static int
-netdev_pltap_up(struct netdev_dev_pltap *dev)
+netdev_pltap_up(struct netdev_pltap *dev)
 {
     if (!netdev_pltap_finalized(dev)) {
         return 0;
@@ -385,7 +353,7 @@ netdev_pltap_up(struct netdev_dev_pltap *dev)
 }
 
 static int
-netdev_pltap_down(struct netdev_dev_pltap *dev)
+netdev_pltap_down(struct netdev_pltap *dev)
 {
     if (!netdev_pltap_finalized(dev)) {
         return 0;
@@ -395,7 +363,7 @@ netdev_pltap_down(struct netdev_dev_pltap *dev)
 }
 
 static int
-netdev_pltap_promisc(struct netdev_dev_pltap *dev, bool promisc)
+netdev_pltap_promisc(struct netdev_pltap *dev, bool promisc)
 {
     if (!netdev_pltap_finalized(dev)) {
         return 0;
@@ -407,7 +375,7 @@ netdev_pltap_promisc(struct netdev_dev_pltap *dev, bool promisc)
 }
 
 static void
-netdev_pltap_sync_flags(struct netdev_dev_pltap *dev)
+netdev_pltap_sync_flags(struct netdev_pltap *dev)
 {
 
     if (dev->fd < 0 || !netdev_pltap_finalized(dev)) {
@@ -438,26 +406,26 @@ netdev_pltap_sync_flags(struct netdev_dev_pltap *dev)
 
 
 static int
-netdev_pltap_get_config(struct netdev_dev *dev_, struct smap *args)
+netdev_pltap_get_config(const struct netdev *dev_, struct smap *args)
 {
-    struct netdev_dev_pltap *netdev_dev = netdev_dev_pltap_cast(dev_);
+    struct netdev_pltap *netdev = netdev_pltap_cast(dev_);
 
-    if (netdev_dev->valid_local_ip)
+    if (netdev->valid_local_ip)
     	smap_add_format(args, "local_ip", IP_FMT,
-            IP_ARGS(netdev_dev->local_addr.sin_addr.s_addr));
-    if (netdev_dev->valid_local_netmask)
+            IP_ARGS(netdev->local_addr.sin_addr.s_addr));
+    if (netdev->valid_local_netmask)
         smap_add_format(args, "local_netmask", "%"PRIu32,
-            ntohs(netdev_dev->local_netmask));
+            ntohs(netdev->local_netmask));
     return 0;
 }
 
 static int
-netdev_pltap_set_config(struct netdev_dev *dev_, const struct smap *args)
+netdev_pltap_set_config(struct netdev *dev_, const struct smap *args)
 {
-    struct netdev_dev_pltap *netdev_dev = netdev_dev_pltap_cast(dev_);
+    struct netdev_pltap *netdev = netdev_pltap_cast(dev_);
     struct shash_node *node;
 
-    VLOG_DBG("pltap_set_config(%s)", netdev_dev_get_name(dev_));
+    VLOG_DBG("pltap_set_config(%s)", netdev_get_name(dev_));
     SMAP_FOR_EACH(node, args) {
         VLOG_DBG("arg: %s->%s", node->name, (char*)node->data);
     	if (!strcmp(node->name, "local_ip")) {
@@ -465,21 +433,21 @@ netdev_pltap_set_config(struct netdev_dev *dev_, const struct smap *args)
 	    if (lookup_ip(node->data, &addr)) {
 		VLOG_WARN("%s: bad 'local_ip'", node->name);
 	    } else {
-		netdev_dev->local_addr.sin_addr = addr;
-		netdev_dev->valid_local_ip = true;
+		netdev->local_addr.sin_addr = addr;
+		netdev->valid_local_ip = true;
 	    }
 	} else if (!strcmp(node->name, "local_netmask")) {
-	    netdev_dev->local_netmask = atoi(node->data);
+	    netdev->local_netmask = atoi(node->data);
 	    // XXX check valididy
-	    netdev_dev->valid_local_netmask = true;
+	    netdev->valid_local_netmask = true;
 	} else {
 	    VLOG_WARN("%s: unknown argument '%s'", 
-	    	netdev_dev_get_name(dev_), node->name);
+	    	netdev_get_name(dev_), node->name);
 	}
     }
-    if (netdev_pltap_finalized(netdev_dev)) {
-        netdev_dev->new_flags |= NETDEV_UP;
-        sync_needed(netdev_dev);
+    if (netdev_pltap_finalized(netdev)) {
+        netdev->new_flags |= NETDEV_UP;
+        sync_needed(netdev);
     }
     return 0;
 }
@@ -516,9 +484,9 @@ static void
 netdev_rx_pltap_wait(struct netdev_rx *rx_)
 {
     struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
-    struct netdev_dev_pltap *netdev_dev =
-        netdev_dev_pltap_cast(rx->up.netdev_dev);
-    if (rx->fd >= 0 && netdev_pltap_finalized(netdev_dev)) {
+    struct netdev_pltap *netdev =
+        netdev_pltap_cast(rx->up.netdev);
+    if (rx->fd >= 0 && netdev_pltap_finalized(netdev)) {
         poll_fd_wait(rx->fd, POLLIN);
     }
 }
@@ -526,8 +494,8 @@ netdev_rx_pltap_wait(struct netdev_rx *rx_)
 static int
 netdev_pltap_send(struct netdev *netdev_, const void *buffer, size_t size)
 {
-    struct netdev_dev_pltap *dev = 
-    	netdev_dev_pltap_cast(netdev_get_dev(netdev_));
+    struct netdev_pltap *dev = 
+    	netdev_pltap_cast(netdev_);
     char prefix[4] = { 0, 0, 8, 6 };
     struct iovec iov[2] = {
         { .iov_base = prefix, .iov_len = 4 },
@@ -557,8 +525,8 @@ netdev_pltap_send(struct netdev *netdev_, const void *buffer, size_t size)
 static void
 netdev_pltap_send_wait(struct netdev *netdev_)
 {
-    struct netdev_dev_pltap *dev = 
-    	netdev_dev_pltap_cast(netdev_get_dev(netdev_));
+    struct netdev_pltap *dev = 
+    	netdev_pltap_cast(netdev_);
     if (dev->fd >= 0 && netdev_pltap_finalized(dev)) {
         poll_fd_wait(dev->fd, POLLOUT);
     }
@@ -595,7 +563,7 @@ netdev_pltap_set_etheraddr(struct netdev *netdevi OVS_UNUSED,
 
 // XXX from netdev-linux.c
 static int
-get_etheraddr(struct netdev_dev_pltap *dev, uint8_t ea[ETH_ADDR_LEN])
+get_etheraddr(struct netdev_pltap *dev, uint8_t ea[ETH_ADDR_LEN])
 {
     struct ifreq ifr;
     int hwaddr_family;
@@ -621,7 +589,7 @@ get_etheraddr(struct netdev_dev_pltap *dev, uint8_t ea[ETH_ADDR_LEN])
 }
 
 static int
-get_flags(struct netdev_dev_pltap *dev, enum netdev_flags *flags)
+get_flags(struct netdev_pltap *dev, enum netdev_flags *flags)
 {
     struct ifreq ifr;
 
@@ -641,8 +609,8 @@ static int
 netdev_pltap_get_etheraddr(const struct netdev *netdev,
                            uint8_t mac[ETH_ADDR_LEN])
 {
-    struct netdev_dev_pltap *dev = 
-    	netdev_dev_pltap_cast(netdev_get_dev(netdev));
+    struct netdev_pltap *dev = 
+    	netdev_pltap_cast(netdev);
     if (dev->fd < 0)
         return EAGAIN;
     return get_etheraddr(dev, mac);
@@ -664,27 +632,27 @@ netdev_pltap_set_stats(struct netdev *netdev OVS_UNUSED, const struct netdev_sta
 
 
 static int
-netdev_pltap_update_flags(struct netdev_dev *dev_,
+netdev_pltap_update_flags(struct netdev *dev_,
                           enum netdev_flags off, enum netdev_flags on,
                           enum netdev_flags *old_flagsp)
 {
-    struct netdev_dev_pltap *netdev_dev =
-        netdev_dev_pltap_cast(dev_);
+    struct netdev_pltap *netdev =
+        netdev_pltap_cast(dev_);
     int error = 0;
 
     if ((off | on) & ~(NETDEV_UP | NETDEV_PROMISC)) {
         return EINVAL;
     }
 
-    if (netdev_pltap_finalized(netdev_dev)) {
-        error = get_flags(netdev_dev, &netdev_dev->flags);
+    if (netdev_pltap_finalized(netdev)) {
+        error = get_flags(netdev, &netdev->flags);
     }
-    *old_flagsp = netdev_dev->flags;
-    netdev_dev->new_flags |= on;
-    netdev_dev->new_flags &= ~off;
-    if (netdev_dev->flags != netdev_dev->new_flags) {
+    *old_flagsp = netdev->flags;
+    netdev->new_flags |= on;
+    netdev->new_flags &= ~off;
+    if (netdev->flags != netdev->new_flags) {
 	/* we cannot sync here, since we may be in a signal handler */
-        sync_needed(netdev_dev);
+        sync_needed(netdev);
     }
 
     return error;
@@ -693,13 +661,13 @@ netdev_pltap_update_flags(struct netdev_dev *dev_,
 static unsigned int
 netdev_pltap_change_seq(const struct netdev *netdev)
 {
-    return netdev_dev_pltap_cast(netdev_get_dev(netdev))->change_seq;
+    return netdev_pltap_cast(netdev)->change_seq;
 }
 
 /* Helper functions. */
 
 static void
-netdev_pltap_update_seq(struct netdev_dev_pltap *dev)
+netdev_pltap_update_seq(struct netdev_pltap *dev)
 {
     dev->change_seq++;
     if (!dev->change_seq) {
@@ -711,9 +679,9 @@ static void
 netdev_pltap_get_real_name(struct unixctl_conn *conn,
                      int argc OVS_UNUSED, const char *argv[], void *aux OVS_UNUSED)
 {
-    struct netdev_dev_pltap *pltap_dev;
+    struct netdev_pltap *pltap_dev;
 
-    pltap_dev = shash_find_data(&pltap_netdev_devs, argv[1]);
+    pltap_dev = shash_find_data(&pltap_netdevs, argv[1]);
     if (!pltap_dev) {
         unixctl_command_reply_error(conn, "no such pltap netdev");
         return;
@@ -742,7 +710,7 @@ netdev_pltap_init(void)
 static void
 netdev_pltap_run(void)
 {
-    struct netdev_dev_pltap *iter, *next;
+    struct netdev_pltap *iter, *next;
     LIST_FOR_EACH_SAFE(iter, next, sync_list, &sync_list) {
         netdev_pltap_sync_flags(iter);
     }
@@ -768,9 +736,6 @@ const struct netdev_class netdev_pltap_class = {
     netdev_pltap_get_config,
     netdev_pltap_set_config, 
     NULL,			/* get_tunnel_config */
-
-    netdev_pltap_open,
-    netdev_pltap_close,
 
     netdev_pltap_rx_open,
 
