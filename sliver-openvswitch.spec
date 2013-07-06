@@ -2,7 +2,7 @@
 # to check for any change:
 # grep AC_INIT configure.ac 
 %define version 1.11.90
-%define taglevel 0
+%define taglevel 1
 
 %define debug_package %{nil}
 
@@ -57,6 +57,9 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Sat Jul 06 2013 Giuseppe Lettieri <g.lettieri@iet.unipi.it> - sliver-openvswitch-1.11.90-1
+- merge with mainstream
+
 * Sat Jul 06 2013 Giuseppe Lettieri <g.lettieri@iet.unipi.it> - sliver-openvswitch-1.10.90-3
 - merge with mainstream
 
