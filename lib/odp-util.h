@@ -29,11 +29,13 @@
 struct ds;
 struct flow;
 struct flow_tnl;
+struct flow_wildcards;
 struct nlattr;
 struct ofpbuf;
 struct simap;
 
-#define OVSP_NONE UINT32_MAX
+#define ODPP_LOCAL ODP_PORT_C(OVSP_LOCAL)
+#define ODPP_NONE  ODP_PORT_C(UINT32_MAX)
 
 void format_odp_actions(struct ds *, const struct nlattr *odp_actions,
                         size_t actions_len);
@@ -87,12 +89,21 @@ struct odputil_keybuf {
     uint32_t keybuf[DIV_ROUND_UP(ODPUTIL_FLOW_KEY_BYTES, 4)];
 };
 
+enum odp_key_fitness odp_tun_key_from_attr(const struct nlattr *,
+                                           struct flow_tnl *);
+
+void odp_flow_format(const struct nlattr *key, size_t key_len,
+                     const struct nlattr *mask, size_t mask_len,
+                     struct ds *);
 void odp_flow_key_format(const struct nlattr *, size_t, struct ds *);
-int odp_flow_key_from_string(const char *s, const struct simap *port_names,
-                             struct ofpbuf *);
+int odp_flow_from_string(const char *s,
+                         const struct simap *port_names,
+                         struct ofpbuf *, struct ofpbuf *);
 
 void odp_flow_key_from_flow(struct ofpbuf *, const struct flow *,
-                            uint32_t odp_in_port);
+                            odp_port_t odp_in_port);
+void odp_flow_key_from_mask(struct ofpbuf *, const struct flow *mask,
+                            const struct flow *flow, uint32_t odp_in_port);
 
 uint32_t odp_flow_key_hash(const struct nlattr *, size_t);
 
@@ -116,7 +127,8 @@ const char *odp_key_fitness_to_string(enum odp_key_fitness);
 void commit_odp_tunnel_action(const struct flow *, struct flow *base,
                               struct ofpbuf *odp_actions);
 void commit_odp_actions(const struct flow *, struct flow *base,
-                        struct ofpbuf *odp_actions);
+                        struct ofpbuf *odp_actions,
+                        struct flow_wildcards *wc);
 
 /* ofproto-dpif interface.
  *
@@ -174,20 +186,12 @@ void odp_put_skb_mark_action(const uint32_t skb_mark,
 
 /* Reasons why a subfacet might not be fast-pathable. */
 enum slow_path_reason {
-    /* These reasons are mutually exclusive. */
-    SLOW_CFM = 1 << 0,          /* CFM packets need per-packet processing. */
-    SLOW_LACP = 1 << 1,         /* LACP packets need per-packet processing. */
-    SLOW_STP = 1 << 2,          /* STP packets need per-packet processing. */
-    SLOW_IN_BAND = 1 << 3,      /* In-band control needs every packet. */
-    SLOW_BFD = 1 << 4,          /* BFD packets need per-packet processing. */
-
-    /* Mutually exclusive with SLOW_BFD, SLOW_CFM, SLOW_LACP, SLOW_STP.
-     * Could possibly appear with SLOW_IN_BAND. */
-    SLOW_CONTROLLER = 1 << 5,   /* Packets must go to OpenFlow controller. */
-
-    /* This can appear on its own, or, theoretically at least, along with any
-     * other combination of reasons. */
-    SLOW_MATCH = 1 << 6,        /* Datapath can't match specifically enough. */
+    SLOW_CFM = 1,               /* CFM packets need per-packet processing. */
+    SLOW_LACP,                  /* LACP packets need per-packet processing. */
+    SLOW_STP,                   /* STP packets need per-packet processing. */
+    SLOW_BFD,                   /* BFD packets need per-packet processing. */
+    SLOW_CONTROLLER,            /* Packets must go to OpenFlow controller. */
+    __SLOW_MAX
 };
 
 #endif /* odp-util.h */

@@ -115,14 +115,18 @@ netdev_vport_needs_dst_port(const struct netdev *dev)
 }
 
 const char *
-netdev_vport_get_dpif_port(const struct netdev *netdev)
+netdev_vport_class_get_dpif_port(const struct netdev_class *class)
 {
-    const char *dpif_port;
+    return is_vport_class(class) ? vport_class_cast(class)->dpif_port : NULL;
+}
 
+const char *
+netdev_vport_get_dpif_port(const struct netdev *netdev,
+                           char namebuf[], size_t bufsize)
+{
     if (netdev_vport_needs_dst_port(netdev)) {
         const struct netdev_vport *vport = netdev_vport_cast(netdev);
         const char *type = netdev_get_type(netdev);
-        static char dpif_port_combined[IFNAMSIZ];
 
         /*
          * Note: IFNAMSIZ is 16 bytes long. The maximum length of a VXLAN
@@ -130,18 +134,25 @@ netdev_vport_get_dpif_port(const struct netdev *netdev)
          * assert here on the size of strlen(type) in case that changes
          * in the future.
          */
+        BUILD_ASSERT(NETDEV_VPORT_NAME_BUFSIZE >= IFNAMSIZ);
         ovs_assert(strlen(type) + 10 < IFNAMSIZ);
-        snprintf(dpif_port_combined, IFNAMSIZ, "%s_sys_%d", type,
+        snprintf(namebuf, bufsize, "%s_sys_%d", type,
                  ntohs(vport->tnl_cfg.dst_port));
-        return dpif_port_combined;
+        return namebuf;
     } else {
         const struct netdev_class *class = netdev_get_class(netdev);
-        dpif_port = (is_vport_class(class)
-                     ? vport_class_cast(class)->dpif_port
-                     : NULL);
+        const char *dpif_port = netdev_vport_class_get_dpif_port(class);
+        return dpif_port ? dpif_port : netdev_get_name(netdev);
     }
+}
 
-    return dpif_port ? dpif_port : netdev_get_name(netdev);
+char *
+netdev_vport_get_dpif_port_strdup(const struct netdev *netdev)
+{
+    char namebuf[NETDEV_VPORT_NAME_BUFSIZE];
+
+    return xstrdup(netdev_vport_get_dpif_port(netdev, namebuf,
+                                              sizeof namebuf));
 }
 
 static int
@@ -192,7 +203,7 @@ netdev_vport_get_etheraddr(const struct netdev *netdev,
 static int
 tunnel_get_status(const struct netdev *netdev, struct smap *smap)
 {
-    static char iface[IFNAMSIZ];
+    char iface[IFNAMSIZ];
     ovs_be32 route;
 
     route = netdev_vport_cast(netdev)->tnl_cfg.ip_dst;
@@ -596,7 +607,7 @@ set_patch_config(struct netdev *dev_, const struct smap *args)
 
     free(dev->peer);
     dev->peer = xstrdup(peer);
-
+    netdev_vport_poll_notify(dev);
     return 0;
 }
 
@@ -681,11 +692,15 @@ netdev_vport_tunnel_register(void)
         TUNNEL_CLASS("vxlan", "vxlan_system"),
         TUNNEL_CLASS("lisp", "lisp_system")
     };
+    static bool inited;
 
     int i;
 
-    for (i = 0; i < ARRAY_SIZE(vport_classes); i++) {
-        netdev_register_provider(&vport_classes[i].netdev_class);
+    if (!inited) {
+        inited = true;
+        for (i = 0; i < ARRAY_SIZE(vport_classes); i++) {
+            netdev_register_provider(&vport_classes[i].netdev_class);
+        }
     }
 }
 

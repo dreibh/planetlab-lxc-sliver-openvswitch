@@ -1,3 +1,19 @@
+/*
+ * Copyright (c) 2012, 2013 Nicira, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at:
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include <config.h>
 #include "ofp-errors.h"
 #include <errno.h>
@@ -11,7 +27,8 @@
 
 VLOG_DEFINE_THIS_MODULE(ofp_errors);
 
-struct pair {
+struct triplet {
+    uint32_t vendor;
     int type, code;
 };
 
@@ -56,11 +73,12 @@ ofperr_is_valid(enum ofperr error)
 /* Returns the OFPERR_* value that corresponds to 'type' and 'code' within
  * 'version', or 0 if either no such OFPERR_* value exists or 'version' is
  * unknown. */
-enum ofperr
-ofperr_decode(enum ofp_version version, uint16_t type, uint16_t code)
+static enum ofperr
+ofperr_decode(enum ofp_version version,
+              uint32_t vendor, uint16_t type, uint16_t code)
 {
     const struct ofperr_domain *domain = ofperr_domain_from_version(version);
-    return domain ? domain->decode(type, code) : 0;
+    return domain ? domain->decode(vendor, type, code) : 0;
 }
 
 /* Returns the name of 'error', e.g. "OFPBRC_BAD_TYPE" if 'error' is
@@ -105,8 +123,8 @@ ofperr_get_description(enum ofperr error)
             : "<invalid>");
 }
 
-static const struct pair *
-ofperr_get_pair__(enum ofperr error, const struct ofperr_domain *domain)
+static const struct triplet *
+ofperr_get_triplet__(enum ofperr error, const struct ofperr_domain *domain)
 {
     size_t ofs = error - OFPERR_OFS;
 
@@ -120,8 +138,8 @@ ofperr_encode_msg__(enum ofperr error, enum ofp_version ofp_version,
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
     const struct ofperr_domain *domain;
+    const struct triplet *triplet;
     struct ofp_error_msg *oem;
-    const struct pair *pair;
     struct ofpbuf *buf;
 
     /* Get the error domain for 'ofp_version', or fall back to OF1.0. */
@@ -136,7 +154,7 @@ ofperr_encode_msg__(enum ofperr error, enum ofp_version ofp_version,
     if (!ofperr_is_valid(error)) {
         /* 'error' seems likely to be a system errno value. */
         VLOG_ERR_RL(&rl, "invalid OpenFlow error code %d (%s)",
-                    error, strerror(error));
+                    error, ovs_strerror(error));
         error = OFPERR_NXBRC_UNENCODABLE_ERROR;
     } else if (domain->errors[error - OFPERR_OFS].code < 0) {
         VLOG_ERR_RL(&rl, "cannot encode %s for %s",
@@ -144,15 +162,15 @@ ofperr_encode_msg__(enum ofperr error, enum ofp_version ofp_version,
         error = OFPERR_NXBRC_UNENCODABLE_ERROR;
     }
 
-    pair = ofperr_get_pair__(error, domain);
-    if (pair->code < 0x100) {
+    triplet = ofperr_get_triplet__(error, domain);
+    if (!triplet->vendor) {
         buf = ofpraw_alloc_xid(OFPRAW_OFPT_ERROR, domain->version, xid,
                                sizeof *oem + data_len);
 
         oem = ofpbuf_put_uninit(buf, sizeof *oem);
-        oem->type = htons(pair->type);
-        oem->code = htons(pair->code);
-    } else {
+        oem->type = htons(triplet->type);
+        oem->code = htons(triplet->code);
+    } else if (ofp_version <= OFP11_VERSION) {
         struct nx_vendor_error *nve;
 
         buf = ofpraw_alloc_xid(OFPRAW_OFPT_ERROR, domain->version, xid,
@@ -163,9 +181,19 @@ ofperr_encode_msg__(enum ofperr error, enum ofp_version ofp_version,
         oem->code = htons(NXVC_VENDOR_ERROR);
 
         nve = ofpbuf_put_uninit(buf, sizeof *nve);
-        nve->vendor = htonl(NX_VENDOR_ID);
-        nve->type = htons(pair->type);
-        nve->code = htons(pair->code);
+        nve->vendor = htonl(triplet->vendor);
+        nve->type = htons(triplet->type);
+        nve->code = htons(triplet->code);
+    } else {
+        ovs_be32 vendor = htonl(triplet->vendor);
+
+        buf = ofpraw_alloc_xid(OFPRAW_OFPT_ERROR, domain->version, xid,
+                               sizeof *oem + sizeof(uint32_t) + data_len);
+
+        oem = ofpbuf_put_uninit(buf, sizeof *oem);
+        oem->type = htons(OFPET12_EXPERIMENTER);
+        oem->code = htons(triplet->type);
+        ofpbuf_put(buf, &vendor, sizeof vendor);
     }
 
     ofpbuf_put(buf, data, data_len);
@@ -206,6 +234,13 @@ ofperr_encode_hello(enum ofperr error, enum ofp_version ofp_version,
     return ofperr_encode_msg__(error, ofp_version, htonl(0), s, strlen(s));
 }
 
+int
+ofperr_get_vendor(enum ofperr error, enum ofp_version version)
+{
+    const struct ofperr_domain *domain = ofperr_domain_from_version(version);
+    return domain ? ofperr_get_triplet__(error, domain)->vendor : -1;
+}
+
 /* Returns the value that would go into an OFPT_ERROR message's 'type' for
  * encoding 'error' in 'domain'.  Returns -1 if 'error' is not encodable in
  * 'version' or 'version' is unknown.
@@ -215,7 +250,7 @@ int
 ofperr_get_type(enum ofperr error, enum ofp_version version)
 {
     const struct ofperr_domain *domain = ofperr_domain_from_version(version);
-    return domain ? ofperr_get_pair__(error, domain)->type : -1;
+    return domain ? ofperr_get_triplet__(error, domain)->type : -1;
 }
 
 /* Returns the value that would go into an OFPT_ERROR message's 'code' for
@@ -229,7 +264,7 @@ int
 ofperr_get_code(enum ofperr error, enum ofp_version version)
 {
     const struct ofperr_domain *domain = ofperr_domain_from_version(version);
-    return domain ? ofperr_get_pair__(error, domain)->code : -1;
+    return domain ? ofperr_get_triplet__(error, domain)->code : -1;
 }
 
 /* Tries to decode 'oh', which should be an OpenFlow OFPT_ERROR message.
@@ -240,12 +275,11 @@ ofperr_get_code(enum ofperr error, enum ofp_version version)
 enum ofperr
 ofperr_decode_msg(const struct ofp_header *oh, struct ofpbuf *payload)
 {
-    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
-
     const struct ofp_error_msg *oem;
     enum ofpraw raw;
     uint16_t type, code;
     enum ofperr error;
+    uint32_t vendor;
     struct ofpbuf b;
 
     if (payload) {
@@ -261,6 +295,7 @@ ofperr_decode_msg(const struct ofp_header *oh, struct ofpbuf *payload)
     oem = ofpbuf_pull(&b, sizeof *oem);
 
     /* Get the error type and code. */
+    vendor = 0;
     type = ntohs(oem->type);
     code = ntohs(oem->code);
     if (type == NXET_VENDOR && code == NXVC_VENDOR_ERROR) {
@@ -269,17 +304,22 @@ ofperr_decode_msg(const struct ofp_header *oh, struct ofpbuf *payload)
             return 0;
         }
 
-        if (nve->vendor != htonl(NX_VENDOR_ID)) {
-            VLOG_WARN_RL(&rl, "error contains unknown vendor ID %#"PRIx32,
-                         ntohl(nve->vendor));
-            return 0;
-        }
+        vendor = ntohl(nve->vendor);
         type = ntohs(nve->type);
         code = ntohs(nve->code);
+    } else if (type == OFPET12_EXPERIMENTER) {
+        const ovs_be32 *vendorp = ofpbuf_try_pull(&b, sizeof *vendorp);
+        if (!vendorp) {
+            return 0;
+        }
+
+        vendor = ntohl(*vendorp);
+        type = code;
+        code = 0;
     }
 
     /* Translate the error type and code into an ofperr. */
-    error = ofperr_decode(oh->version, type, code);
+    error = ofperr_decode(oh->version, vendor, type, code);
     if (error && payload) {
         ofpbuf_use_const(payload, b.data, b.size);
     }
@@ -288,10 +328,12 @@ ofperr_decode_msg(const struct ofp_header *oh, struct ofpbuf *payload)
 
 /* If 'error' is a valid OFPERR_* value, returns its name
  * (e.g. "OFPBRC_BAD_TYPE" for OFPBRC_BAD_TYPE).  Otherwise, assumes that
- * 'error' is a positive errno value and returns what strerror() produces for
- * 'error'.  */
+ * 'error' is a positive errno value and returns what ovs_strerror() produces
+ * for 'error'.  */
 const char *
 ofperr_to_string(enum ofperr error)
 {
-    return ofperr_is_valid(error) ? ofperr_get_name(error) : strerror(error);
+    return (ofperr_is_valid(error)
+            ? ofperr_get_name(error)
+            : ovs_strerror(error));
 }

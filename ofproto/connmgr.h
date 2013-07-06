@@ -71,7 +71,7 @@ void connmgr_destroy(struct connmgr *);
 
 void connmgr_run(struct connmgr *,
                  bool (*handle_openflow)(struct ofconn *,
-                                         struct ofpbuf *ofp_msg));
+                                         const struct ofpbuf *ofp_msg));
 void connmgr_wait(struct connmgr *, bool handling_openflow);
 
 void connmgr_get_memory_usage(const struct connmgr *, struct simap *usage);
@@ -125,7 +125,7 @@ void ofconn_send_error(const struct ofconn *, const struct ofp_header *request,
                        enum ofperr);
 
 enum ofperr ofconn_pktbuf_retrieve(struct ofconn *, uint32_t id,
-                                   struct ofpbuf **bufferp, uint16_t *in_port);
+                                   struct ofpbuf **bufferp, ofp_port_t *in_port);
 
 bool ofconn_has_pending_opgroups(const struct ofconn *);
 void ofconn_add_opgroup(struct ofconn *, struct list *);
@@ -156,12 +156,7 @@ void connmgr_set_extra_in_band_remotes(struct connmgr *,
 void connmgr_set_in_band_queue(struct connmgr *, int queue_id);
 
 /* In-band implementation. */
-bool connmgr_msg_in_hook(struct connmgr *, const struct flow *,
-                         const struct ofpbuf *packet);
-bool connmgr_may_set_up_flow(struct connmgr *, const struct flow *,
-                             uint32_t local_odp_port,
-                             const struct nlattr *odp_actions,
-                             size_t actions_len);
+bool connmgr_has_in_band(struct connmgr *);
 
 /* Fail-open and in-band implementation. */
 void connmgr_flushed(struct connmgr *);
@@ -175,7 +170,7 @@ struct ofmonitor {
     enum nx_flow_monitor_flags flags;
 
     /* Matching. */
-    uint16_t out_port;
+    ofp_port_t out_port;
     uint8_t table_id;
     struct minimatch match;
 };

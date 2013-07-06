@@ -71,6 +71,93 @@
         The Citrix XenServer universally unique identifier for the physical
         host as displayed by <code>xe host-list</code>.
       </column>
+
+      <column name="other_config" key="flow-restore-wait"
+              type='{"type": "boolean"}'>
+        <p>
+          When <code>ovs-vswitchd</code> starts up, it has an empty flow table
+          and therefore it handles all arriving packets in its default fashion
+          according to its configuration, by dropping them or sending them to
+          an OpenFlow controller or switching them as a standalone switch.
+          This behavior is ordinarily desirable.  However, if
+          <code>ovs-vswitchd</code> is restarting as part of a ``hot-upgrade,''
+          then this leads to a relatively long period during which packets are
+          mishandled.
+        </p>
+        <p>
+          This option allows for improvement.  When <code>ovs-vswitchd</code>
+          starts with this value set as <code>true</code>, it will neither
+          flush or expire previously set datapath flows nor will it send and
+          receive any packets to or from the datapath.  When this value is
+          later set to <code>false</code>, <code>ovs-vswitchd</code> will
+          start receiving packets from the datapath and re-setup the flows.
+        </p>
+        <p>
+          Thus, with this option, the procedure for a hot-upgrade of
+          <code>ovs-vswitchd</code> becomes roughly the following:
+        </p>
+        <ol>
+          <li>
+            Stop <code>ovs-vswitchd</code>.
+          </li>
+          <li>
+            Set <ref column="other_config" key="flow-restore-wait"/>
+            to <code>true</code>.
+          </li>
+          <li>
+            Start <code>ovs-vswitchd</code>.
+          </li>
+          <li>
+            Use <code>ovs-ofctl</code> (or some other program, such as an
+            OpenFlow controller) to restore the OpenFlow flow table
+            to the desired state.
+          </li>
+          <li>
+            Set <ref column="other_config" key="flow-restore-wait"/>
+            to <code>false</code> (or remove it entirely from the database).
+          </li>
+        </ol>
+        <p>
+          The <code>ovs-ctl</code>'s ``restart'' and ``force-reload-kmod''
+          functions use the above config option during hot upgrades.
+        </p>
+      </column>
+
+      <column name="other_config" key="flow-eviction-threshold"
+              type='{"type": "integer", "minInteger": 0}'>
+        <p>
+          A number of flows as a nonnegative integer.  This sets number of
+          flows at which eviction from the datapath flow table will be
+          triggered.  If there are a large number of flows then increasing this
+          value to around the number of flows present can result in reduced CPU
+          usage and packet loss.
+        </p>
+        <p>
+          The default is 2500.  Values below 100 will be rounded up to 100.
+        </p>
+      </column>
+
+      <column name="other_config" key="force-miss-model">
+        <p>
+          Specifies userspace behaviour for handling flow misses. This takes
+          precedence over flow-eviction-threshold.
+        </p>
+        <p>
+          <dl>
+            <dt><code>auto</code></dt>
+            <dd>Handle automatically based on the flow-eviction-threshold and
+            the flow setup governer (default, recommended).</dd>
+            <dt><code>with-facets</code></dt>
+            <dd>Always create facets. Expensive kernel flow creation and
+            statistics tracking is always performed, even on flows with only
+            a small number of packets.</dd>
+            <dt><code>without-facets</code></dt>
+            <dd>Always handle without facets. Forces flow misses to be handled
+            in userspace. May cause an increase in CPU usage and packet loss
+            on high throughput.</dd>
+          </dl>
+        </p>
+      </column>
     </group>
 
     <group title="Status">
@@ -545,20 +632,6 @@
         <var>xx</var>:<var>xx</var>:<var>xx</var>:<var>xx</var>:<var>xx</var>:<var>xx</var>
         to set the hardware address of the local port and influence the
         datapath ID.
-      </column>
-
-      <column name="other_config" key="flow-eviction-threshold"
-              type='{"type": "integer", "minInteger": 0}'>
-        <p>
-          A number of flows as a nonnegative integer.  This sets number of
-          flows at which eviction from the kernel flow table will be triggered.
-          If there are a large number of flows then increasing this value to
-          around the number of flows present can result in reduced CPU usage
-          and packet loss.
-        </p>
-        <p>
-          The default is 1000.  Values below 100 will be rounded up to 100.
-        </p>
       </column>
 
       <column name="other_config" key="forward-bpdu"
@@ -2000,6 +2073,43 @@
         compatibility with 802.1ag compliant implementations.  Defaults to
         <code>false</code>.
       </column>
+
+      <column name="other_config" key="cfm_demand" type='{"type": "boolean"}'>
+        <p>
+          When <code>true</code>, and
+          <ref column="other_config" key="cfm_extended"/> is true, the CFM
+          module operates in demand mode.  When in demand mode, traffic
+          received on the <ref table="Interface"/> is used to indicate
+          liveness.  CCMs are still transmitted and received, but if the
+          <ref table="Interface"/> is receiving traffic, their absence does not
+          cause a connectivity fault.
+        </p>
+
+        <p>
+            Demand mode has a couple of caveats:
+          <ul>
+            <li>
+              To ensure that ovs-vswitchd has enough time to pull statistics
+              from the datapath, the minimum
+              <ref column="other_config" key="cfm_interval"/> is 500ms.
+            </li>
+
+            <li>
+              To avoid ambiguity, demand mode disables itself when there are
+              multiple remote maintenance points.
+            </li>
+
+            <li>
+              If the <ref table="Interface"/> is heavily congested, CCMs
+              containing the <ref column="other_config" key="cfm_opstate"/>
+              status may be dropped causing changes in the operational state to
+              be delayed.  Similarly, if CCMs containing the RDI bit are not
+              received, unidirectional link failures may not be detected.
+            </li>
+          </ul>
+        </p>
+      </column>
+
       <column name="other_config" key="cfm_opstate"
               type='{"type": "string", "enum": ["set", ["down", "up"]]}'>
         When <code>down</code>, the CFM module marks all CCMs it generates as

@@ -158,7 +158,7 @@ void ofproto_parse_name(const char *name, char **dp_name, char **dp_type);
 struct iface_hint {
     char *br_name;              /* Name of owning bridge. */
     char *br_type;              /* Type of owning bridge. */
-    uint16_t ofp_port;          /* OpenFlow port number. */
+    ofp_port_t ofp_port;        /* OpenFlow port number. */
 };
 
 void ofproto_init(const struct shash *iface_hints);
@@ -185,7 +185,7 @@ void ofproto_get_memory_usage(const struct ofproto *, struct simap *);
 struct ofproto_port {
     char *name;                 /* Network device name, e.g. "eth0". */
     char *type;                 /* Network device type, e.g. "system". */
-    uint16_t ofp_port;          /* OpenFlow port number. */
+    ofp_port_t ofp_port;        /* OpenFlow port number. */
 };
 void ofproto_port_clone(struct ofproto_port *, const struct ofproto_port *);
 void ofproto_port_destroy(struct ofproto_port *);
@@ -216,10 +216,17 @@ int ofproto_port_dump_done(struct ofproto_port_dump *);
 #define OFPROTO_FLOW_EVICTION_THRESHOLD_DEFAULT  2500
 #define OFPROTO_FLOW_EVICTION_THRESHOLD_MIN 100
 
+/* How flow misses should be handled in ofproto-dpif */
+enum ofproto_flow_miss_model {
+    OFPROTO_HANDLE_MISS_AUTO,           /* Based on flow eviction threshold. */
+    OFPROTO_HANDLE_MISS_WITH_FACETS,    /* Always create facets. */
+    OFPROTO_HANDLE_MISS_WITHOUT_FACETS  /* Always handle without facets.*/
+};
+
 const char *ofproto_port_open_type(const char *datapath_type,
                                    const char *port_type);
-int ofproto_port_add(struct ofproto *, struct netdev *, uint16_t *ofp_portp);
-int ofproto_port_del(struct ofproto *, uint16_t ofp_port);
+int ofproto_port_add(struct ofproto *, struct netdev *, ofp_port_t *ofp_portp);
+int ofproto_port_del(struct ofproto *, ofp_port_t ofp_port);
 int ofproto_port_get_stats(const struct ofport *, struct netdev_stats *stats);
 
 int ofproto_port_query_by_name(const struct ofproto *, const char *devname,
@@ -236,7 +243,8 @@ void ofproto_reconnect_controllers(struct ofproto *);
 void ofproto_set_extra_in_band_remotes(struct ofproto *,
                                        const struct sockaddr_in *, size_t n);
 void ofproto_set_in_band_queue(struct ofproto *, int queue_id);
-void ofproto_set_flow_eviction_threshold(struct ofproto *, unsigned threshold);
+void ofproto_set_flow_eviction_threshold(unsigned threshold);
+void ofproto_set_flow_miss_model(unsigned model);
 void ofproto_set_forward_bpdu(struct ofproto *, bool forward_bpdu);
 void ofproto_set_mac_table_config(struct ofproto *, unsigned idle_time,
                                   size_t max_entries);
@@ -249,25 +257,27 @@ int ofproto_set_ipfix(struct ofproto *,
                       const struct ofproto_ipfix_bridge_exporter_options *,
                       const struct ofproto_ipfix_flow_exporter_options *,
                       size_t);
+void ofproto_set_flow_restore_wait(bool flow_restore_wait_db);
+bool ofproto_get_flow_restore_wait(void);
 int ofproto_set_stp(struct ofproto *, const struct ofproto_stp_settings *);
 int ofproto_get_stp_status(struct ofproto *, struct ofproto_stp_status *);
 
 /* Configuration of ports. */
-void ofproto_port_unregister(struct ofproto *, uint16_t ofp_port);
+void ofproto_port_unregister(struct ofproto *, ofp_port_t ofp_port);
 
-void ofproto_port_clear_cfm(struct ofproto *, uint16_t ofp_port);
-void ofproto_port_set_cfm(struct ofproto *, uint16_t ofp_port,
+void ofproto_port_clear_cfm(struct ofproto *, ofp_port_t ofp_port);
+void ofproto_port_set_cfm(struct ofproto *, ofp_port_t ofp_port,
                           const struct cfm_settings *);
-void ofproto_port_set_bfd(struct ofproto *, uint16_t ofp_port,
+void ofproto_port_set_bfd(struct ofproto *, ofp_port_t ofp_port,
                           const struct smap *cfg);
-int ofproto_port_get_bfd_status(struct ofproto *, uint16_t ofp_port,
+int ofproto_port_get_bfd_status(struct ofproto *, ofp_port_t ofp_port,
                                 struct smap *);
-int ofproto_port_is_lacp_current(struct ofproto *, uint16_t ofp_port);
-int ofproto_port_set_stp(struct ofproto *, uint16_t ofp_port,
+int ofproto_port_is_lacp_current(struct ofproto *, ofp_port_t ofp_port);
+int ofproto_port_set_stp(struct ofproto *, ofp_port_t ofp_port,
                          const struct ofproto_port_stp_settings *);
-int ofproto_port_get_stp_status(struct ofproto *, uint16_t ofp_port,
+int ofproto_port_get_stp_status(struct ofproto *, ofp_port_t ofp_port,
                                 struct ofproto_port_stp_status *);
-int ofproto_port_set_queues(struct ofproto *, uint16_t ofp_port,
+int ofproto_port_set_queues(struct ofproto *, ofp_port_t ofp_port,
                             const struct ofproto_port_queue *,
                             size_t n_queues);
 
@@ -296,7 +306,7 @@ enum port_vlan_mode {
 struct ofproto_bundle_settings {
     char *name;                 /* For use in log messages. */
 
-    uint16_t *slaves;           /* OpenFlow port numbers for slaves. */
+    ofp_port_t *slaves;         /* OpenFlow port numbers for slaves. */
     size_t n_slaves;
 
     enum port_vlan_mode vlan_mode; /* Selects mode for vlan and trunks */
@@ -315,7 +325,7 @@ struct ofproto_bundle_settings {
      * drivers in old versions of Linux that do not properly support VLANs when
      * VLAN devices are not used.  When broken device drivers are no longer in
      * widespread use, we will delete these interfaces. */
-    uint16_t realdev_ofp_port;  /* OpenFlow port number of real device. */
+    ofp_port_t realdev_ofp_port;/* OpenFlow port number of real device. */
 };
 
 int ofproto_bundle_register(struct ofproto *, void *aux,
@@ -404,7 +414,8 @@ struct ofproto_cfm_status {
     size_t n_rmps;
 };
 
-bool ofproto_port_get_cfm_status(const struct ofproto *, uint16_t ofp_port,
+bool ofproto_port_get_cfm_status(const struct ofproto *,
+                                 ofp_port_t ofp_port,
                                  struct ofproto_cfm_status *);
 
 /* Linux VLAN device support (e.g. "eth0.10" for VLAN 10.)
@@ -416,8 +427,11 @@ bool ofproto_port_get_cfm_status(const struct ofproto *, uint16_t ofp_port,
 
 void ofproto_get_vlan_usage(struct ofproto *, unsigned long int *vlan_bitmap);
 bool ofproto_has_vlan_usage_changed(const struct ofproto *);
-int ofproto_port_set_realdev(struct ofproto *, uint16_t vlandev_ofp_port,
-                             uint16_t realdev_ofp_port, int vid);
+int ofproto_port_set_realdev(struct ofproto *, ofp_port_t vlandev_ofp_port,
+                             ofp_port_t realdev_ofp_port, int vid);
+
+uint32_t ofproto_get_provider_meter_id(const struct ofproto *,
+                                       uint32_t of_meter_id);
 
 #ifdef  __cplusplus
 }

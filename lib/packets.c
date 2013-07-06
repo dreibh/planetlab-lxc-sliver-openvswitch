@@ -59,22 +59,22 @@ eth_addr_is_reserved(const uint8_t ea[ETH_ADDR_LEN])
 
     static struct eth_addr_node nodes[] = {
         /* STP, IEEE pause frames, and other reserved protocols. */
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000000ULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000001ULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000002ULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000003ULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000004ULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000005ULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000006ULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000007ULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000008ULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c2000009ULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c200000aULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c200000bULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c200000cULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c200000dULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c200000eULL },
-        { HMAP_NODE_NULL_INITIALIZER, 0x0108c200000fULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c2000000ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c2000001ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c2000002ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c2000003ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c2000004ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c2000005ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c2000006ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c2000007ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c2000008ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c2000009ULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c200000aULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c200000bULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c200000cULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c200000dULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c200000eULL },
+        { HMAP_NODE_NULL_INITIALIZER, 0x0180c200000fULL },
 
         /* Extreme protocols. */
         { HMAP_NODE_NULL_INITIALIZER, 0x00e02b000000ULL }, /* EDP. */
@@ -373,9 +373,8 @@ pop_mpls(struct ofpbuf *packet, ovs_be16 ethtype)
         size_t len;
         mh = packet->l2_5;
         len = (char*)packet->l2_5 - (char*)packet->l2;
-        /* If bottom of the stack set ethertype. */
+        set_ethertype(packet, ethtype);
         if (mh->mpls_lse & htonl(MPLS_BOS_MASK)) {
-            set_ethertype(packet, ethtype);
             packet->l2_5 = NULL;
         } else {
             packet->l2_5 = (char*)packet->l2_5 + MPLS_HLEN;

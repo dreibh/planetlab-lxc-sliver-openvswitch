@@ -37,6 +37,7 @@ TESTSUITE_AT = \
 	tests/reconnect.at \
 	tests/ovs-vswitchd.at \
 	tests/ofproto-dpif.at \
+	tests/vlan-splinters.at \
 	tests/ofproto-macros.at \
 	tests/ofproto.at \
 	tests/ovsdb.at \
@@ -97,6 +98,7 @@ valgrind_wrappers = \
 	tests/valgrind/ovsdb-server \
 	tests/valgrind/ovsdb-tool \
 	tests/valgrind/test-aes128 \
+	tests/valgrind/test-atomic \
 	tests/valgrind/test-bundle \
 	tests/valgrind/test-byte-order \
 	tests/valgrind/test-classifier \
@@ -105,6 +107,7 @@ valgrind_wrappers = \
 	tests/valgrind/test-flows \
 	tests/valgrind/test-hash \
 	tests/valgrind/test-heap \
+	tests/valgrind/test-hindex \
 	tests/valgrind/test-hmap \
 	tests/valgrind/test-json \
 	tests/valgrind/test-jsonrpc \
@@ -145,6 +148,12 @@ check-valgrind: all tests/atconfig tests/atlocal $(TESTSUITE) \
 	@echo 'Valgrind output can be found in tests/testsuite.dir/*/valgrind.*'
 	@echo '----------------------------------------------------------------------'
 
+# OFTest support.
+
+check-oftest: all
+	srcdir='$(srcdir)' $(SHELL) $(srcdir)/tests/run-oftest
+EXTRA_DIST += tests/run-oftest
+
 clean-local:
 	test ! -f '$(TESTSUITE)' || $(SHELL) '$(TESTSUITE)' -C tests --clean
 
@@ -167,6 +176,10 @@ $(srcdir)/package.m4: $(top_srcdir)/configure.ac
 noinst_PROGRAMS += tests/test-aes128
 tests_test_aes128_SOURCES = tests/test-aes128.c
 tests_test_aes128_LDADD = lib/libopenvswitch.a $(SSL_LIBS)
+
+noinst_PROGRAMS += tests/test-atomic
+tests_test_atomic_SOURCES = tests/test-atomic.c
+tests_test_atomic_LDADD = lib/libopenvswitch.a $(SSL_LIBS)
 
 noinst_PROGRAMS += tests/test-bundle
 tests_test_bundle_SOURCES = tests/test-bundle.c
@@ -196,6 +209,10 @@ tests_test_hash_LDADD = lib/libopenvswitch.a
 noinst_PROGRAMS += tests/test-heap
 tests_test_heap_SOURCES = tests/test-heap.c
 tests_test_heap_LDADD = lib/libopenvswitch.a $(SSL_LIBS)
+
+noinst_PROGRAMS += tests/test-hindex
+tests_test_hindex_SOURCES = tests/test-hindex.c
+tests_test_hindex_LDADD = lib/libopenvswitch.a $(SSL_LIBS)
 
 noinst_PROGRAMS += tests/test-hmap
 tests_test_hmap_SOURCES = tests/test-hmap.c

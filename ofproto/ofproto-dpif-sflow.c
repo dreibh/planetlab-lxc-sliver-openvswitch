@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  * Copyright (c) 2009 InMon Corp.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -46,7 +46,7 @@ struct dpif_sflow_port {
     struct hmap_node hmap_node; /* In struct dpif_sflow's "ports" hmap. */
     SFLDataSource_instance dsi; /* sFlow library's notion of port number. */
     struct ofport *ofport;      /* To retrive port stats. */
-    uint32_t odp_port;
+    odp_port_t odp_port;
 };
 
 struct dpif_sflow {
@@ -57,6 +57,7 @@ struct dpif_sflow {
     size_t n_flood, n_all;
     struct hmap ports;          /* Contains "struct dpif_sflow_port"s. */
     uint32_t probability;
+    int ref_cnt;
 };
 
 static void dpif_sflow_del_port__(struct dpif_sflow *,
@@ -142,12 +143,12 @@ sflow_agent_send_packet_cb(void *ds_, SFLAgent *agent OVS_UNUSED,
 }
 
 static struct dpif_sflow_port *
-dpif_sflow_find_port(const struct dpif_sflow *ds, uint32_t odp_port)
+dpif_sflow_find_port(const struct dpif_sflow *ds, odp_port_t odp_port)
 {
     struct dpif_sflow_port *dsp;
 
-    HMAP_FOR_EACH_IN_BUCKET (dsp, hmap_node,
-                             hash_int(odp_port, 0), &ds->ports) {
+    HMAP_FOR_EACH_IN_BUCKET (dsp, hmap_node, hash_odp_port(odp_port),
+                             &ds->ports) {
         if (dsp->odp_port == odp_port) {
             return dsp;
         }
@@ -167,7 +168,7 @@ sflow_agent_get_counters(void *ds_, SFLPoller *poller,
     struct netdev_stats stats;
     enum netdev_flags flags;
 
-    dsp = dpif_sflow_find_port(ds, poller->bridgePort);
+    dsp = dpif_sflow_find_port(ds, u32_to_odp(poller->bridgePort));
     if (!dsp) {
         return;
     }
@@ -302,7 +303,19 @@ dpif_sflow_create(void)
     hmap_init(&ds->ports);
     ds->probability = 0;
     route_table_register();
+    ds->ref_cnt = 1;
 
+    return ds;
+}
+
+struct dpif_sflow *
+dpif_sflow_ref(const struct dpif_sflow *ds_)
+{
+    struct dpif_sflow *ds = CONST_CAST(struct dpif_sflow *, ds_);
+    if (ds) {
+        ovs_assert(ds->ref_cnt > 0);
+        ds->ref_cnt++;
+    }
     return ds;
 }
 
@@ -316,9 +329,14 @@ dpif_sflow_get_probability(const struct dpif_sflow *ds)
 }
 
 void
-dpif_sflow_destroy(struct dpif_sflow *ds)
+dpif_sflow_unref(struct dpif_sflow *ds)
 {
-    if (ds) {
+    if (!ds) {
+        return;
+    }
+
+    ovs_assert(ds->ref_cnt > 0);
+    if (!--ds->ref_cnt) {
         struct dpif_sflow_port *dsp, *next;
 
         route_table_unregister();
@@ -338,12 +356,12 @@ dpif_sflow_add_poller(struct dpif_sflow *ds, struct dpif_sflow_port *dsp)
                                             sflow_agent_get_counters);
     sfl_poller_set_sFlowCpInterval(poller, ds->options->polling_interval);
     sfl_poller_set_sFlowCpReceiver(poller, RECEIVER_INDEX);
-    sfl_poller_set_bridgePort(poller, dsp->odp_port);
+    sfl_poller_set_bridgePort(poller, odp_to_u32(dsp->odp_port));
 }
 
 void
 dpif_sflow_add_port(struct dpif_sflow *ds, struct ofport *ofport,
-                    uint32_t odp_port)
+                    odp_port_t odp_port)
 {
     struct dpif_sflow_port *dsp;
     int ifindex;
@@ -362,7 +380,7 @@ dpif_sflow_add_port(struct dpif_sflow *ds, struct ofport *ofport,
     dsp->ofport = ofport;
     dsp->odp_port = odp_port;
     SFL_DS_SET(dsp->dsi, SFL_DSCLASS_IFINDEX, ifindex, 0);
-    hmap_insert(&ds->ports, &dsp->hmap_node, hash_int(odp_port, 0));
+    hmap_insert(&ds->ports, &dsp->hmap_node, hash_odp_port(odp_port));
 
     /* Add poller. */
     if (ds->sflow_agent) {
@@ -382,7 +400,7 @@ dpif_sflow_del_port__(struct dpif_sflow *ds, struct dpif_sflow_port *dsp)
 }
 
 void
-dpif_sflow_del_port(struct dpif_sflow *ds, uint32_t odp_port)
+dpif_sflow_del_port(struct dpif_sflow *ds, odp_port_t odp_port)
 {
     struct dpif_sflow_port *dsp = dpif_sflow_find_port(ds, odp_port);
     if (dsp) {
@@ -488,7 +506,7 @@ dpif_sflow_set_options(struct dpif_sflow *ds,
 
 int
 dpif_sflow_odp_port_to_ifindex(const struct dpif_sflow *ds,
-                               uint32_t odp_port)
+                               odp_port_t odp_port)
 {
     struct dpif_sflow_port *dsp = dpif_sflow_find_port(ds, odp_port);
     return dsp ? SFL_DS_INDEX(dsp->dsi) : 0;
@@ -496,7 +514,7 @@ dpif_sflow_odp_port_to_ifindex(const struct dpif_sflow *ds,
 
 void
 dpif_sflow_received(struct dpif_sflow *ds, struct ofpbuf *packet,
-                    const struct flow *flow, uint32_t odp_in_port,
+                    const struct flow *flow, odp_port_t odp_in_port,
                     const union user_action_cookie *cookie)
 {
     SFL_FLOW_SAMPLE_TYPE fs;

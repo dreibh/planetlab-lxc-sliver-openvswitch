@@ -377,8 +377,8 @@ int dpif_get_dp_stats(const struct dpif *, struct dpif_dp_stats *);
 
 const char *dpif_port_open_type(const char *datapath_type,
                                 const char *port_type);
-int dpif_port_add(struct dpif *, struct netdev *, uint32_t *port_nop);
-int dpif_port_del(struct dpif *, uint32_t port_no);
+int dpif_port_add(struct dpif *, struct netdev *, odp_port_t *port_nop);
+int dpif_port_del(struct dpif *, odp_port_t port_no);
 
 /* A port within a datapath.
  *
@@ -386,19 +386,19 @@ int dpif_port_del(struct dpif *, uint32_t port_no);
 struct dpif_port {
     char *name;                 /* Network device name, e.g. "eth0". */
     char *type;                 /* Network device type, e.g. "system". */
-    uint32_t port_no;           /* Port number within datapath. */
+    odp_port_t port_no;         /* Port number within datapath. */
 };
 void dpif_port_clone(struct dpif_port *, const struct dpif_port *);
 void dpif_port_destroy(struct dpif_port *);
 bool dpif_port_exists(const struct dpif *dpif, const char *devname);
-int dpif_port_query_by_number(const struct dpif *, uint32_t port_no,
+int dpif_port_query_by_number(const struct dpif *, odp_port_t port_no,
                               struct dpif_port *);
 int dpif_port_query_by_name(const struct dpif *, const char *devname,
                             struct dpif_port *);
-int dpif_port_get_name(struct dpif *, uint32_t port_no,
+int dpif_port_get_name(struct dpif *, odp_port_t port_no,
                        char *name, size_t name_size);
-int dpif_get_max_ports(const struct dpif *);
-uint32_t dpif_port_get_pid(const struct dpif *, uint32_t port_no);
+odp_port_t dpif_get_max_ports(const struct dpif *);
+uint32_t dpif_port_get_pid(const struct dpif *, odp_port_t port_no);
 
 struct dpif_port_dump {
     const struct dpif *dpif;
@@ -447,6 +447,7 @@ enum dpif_flow_put_flags {
 int dpif_flow_flush(struct dpif *);
 int dpif_flow_put(struct dpif *, enum dpif_flow_put_flags,
                   const struct nlattr *key, size_t key_len,
+                  const struct nlattr *mask, size_t mask_len,
                   const struct nlattr *actions, size_t actions_len,
                   struct dpif_flow_stats *);
 int dpif_flow_del(struct dpif *,
@@ -464,6 +465,7 @@ struct dpif_flow_dump {
 void dpif_flow_dump_start(struct dpif_flow_dump *, const struct dpif *);
 bool dpif_flow_dump_next(struct dpif_flow_dump *,
                          const struct nlattr **key, size_t *key_len,
+                         const struct nlattr **mask, size_t *mask_len,
                          const struct nlattr **actions, size_t *actions_len,
                          const struct dpif_flow_stats **);
 int dpif_flow_dump_done(struct dpif_flow_dump *);
@@ -492,6 +494,8 @@ struct dpif_flow_put {
     enum dpif_flow_put_flags flags; /* DPIF_FP_*. */
     const struct nlattr *key;       /* Flow to put. */
     size_t key_len;                 /* Length of 'key' in bytes. */
+    const struct nlattr *mask;      /* Mask to put. */
+    size_t mask_len;                /* Length of 'mask' in bytes. */
     const struct nlattr *actions;   /* Actions to perform on flow. */
     size_t actions_len;             /* Length of 'actions' in bytes. */
 

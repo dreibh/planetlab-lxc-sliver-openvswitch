@@ -42,7 +42,7 @@ output_from_openflow10(const struct ofp10_action_output *oao,
     struct ofpact_output *output;
 
     output = ofpact_put_OUTPUT(out);
-    output->port = ntohs(oao->port);
+    output->port = u16_to_ofp(ntohs(oao->port));
     output->max_len = ntohs(oao->max_len);
 
     return ofputil_check_output_port(output->port, OFPP_MAX);
@@ -55,9 +55,10 @@ enqueue_from_openflow10(const struct ofp10_action_enqueue *oae,
     struct ofpact_enqueue *enqueue;
 
     enqueue = ofpact_put_ENQUEUE(out);
-    enqueue->port = ntohs(oae->port);
+    enqueue->port = u16_to_ofp(ntohs(oae->port));
     enqueue->queue = ntohl(oae->queue_id);
-    if (enqueue->port >= OFPP_MAX && enqueue->port != OFPP_IN_PORT
+    if (ofp_to_u16(enqueue->port) >= ofp_to_u16(OFPP_MAX)
+        && enqueue->port != OFPP_IN_PORT
         && enqueue->port != OFPP_LOCAL) {
         return OFPERR_OFPBAC_BAD_OUT_PORT;
     }
@@ -72,7 +73,7 @@ resubmit_from_openflow(const struct nx_action_resubmit *nar,
 
     resubmit = ofpact_put_RESUBMIT(out);
     resubmit->ofpact.compat = OFPUTIL_NXAST_RESUBMIT;
-    resubmit->in_port = ntohs(nar->in_port);
+    resubmit->in_port = u16_to_ofp(ntohs(nar->in_port));
     resubmit->table_id = 0xff;
 }
 
@@ -88,7 +89,7 @@ resubmit_table_from_openflow(const struct nx_action_resubmit *nar,
 
     resubmit = ofpact_put_RESUBMIT(out);
     resubmit->ofpact.compat = OFPUTIL_NXAST_RESUBMIT_TABLE;
-    resubmit->in_port = ntohs(nar->in_port);
+    resubmit->in_port = u16_to_ofp(ntohs(nar->in_port));
     resubmit->table_id = nar->table;
     return 0;
 }
@@ -209,9 +210,9 @@ dec_ttl_cnt_ids_from_openflow(const struct nx_action_cnt_ids *nac_ids,
     for (i = 0; i < ids->n_controllers; i++) {
         uint16_t id = ntohs(((ovs_be16 *)(nac_ids + 1))[i]);
         ofpbuf_put(out, &id, sizeof id);
+        ids = out->l2;
     }
 
-    ids = out->l2;
     ofpact_update_len(out, &ids->ofpact);
 
     return 0;
@@ -913,13 +914,13 @@ OVS_INSTRUCTIONS
 };
 
 const char *
-ofpact_instruction_name_from_type(enum ovs_instruction_type type)
+ovs_instruction_name_from_type(enum ovs_instruction_type type)
 {
     return inst_info[type].name;
 }
 
 int
-ofpact_instruction_type_from_name(const char *name)
+ovs_instruction_type_from_name(const char *name)
 {
     const struct instruction_type_info *p;
     for (p = inst_info; p < &inst_info[ARRAY_SIZE(inst_info)]; p++) {
@@ -928,6 +929,58 @@ ofpact_instruction_type_from_name(const char *name)
         }
     }
     return -1;
+}
+
+enum ovs_instruction_type
+ovs_instruction_type_from_ofpact_type(enum ofpact_type type)
+{
+    switch (type) {
+    case OFPACT_METER:
+        return OVSINST_OFPIT13_METER;
+    case OFPACT_CLEAR_ACTIONS:
+        return OVSINST_OFPIT11_CLEAR_ACTIONS;
+    case OFPACT_WRITE_METADATA:
+        return OVSINST_OFPIT11_WRITE_METADATA;
+    case OFPACT_GOTO_TABLE:
+        return OVSINST_OFPIT11_GOTO_TABLE;
+    case OFPACT_OUTPUT:
+    case OFPACT_CONTROLLER:
+    case OFPACT_ENQUEUE:
+    case OFPACT_OUTPUT_REG:
+    case OFPACT_BUNDLE:
+    case OFPACT_SET_VLAN_VID:
+    case OFPACT_SET_VLAN_PCP:
+    case OFPACT_STRIP_VLAN:
+    case OFPACT_PUSH_VLAN:
+    case OFPACT_SET_ETH_SRC:
+    case OFPACT_SET_ETH_DST:
+    case OFPACT_SET_IPV4_SRC:
+    case OFPACT_SET_IPV4_DST:
+    case OFPACT_SET_IPV4_DSCP:
+    case OFPACT_SET_L4_SRC_PORT:
+    case OFPACT_SET_L4_DST_PORT:
+    case OFPACT_REG_MOVE:
+    case OFPACT_REG_LOAD:
+    case OFPACT_STACK_PUSH:
+    case OFPACT_STACK_POP:
+    case OFPACT_DEC_TTL:
+    case OFPACT_SET_MPLS_TTL:
+    case OFPACT_DEC_MPLS_TTL:
+    case OFPACT_PUSH_MPLS:
+    case OFPACT_POP_MPLS:
+    case OFPACT_SET_TUNNEL:
+    case OFPACT_SET_QUEUE:
+    case OFPACT_POP_QUEUE:
+    case OFPACT_FIN_TIMEOUT:
+    case OFPACT_RESUBMIT:
+    case OFPACT_LEARN:
+    case OFPACT_MULTIPATH:
+    case OFPACT_NOTE:
+    case OFPACT_EXIT:
+    case OFPACT_SAMPLE:
+    default:
+        return OVSINST_OFPIT11_APPLY_ACTIONS;
+    }
 }
 
 static inline struct ofp11_instruction *
@@ -1002,9 +1055,7 @@ decode_openflow11_instructions(const struct ofp11_instruction insts[],
         }
 
         if (out[type]) {
-            return OFPERR_OFPBAC_UNSUPPORTED_ORDER; /* No specific code for
-                                                     * a duplicate instruction
-                                                     * exist */
+            return OFPERR_ONFBIC_DUP_INSTRUCTION;
         }
         out[type] = inst;
     }
@@ -1085,6 +1136,16 @@ ofpacts_pull_openflow11_instructions(struct ofpbuf *openflow,
         goto exit;
     }
 
+    if (insts[OVSINST_OFPIT13_METER]) {
+        const struct ofp13_instruction_meter *oim;
+        struct ofpact_meter *om;
+
+        oim = (const struct ofp13_instruction_meter *)
+            insts[OVSINST_OFPIT13_METER];
+
+        om = ofpact_put_METER(ofpacts);
+        om->meter_id = ntohl(oim->meter_id);
+    }
     if (insts[OVSINST_OFPIT11_APPLY_ACTIONS]) {
         const union ofp_action *actions;
         size_t n_actions;
@@ -1136,9 +1197,10 @@ exit:
     return error;
 }
 
+/* May modify flow->dl_type, caller must restore it. */
 static enum ofperr
-ofpact_check__(const struct ofpact *a, const struct flow *flow, int max_ports,
-               ovs_be16 *dl_type)
+ofpact_check__(const struct ofpact *a, struct flow *flow, ofp_port_t max_ports,
+               uint8_t table_id)
 {
     const struct ofpact_enqueue *enqueue;
 
@@ -1152,7 +1214,8 @@ ofpact_check__(const struct ofpact *a, const struct flow *flow, int max_ports,
 
     case OFPACT_ENQUEUE:
         enqueue = ofpact_get_ENQUEUE(a);
-        if (enqueue->port >= max_ports && enqueue->port != OFPP_IN_PORT
+        if (ofp_to_u16(enqueue->port) >= ofp_to_u16(max_ports)
+            && enqueue->port != OFPP_IN_PORT
             && enqueue->port != OFPP_LOCAL) {
             return OFPERR_OFPBAC_BAD_OUT_PORT;
         }
@@ -1210,11 +1273,11 @@ ofpact_check__(const struct ofpact *a, const struct flow *flow, int max_ports,
         return 0;
 
     case OFPACT_PUSH_MPLS:
-        *dl_type = ofpact_get_PUSH_MPLS(a)->ethertype;
+        flow->dl_type = ofpact_get_PUSH_MPLS(a)->ethertype;
         return 0;
 
     case OFPACT_POP_MPLS:
-        *dl_type = ofpact_get_POP_MPLS(a)->ethertype;
+        flow->dl_type = ofpact_get_POP_MPLS(a)->ethertype;
         return 0;
 
     case OFPACT_SAMPLE:
@@ -1222,7 +1285,20 @@ ofpact_check__(const struct ofpact *a, const struct flow *flow, int max_ports,
 
     case OFPACT_CLEAR_ACTIONS:
     case OFPACT_WRITE_METADATA:
+        return 0;
+
+    case OFPACT_METER: {
+        uint32_t mid = ofpact_get_METER(a)->meter_id;
+        if (mid == 0 || mid > OFPM13_MAX) {
+            return OFPERR_OFPMMFC_INVALID_METER;
+        }
+        return 0;
+    }
+
     case OFPACT_GOTO_TABLE:
+        if (ofpact_get_GOTO_TABLE(a)->table_id <= table_id) {
+            return OFPERR_OFPBRC_BAD_TABLE_ID;
+        }
         return 0;
 
     default:
@@ -1232,36 +1308,25 @@ ofpact_check__(const struct ofpact *a, const struct flow *flow, int max_ports,
 
 /* Checks that the 'ofpacts_len' bytes of actions in 'ofpacts' are
  * appropriate for a packet with the prerequisites satisfied by 'flow' in a
- * switch with no more than 'max_ports' ports. */
+ * switch with no more than 'max_ports' ports.
+ *
+ * May temporarily modify 'flow', but restores the changes before returning. */
 enum ofperr
 ofpacts_check(const struct ofpact ofpacts[], size_t ofpacts_len,
-              const struct flow *flow, int max_ports)
+              struct flow *flow, ofp_port_t max_ports, uint8_t table_id)
 {
     const struct ofpact *a;
     ovs_be16 dl_type = flow->dl_type;
-    struct flow updated_flow;
+    enum ofperr error = 0;
 
     OFPACT_FOR_EACH (a, ofpacts, ofpacts_len) {
-        enum ofperr error;
-
-        /* If the dl_type was changed by an action then its new value
-         * should be present in the flow passed to ofpact_check__(). */
-        if (flow->dl_type != dl_type) {
-            /* Only copy flow at most once */
-            if (flow != &updated_flow) {
-                updated_flow = *flow;
-                flow = &updated_flow;
-            }
-            updated_flow.dl_type = dl_type;
-        }
-
-        error = ofpact_check__(a, flow, max_ports, &dl_type);
+        error = ofpact_check__(a, flow, max_ports, table_id);
         if (error) {
-            return error;
+            break;
         }
     }
-
-    return 0;
+    flow->dl_type = dl_type; /* Restore. */
+    return error;
 }
 
 /* Verifies that the 'ofpacts_len' bytes of actions in 'ofpacts' are
@@ -1276,19 +1341,10 @@ ofpacts_verify(const struct ofpact ofpacts[], size_t ofpacts_len)
     OFPACT_FOR_EACH (a, ofpacts, ofpacts_len) {
         enum ovs_instruction_type next;
 
-        if (a->type == OFPACT_CLEAR_ACTIONS) {
-            next = OVSINST_OFPIT11_CLEAR_ACTIONS;
-        } else if (a->type == OFPACT_WRITE_METADATA) {
-            next = OVSINST_OFPIT11_WRITE_METADATA;
-        } else if (a->type == OFPACT_GOTO_TABLE) {
-            next = OVSINST_OFPIT11_GOTO_TABLE;
-        } else {
-            next = OVSINST_OFPIT11_APPLY_ACTIONS;
-        }
-
+        next = ovs_instruction_type_from_ofpact_type(a->type);
         if (inst != OVSINST_OFPIT11_APPLY_ACTIONS && next <= inst) {
-            const char *name = ofpact_instruction_name_from_type(inst);
-            const char *next_name = ofpact_instruction_name_from_type(next);
+            const char *name = ovs_instruction_name_from_type(inst);
+            const char *next_name = ovs_instruction_name_from_type(next);
 
             if (next == inst) {
                 VLOG_WARN("duplicate %s instruction not allowed, for OpenFlow "
@@ -1334,7 +1390,7 @@ ofpact_resubmit_to_nxast(const struct ofpact_resubmit *resubmit,
         nar = ofputil_put_NXAST_RESUBMIT_TABLE(out);
         nar->table = resubmit->table_id;
     }
-    nar->in_port = htons(resubmit->in_port);
+    nar->in_port = htons(ofp_to_u16(resubmit->in_port));
 }
 
 static void
@@ -1556,6 +1612,7 @@ ofpact_to_nxast(const struct ofpact *a, struct ofpbuf *out)
     case OFPACT_SET_L4_DST_PORT:
     case OFPACT_CLEAR_ACTIONS:
     case OFPACT_GOTO_TABLE:
+    case OFPACT_METER:
         NOT_REACHED();
     }
 }
@@ -1569,7 +1626,7 @@ ofpact_output_to_openflow10(const struct ofpact_output *output,
     struct ofp10_action_output *oao;
 
     oao = ofputil_put_OFPAT10_OUTPUT(out);
-    oao->port = htons(output->port);
+    oao->port = htons(ofp_to_u16(output->port));
     oao->max_len = htons(output->max_len);
 }
 
@@ -1580,7 +1637,7 @@ ofpact_enqueue_to_openflow10(const struct ofpact_enqueue *enqueue,
     struct ofp10_action_enqueue *oae;
 
     oae = ofputil_put_OFPAT10_ENQUEUE(out);
-    oae->port = htons(enqueue->port);
+    oae->port = htons(ofp_to_u16(enqueue->port));
     oae->queue_id = htonl(enqueue->queue);
 }
 
@@ -1648,6 +1705,7 @@ ofpact_to_openflow10(const struct ofpact *a, struct ofpbuf *out)
     case OFPACT_PUSH_VLAN:
     case OFPACT_CLEAR_ACTIONS:
     case OFPACT_GOTO_TABLE:
+    case OFPACT_METER:
         /* XXX */
         break;
 
@@ -1820,6 +1878,7 @@ ofpact_to_openflow11(const struct ofpact *a, struct ofpbuf *out)
 
     case OFPACT_CLEAR_ACTIONS:
     case OFPACT_GOTO_TABLE:
+    case OFPACT_METER:
         NOT_REACHED();
 
     case OFPACT_CONTROLLER:
@@ -1882,17 +1941,20 @@ ofpacts_put_openflow11_instructions(const struct ofpact ofpacts[],
     const struct ofpact *a;
 
     OFPACT_FOR_EACH (a, ofpacts, ofpacts_len) {
-        /* XXX Write-Actions */
-
-        if (a->type == OFPACT_CLEAR_ACTIONS) {
+        switch (ovs_instruction_type_from_ofpact_type(a->type)) {
+        case OVSINST_OFPIT11_CLEAR_ACTIONS:
             instruction_put_OFPIT11_CLEAR_ACTIONS(openflow);
-        } else if (a->type == OFPACT_GOTO_TABLE) {
-            struct ofp11_instruction_goto_table *oigt;
+            break;
 
+        case OVSINST_OFPIT11_GOTO_TABLE: {
+            struct ofp11_instruction_goto_table *oigt;
             oigt = instruction_put_OFPIT11_GOTO_TABLE(openflow);
             oigt->table_id = ofpact_get_GOTO_TABLE(a)->table_id;
             memset(oigt->pad, 0, sizeof oigt->pad);
-        } else if (a->type == OFPACT_WRITE_METADATA) {
+            break;
+        }
+
+        case OVSINST_OFPIT11_WRITE_METADATA: {
             const struct ofpact_metadata *om;
             struct ofp11_instruction_write_metadata *oiwm;
 
@@ -1900,8 +1962,20 @@ ofpacts_put_openflow11_instructions(const struct ofpact ofpacts[],
             oiwm = instruction_put_OFPIT11_WRITE_METADATA(openflow);
             oiwm->metadata = om->metadata;
             oiwm->metadata_mask = om->mask;
-        } else if (!ofpact_is_instruction(a)) {
-            /* Apply-actions */
+            break;
+        }
+
+        case OVSINST_OFPIT13_METER: {
+            const struct ofpact_meter *om;
+            struct ofp13_instruction_meter *oim;
+
+            om = ofpact_get_METER(a);
+            oim = instruction_put_OFPIT13_METER(openflow);
+            oim->meter_id = htonl(om->meter_id);
+            break;
+        }
+
+        case OVSINST_OFPIT11_APPLY_ACTIONS: {
             const size_t ofs = openflow->size;
             const size_t ofpacts_len_left =
                 (uint8_t*)ofpact_end(ofpacts, ofpacts_len) - (uint8_t*)a;
@@ -1910,7 +1984,8 @@ ofpacts_put_openflow11_instructions(const struct ofpact ofpacts[],
 
             instruction_put_OFPIT11_APPLY_ACTIONS(openflow);
             OFPACT_FOR_EACH(action, a, ofpacts_len_left) {
-                if (ofpact_is_instruction(action)) {
+                if (ovs_instruction_type_from_ofpact_type(action->type)
+                    != OVSINST_OFPIT11_APPLY_ACTIONS) {
                     break;
                 }
                 ofpact_to_openflow11(action, openflow);
@@ -1918,13 +1993,18 @@ ofpacts_put_openflow11_instructions(const struct ofpact ofpacts[],
             }
             ofpacts_update_instruction_actions(openflow, ofs);
             a = processed;
+            break;
+        }
+
+        case OVSINST_OFPIT11_WRITE_ACTIONS:
+            NOT_REACHED();
         }
     }
 }
 
 /* Returns true if 'action' outputs to 'port', false otherwise. */
 static bool
-ofpact_outputs_to_port(const struct ofpact *ofpact, uint16_t port)
+ofpact_outputs_to_port(const struct ofpact *ofpact, ofp_port_t port)
 {
     switch (ofpact->type) {
     case OFPACT_OUTPUT:
@@ -1969,6 +2049,7 @@ ofpact_outputs_to_port(const struct ofpact *ofpact, uint16_t port)
     case OFPACT_SAMPLE:
     case OFPACT_CLEAR_ACTIONS:
     case OFPACT_GOTO_TABLE:
+    case OFPACT_METER:
     default:
         return false;
     }
@@ -1978,7 +2059,7 @@ ofpact_outputs_to_port(const struct ofpact *ofpact, uint16_t port)
  * to 'port', false otherwise. */
 bool
 ofpacts_output_to_port(const struct ofpact *ofpacts, size_t ofpacts_len,
-                       uint16_t port)
+                       ofp_port_t port)
 {
     const struct ofpact *a;
 
@@ -2059,12 +2140,12 @@ ofpact_format(const struct ofpact *a, struct ds *s)
     const struct ofpact_metadata *metadata;
     const struct ofpact_tunnel *tunnel;
     const struct ofpact_sample *sample;
-    uint16_t port;
+    ofp_port_t port;
 
     switch (a->type) {
     case OFPACT_OUTPUT:
         port = ofpact_get_OUTPUT(a)->port;
-        if (port < OFPP_MAX) {
+        if (ofp_to_u16(port) < ofp_to_u16(OFPP_MAX)) {
             ds_put_format(s, "output:%"PRIu16, port);
         } else {
             ofputil_format_port(port, s);
@@ -2085,8 +2166,11 @@ ofpact_format(const struct ofpact *a, struct ds *s)
 
             ds_put_cstr(s, "controller(");
             if (reason != OFPR_ACTION) {
+                char reasonbuf[OFPUTIL_PACKET_IN_REASON_BUFSIZE];
+
                 ds_put_format(s, "reason=%s,",
-                              ofputil_packet_in_reason_to_string(reason));
+                              ofputil_packet_in_reason_to_string(
+                                  reason, reasonbuf, sizeof reasonbuf));
             }
             if (controller->max_len != UINT16_MAX) {
                 ds_put_format(s, "max_len=%"PRIu16",", controller->max_len);
@@ -2271,14 +2355,14 @@ ofpact_format(const struct ofpact *a, struct ds *s)
 
     case OFPACT_CLEAR_ACTIONS:
         ds_put_format(s, "%s",
-                      ofpact_instruction_name_from_type(
+                      ovs_instruction_name_from_type(
                           OVSINST_OFPIT11_CLEAR_ACTIONS));
         break;
 
     case OFPACT_WRITE_METADATA:
         metadata = ofpact_get_WRITE_METADATA(a);
         ds_put_format(s, "%s:%#"PRIx64,
-                      ofpact_instruction_name_from_type(
+                      ovs_instruction_name_from_type(
                           OVSINST_OFPIT11_WRITE_METADATA),
                       ntohll(metadata->metadata));
         if (metadata->mask != htonll(UINT64_MAX)) {
@@ -2288,9 +2372,15 @@ ofpact_format(const struct ofpact *a, struct ds *s)
 
     case OFPACT_GOTO_TABLE:
         ds_put_format(s, "%s:%"PRIu8,
-                      ofpact_instruction_name_from_type(
+                      ovs_instruction_name_from_type(
                           OVSINST_OFPIT11_GOTO_TABLE),
                       ofpact_get_GOTO_TABLE(a)->table_id);
+        break;
+
+    case OFPACT_METER:
+        ds_put_format(s, "%s:%"PRIu32,
+                      ovs_instruction_name_from_type(OVSINST_OFPIT13_METER),
+                      ofpact_get_METER(a)->meter_id);
         break;
     }
 }

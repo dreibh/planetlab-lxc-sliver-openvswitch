@@ -31,16 +31,18 @@
 #include "poll-loop.h"
 #include "shash.h"
 #include "sset.h"
+#include "stream.h"
+#include "unaligned.h"
 #include "unixctl.h"
 #include "vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_dummy);
 
-#ifdef __FreeBSD__
-#define FREE_BSD 1
-#else
-#define FREE_BSD 0
-#endif
+struct dummy_stream {
+    struct stream *stream;
+    struct ofpbuf rxbuf;
+    struct list txq;
+};
 
 struct netdev_dummy {
     struct netdev up;
@@ -51,13 +53,22 @@ struct netdev_dummy {
     unsigned int change_seq;
     int ifindex;
 
+    struct pstream *pstream;
+    struct dummy_stream *streams;
+    size_t n_streams;
+
     struct list rxes;           /* List of child "netdev_rx_dummy"s. */
 };
+
+/* Max 'recv_queue_len' in struct netdev_dummy. */
+#define NETDEV_DUMMY_MAX_QUEUE 100
 
 struct netdev_rx_dummy {
     struct netdev_rx up;
     struct list node;           /* In netdev_dummy's "rxes" list. */
     struct list recv_queue;
+    int recv_queue_len;         /* list_size(&recv_queue). */
+    bool listening;
 };
 
 static struct shash dummy_netdevs = SHASH_INITIALIZER(&dummy_netdevs);
@@ -68,6 +79,9 @@ static unixctl_cb_func netdev_dummy_set_admin_state;
 static int netdev_dummy_create(const struct netdev_class *, const char *,
                                struct netdev **);
 static void netdev_dummy_poll_notify(struct netdev_dummy *);
+static void netdev_dummy_queue_packet(struct netdev_dummy *, struct ofpbuf *);
+
+static void dummy_stream_close(struct dummy_stream *);
 
 static bool
 is_dummy_class(const struct netdev_class *class)
@@ -89,6 +103,140 @@ netdev_rx_dummy_cast(const struct netdev_rx *rx)
     return CONTAINER_OF(rx, struct netdev_rx_dummy, up);
 }
 
+static void
+netdev_dummy_run(void)
+{
+    struct shash_node *node;
+
+    SHASH_FOR_EACH (node, &dummy_netdevs) {
+        struct netdev_dummy *dev = node->data;
+        size_t i;
+
+        if (dev->pstream) {
+            struct stream *new_stream;
+            int error;
+
+            error = pstream_accept(dev->pstream, &new_stream);
+            if (!error) {
+                struct dummy_stream *s;
+
+                dev->streams = xrealloc(dev->streams,
+                                        ((dev->n_streams + 1)
+                                         * sizeof *dev->streams));
+                s = &dev->streams[dev->n_streams++];
+                s->stream = new_stream;
+                ofpbuf_init(&s->rxbuf, 2048);
+                list_init(&s->txq);
+            } else if (error != EAGAIN) {
+                VLOG_WARN("%s: accept failed (%s)",
+                          pstream_get_name(dev->pstream), ovs_strerror(error));
+                pstream_close(dev->pstream);
+                dev->pstream = NULL;
+            }
+        }
+
+        for (i = 0; i < dev->n_streams; i++) {
+            struct dummy_stream *s = &dev->streams[i];
+            int error = 0;
+            size_t n;
+
+            stream_run(s->stream);
+
+            if (!list_is_empty(&s->txq)) {
+                struct ofpbuf *txbuf;
+                int retval;
+
+                txbuf = ofpbuf_from_list(list_front(&s->txq));
+                retval = stream_send(s->stream, txbuf->data, txbuf->size);
+                if (retval > 0) {
+                    ofpbuf_pull(txbuf, retval);
+                    if (!txbuf->size) {
+                        list_remove(&txbuf->list_node);
+                        ofpbuf_delete(txbuf);
+                    }
+                } else if (retval != -EAGAIN) {
+                    error = -retval;
+                }
+            }
+
+            if (!error) {
+                if (s->rxbuf.size < 2) {
+                    n = 2 - s->rxbuf.size;
+                } else {
+                    uint16_t frame_len;
+
+                    frame_len = ntohs(get_unaligned_be16(s->rxbuf.data));
+                    if (frame_len < ETH_HEADER_LEN) {
+                        error = EPROTO;
+                        n = 0;
+                    } else {
+                        n = (2 + frame_len) - s->rxbuf.size;
+                    }
+                }
+            }
+            if (!error) {
+                int retval;
+
+                ofpbuf_prealloc_tailroom(&s->rxbuf, n);
+                retval = stream_recv(s->stream, ofpbuf_tail(&s->rxbuf), n);
+                if (retval > 0) {
+                    s->rxbuf.size += retval;
+                    if (retval == n && s->rxbuf.size > 2) {
+                        ofpbuf_pull(&s->rxbuf, 2);
+                        netdev_dummy_queue_packet(dev,
+                                                  ofpbuf_clone(&s->rxbuf));
+                        ofpbuf_clear(&s->rxbuf);
+                    }
+                } else if (retval != -EAGAIN) {
+                    error = (retval < 0 ? -retval
+                             : s->rxbuf.size ? EPROTO
+                             : EOF);
+                }
+            }
+
+            if (error) {
+                VLOG_DBG("%s: closing connection (%s)",
+                         stream_get_name(s->stream),
+                         ovs_retval_to_string(error));
+                dummy_stream_close(&dev->streams[i]);
+                dev->streams[i] = dev->streams[--dev->n_streams];
+            }
+        }
+    }
+}
+
+static void
+dummy_stream_close(struct dummy_stream *s)
+{
+    stream_close(s->stream);
+    ofpbuf_uninit(&s->rxbuf);
+    ofpbuf_list_delete(&s->txq);
+}
+
+static void
+netdev_dummy_wait(void)
+{
+    struct shash_node *node;
+
+    SHASH_FOR_EACH (node, &dummy_netdevs) {
+        struct netdev_dummy *dev = node->data;
+        size_t i;
+
+        if (dev->pstream) {
+            pstream_wait(dev->pstream);
+        }
+        for (i = 0; i < dev->n_streams; i++) {
+            struct dummy_stream *s = &dev->streams[i];
+
+            stream_run_wait(s->stream);
+            if (!list_is_empty(&s->txq)) {
+                stream_send_wait(s->stream);
+            }
+            stream_recv_wait(s->stream);
+        }
+    }
+}
+
 static int
 netdev_dummy_create(const struct netdev_class *class, const char *name,
                     struct netdev **netdevp)
@@ -108,6 +256,11 @@ netdev_dummy_create(const struct netdev_class *class, const char *name,
     netdev->flags = 0;
     netdev->change_seq = 1;
     netdev->ifindex = -EOPNOTSUPP;
+
+    netdev->pstream = NULL;
+    netdev->streams = NULL;
+    netdev->n_streams = 0;
+
     list_init(&netdev->rxes);
 
     shash_add(&dummy_netdevs, name, netdev);
@@ -123,9 +276,15 @@ static void
 netdev_dummy_destroy(struct netdev *netdev_)
 {
     struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
+    size_t i;
 
     shash_find_and_delete(&dummy_netdevs,
                           netdev_get_name(netdev_));
+    pstream_close(netdev->pstream);
+    for (i = 0; i < netdev->n_streams; i++) {
+        dummy_stream_close(&netdev->streams[i]);
+    }
+    free(netdev->streams);
     free(netdev);
 }
 
@@ -137,6 +296,9 @@ netdev_dummy_get_config(const struct netdev *netdev_, struct smap *args)
     if (netdev->ifindex >= 0) {
         smap_add_format(args, "ifindex", "%d", netdev->ifindex);
     }
+    if (netdev->pstream) {
+        smap_add(args, "pstream", pstream_get_name(netdev->pstream));
+    }
     return 0;
 }
 
@@ -144,8 +306,27 @@ static int
 netdev_dummy_set_config(struct netdev *netdev_, const struct smap *args)
 {
     struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
+    const char *pstream;
 
     netdev->ifindex = smap_get_int(args, "ifindex", -EOPNOTSUPP);
+
+    pstream = smap_get(args, "pstream");
+    if (!pstream
+        || !netdev->pstream
+        || strcmp(pstream_get_name(netdev->pstream), pstream)) {
+        pstream_close(netdev->pstream);
+        netdev->pstream = NULL;
+
+        if (pstream) {
+            int error;
+
+            error = pstream_open(pstream, &netdev->pstream, DSCP_DEFAULT);
+            if (error) {
+                VLOG_WARN("%s: open failed (%s)",
+                          pstream, ovs_strerror(error));
+            }
+        }
+    }
     return 0;
 }
 
@@ -159,6 +340,7 @@ netdev_dummy_rx_open(struct netdev *netdev_, struct netdev_rx **rxp)
     netdev_rx_init(&rx->up, &netdev->up, &netdev_rx_dummy_class);
     list_push_back(&netdev->rxes, &rx->node);
     list_init(&rx->recv_queue);
+    rx->recv_queue_len = 0;
 
     *rxp = &rx->up;
     return 0;
@@ -176,6 +358,7 @@ netdev_rx_dummy_recv(struct netdev_rx *rx_, void *buffer, size_t size)
     }
 
     packet = ofpbuf_from_list(list_pop_front(&rx->recv_queue));
+    rx->recv_queue_len--;
     if (packet->size > size) {
         return -EMSGSIZE;
     }
@@ -210,17 +393,45 @@ netdev_rx_dummy_drain(struct netdev_rx *rx_)
 {
     struct netdev_rx_dummy *rx = netdev_rx_dummy_cast(rx_);
     ofpbuf_list_delete(&rx->recv_queue);
+    rx->recv_queue_len = 0;
     return 0;
 }
 
 static int
-netdev_dummy_send(struct netdev *netdev, const void *buffer OVS_UNUSED,
-                  size_t size)
+netdev_dummy_send(struct netdev *netdev, const void *buffer, size_t size)
 {
     struct netdev_dummy *dev = netdev_dummy_cast(netdev);
+    size_t i;
+
+    if (size < ETH_HEADER_LEN) {
+        return EMSGSIZE;
+    } else {
+        const struct eth_header *eth = buffer;
+        int max_size;
+
+        max_size = dev->mtu + ETH_HEADER_LEN;
+        if (eth->eth_type == htons(ETH_TYPE_VLAN)) {
+            max_size += VLAN_HEADER_LEN;
+        }
+        if (size > max_size) {
+            return EMSGSIZE;
+        }
+    }
 
     dev->stats.tx_packets++;
     dev->stats.tx_bytes += size;
+
+    for (i = 0; i < dev->n_streams; i++) {
+        struct dummy_stream *s = &dev->streams[i];
+
+        if (list_size(&s->txq) < NETDEV_DUMMY_MAX_QUEUE) {
+            struct ofpbuf *b;
+
+            b = ofpbuf_clone_data_with_headroom(buffer, size, 2);
+            put_unaligned_be16(ofpbuf_push_uninit(b, 2), htons(size));
+            list_push_back(&s->txq, &b->list_node);
+        }
+    }
 
     return 0;
 }
@@ -333,8 +544,8 @@ netdev_dummy_poll_notify(struct netdev_dummy *dev)
 static const struct netdev_class dummy_class = {
     "dummy",
     NULL,                       /* init */
-    NULL,                       /* run */
-    NULL,                       /* wait */
+    netdev_dummy_run,
+    netdev_dummy_wait,
 
     netdev_dummy_create,
     netdev_dummy_destroy,
@@ -413,7 +624,7 @@ eth_from_packet_or_flow(const char *s)
      * settle for parsing a datapath key for now.
      */
     ofpbuf_init(&odp_key, 0);
-    error = odp_flow_key_from_string(s, NULL, &odp_key);
+    error = odp_flow_from_string(s, NULL, &odp_key, NULL);
     if (error) {
         ofpbuf_uninit(&odp_key);
         return NULL;
@@ -434,11 +645,38 @@ eth_from_packet_or_flow(const char *s)
 }
 
 static void
+netdev_dummy_queue_packet__(struct netdev_rx_dummy *rx, struct ofpbuf *packet)
+{
+    list_push_back(&rx->recv_queue, &packet->list_node);
+    rx->recv_queue_len++;
+}
+
+static void
+netdev_dummy_queue_packet(struct netdev_dummy *dummy, struct ofpbuf *packet)
+{
+    struct netdev_rx_dummy *rx, *prev;
+
+    prev = NULL;
+    LIST_FOR_EACH (rx, node, &dummy->rxes) {
+        if (rx->recv_queue_len < NETDEV_DUMMY_MAX_QUEUE) {
+            if (prev) {
+                netdev_dummy_queue_packet__(prev, ofpbuf_clone(packet));
+            }
+            prev = rx;
+        }
+    }
+    if (prev) {
+        netdev_dummy_queue_packet__(prev, packet);
+    } else {
+        ofpbuf_delete(packet);
+    }
+}
+
+static void
 netdev_dummy_receive(struct unixctl_conn *conn,
                      int argc, const char *argv[], void *aux OVS_UNUSED)
 {
     struct netdev_dummy *dummy_dev;
-    int n_listeners;
     int i;
 
     dummy_dev = shash_find_data(&dummy_netdevs, argv[1]);
@@ -447,9 +685,7 @@ netdev_dummy_receive(struct unixctl_conn *conn,
         return;
     }
 
-    n_listeners = 0;
     for (i = 2; i < argc; i++) {
-        struct netdev_rx_dummy *rx;
         struct ofpbuf *packet;
 
         packet = eth_from_packet_or_flow(argv[i]);
@@ -461,20 +697,10 @@ netdev_dummy_receive(struct unixctl_conn *conn,
         dummy_dev->stats.rx_packets++;
         dummy_dev->stats.rx_bytes += packet->size;
 
-        n_listeners = 0;
-        LIST_FOR_EACH (rx, node, &dummy_dev->rxes) {
-            struct ofpbuf *copy = ofpbuf_clone(packet);
-            list_push_back(&rx->recv_queue, &copy->list_node);
-            n_listeners++;
-        }
-        ofpbuf_delete(packet);
+        netdev_dummy_queue_packet(dummy_dev, packet);
     }
 
-    if (!n_listeners) {
-        unixctl_command_reply(conn, "packets queued but nobody listened");
-    } else {
-        unixctl_command_reply(conn, "success");
-    }
+    unixctl_command_reply(conn, NULL);
 }
 
 static void
@@ -553,7 +779,5 @@ netdev_dummy_register(bool override)
     }
     netdev_register_provider(&dummy_class);
 
-    if (FREE_BSD) {
-        netdev_vport_tunnel_register();
-    }
+    netdev_vport_tunnel_register();
 }

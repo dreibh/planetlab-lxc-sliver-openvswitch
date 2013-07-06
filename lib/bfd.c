@@ -179,6 +179,8 @@ struct bfd {
     long long int last_tx;        /* Last TX time. */
     long long int next_tx;        /* Next TX time. */
     long long int detect_time;    /* RFC 5880 6.8.4 Detection time. */
+
+    int ref_cnt;
 };
 
 static bool bfd_in_poll(const struct bfd *);
@@ -229,7 +231,8 @@ bfd_get_status(const struct bfd *bfd, struct smap *smap)
 /* Initializes, destroys, or reconfigures the BFD session 'bfd' (named 'name'),
  * according to the database configuration contained in 'cfg'.  Takes ownership
  * of 'bfd', which may be NULL.  Returns a BFD object which may be used as a
- * handle for the session, or NULL if BFD is not enabled according to 'cfg'. */
+ * handle for the session, or NULL if BFD is not enabled according to 'cfg'.
+ * Also returns NULL if cfg is NULL. */
 struct bfd *
 bfd_configure(struct bfd *bfd, const char *name,
               const struct smap *cfg)
@@ -246,12 +249,8 @@ bfd_configure(struct bfd *bfd, const char *name,
         init = true;
     }
 
-    if (!smap_get_bool(cfg, "enable", false)) {
-        if (bfd) {
-            hmap_remove(&all_bfds, &bfd->node);
-            free(bfd->name);
-            free(bfd);
-        }
+    if (!cfg || !smap_get_bool(cfg, "enable", false)) {
+        bfd_unref(bfd);
         return NULL;
     }
 
@@ -264,6 +263,7 @@ bfd_configure(struct bfd *bfd, const char *name,
         bfd->diag = DIAG_NONE;
         bfd->min_tx = 1000;
         bfd->mult = 3;
+        bfd->ref_cnt = 1;
 
         /* RFC 5881 section 4
          * The source port MUST be in the range 49152 through 65535.  The same
@@ -306,6 +306,30 @@ bfd_configure(struct bfd *bfd, const char *name,
         bfd_poll(bfd);
     }
     return bfd;
+}
+
+struct bfd *
+bfd_ref(const struct bfd *bfd_)
+{
+    struct bfd *bfd = CONST_CAST(struct bfd *, bfd_);
+    if (bfd) {
+        ovs_assert(bfd->ref_cnt > 0);
+        bfd->ref_cnt++;
+    }
+    return bfd;
+}
+
+void
+bfd_unref(struct bfd *bfd)
+{
+    if (bfd) {
+        ovs_assert(bfd->ref_cnt > 0);
+        if (!--bfd->ref_cnt) {
+            hmap_remove(&all_bfds, &bfd->node);
+            free(bfd->name);
+            free(bfd);
+        }
+    }
 }
 
 void
@@ -413,8 +437,10 @@ bfd_put_packet(struct bfd *bfd, struct ofpbuf *p,
 }
 
 bool
-bfd_should_process_flow(const struct flow *flow)
+bfd_should_process_flow(const struct flow *flow, struct flow_wildcards *wc)
 {
+    memset(&wc->masks.nw_proto, 0xff, sizeof wc->masks.nw_proto);
+    memset(&wc->masks.tp_dst, 0xff, sizeof wc->masks.tp_dst);
     return (flow->dl_type == htons(ETH_TYPE_IP)
             && flow->nw_proto == IPPROTO_UDP
             && flow->tp_dst == htons(3784));
@@ -779,7 +805,7 @@ generate_discriminator(void)
     while (!disc) {
         struct bfd *bfd;
 
-        /* 'disc' is by defnition random, so there's no reason to waste time
+        /* 'disc' is by definition random, so there's no reason to waste time
          * hashing it. */
         disc = random_uint32();
         HMAP_FOR_EACH_IN_BUCKET (bfd, node, disc, &all_bfds) {

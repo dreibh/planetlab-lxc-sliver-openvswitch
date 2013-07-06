@@ -41,8 +41,8 @@ struct netflow {
     uint8_t engine_id;            /* Value of engine_id to use. */
     long long int boot_time;      /* Time when netflow_create() was called. */
     struct collectors *collectors; /* NetFlow collectors. */
-    bool add_id_to_iface;         /* Put the 7 least signficiant bits of
-                                   * 'engine_id' into the most signficant
+    bool add_id_to_iface;         /* Put the 7 least significiant bits of
+                                   * 'engine_id' into the most significant
                                    * bits of the interface fields. */
     uint32_t netflow_cnt;         /* Flow sequence number for NetFlow. */
     struct ofpbuf packet;         /* NetFlow packet being accumulated. */
@@ -50,6 +50,20 @@ struct netflow {
     long long int next_timeout;   /* Next scheduled active timeout. */
     long long int reconfig_time;  /* When we reconfigured the timeouts. */
 };
+
+void
+netflow_mask_wc(struct flow *flow, struct flow_wildcards *wc)
+{
+    if (flow->dl_type != htons(ETH_TYPE_IP)) {
+        return;
+    }
+    memset(&wc->masks.nw_proto, 0xff, sizeof wc->masks.nw_proto);
+    memset(&wc->masks.nw_src, 0xff, sizeof wc->masks.nw_src);
+    memset(&wc->masks.nw_dst, 0xff, sizeof wc->masks.nw_dst);
+    memset(&wc->masks.tp_src, 0xff, sizeof wc->masks.tp_src);
+    memset(&wc->masks.tp_dst, 0xff, sizeof wc->masks.tp_dst);
+    wc->masks.nw_tos |= IP_DSCP_MASK;
+}
 
 static void
 gen_netflow_rec(struct netflow *nf, struct netflow_flow *nf_flow,
@@ -85,11 +99,13 @@ gen_netflow_rec(struct netflow *nf, struct netflow_flow *nf_flow,
     nf_rec->nexthop = htonl(0);
     if (nf->add_id_to_iface) {
         uint16_t iface = (nf->engine_id & 0x7f) << 9;
-        nf_rec->input = htons(iface | (expired->flow.in_port & 0x1ff));
-        nf_rec->output = htons(iface | (nf_flow->output_iface & 0x1ff));
+        nf_rec->input = htons(iface
+            | (ofp_to_u16(expired->flow.in_port.ofp_port) & 0x1ff));
+        nf_rec->output = htons(iface
+            | (ofp_to_u16(nf_flow->output_iface) & 0x1ff));
     } else {
-        nf_rec->input = htons(expired->flow.in_port);
-        nf_rec->output = htons(nf_flow->output_iface);
+        nf_rec->input = htons(ofp_to_u16(expired->flow.in_port.ofp_port));
+        nf_rec->output = htons(ofp_to_u16(nf_flow->output_iface));
     }
     nf_rec->packet_count = htonl(packet_count);
     nf_rec->byte_count = htonl(byte_count);
@@ -263,7 +279,7 @@ netflow_flow_init(struct netflow_flow *nf_flow OVS_UNUSED)
 void
 netflow_flow_clear(struct netflow_flow *nf_flow)
 {
-    uint16_t output_iface = nf_flow->output_iface;
+    ofp_port_t output_iface = nf_flow->output_iface;
 
     memset(nf_flow, 0, sizeof *nf_flow);
     nf_flow->output_iface = output_iface;

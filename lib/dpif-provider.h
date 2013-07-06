@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -127,10 +127,10 @@ struct dpif_class {
      * port number.  Returns EBUSY if caller attempted to choose a port
      * number, and it was in use. */
     int (*port_add)(struct dpif *dpif, struct netdev *netdev,
-                    uint32_t *port_no);
+                    odp_port_t *port_no);
 
     /* Removes port numbered 'port_no' from 'dpif'. */
-    int (*port_del)(struct dpif *dpif, uint32_t port_no);
+    int (*port_del)(struct dpif *dpif, odp_port_t port_no);
 
     /* Queries 'dpif' for a port with the given 'port_no' or 'devname'.
      * If 'port' is not null, stores information about the port into
@@ -139,14 +139,14 @@ struct dpif_class {
      * If 'port' is not null, the caller takes ownership of data in
      * 'port' and must free it with dpif_port_destroy() when it is no
      * longer needed. */
-    int (*port_query_by_number)(const struct dpif *dpif, uint32_t port_no,
+    int (*port_query_by_number)(const struct dpif *dpif, odp_port_t port_no,
                                 struct dpif_port *port);
     int (*port_query_by_name)(const struct dpif *dpif, const char *devname,
                               struct dpif_port *port);
 
     /* Returns one greater than the largest port number accepted in flow
      * actions. */
-    int (*get_max_ports)(const struct dpif *dpif);
+    odp_port_t (*get_max_ports)(const struct dpif *dpif);
 
     /* Returns the Netlink PID value to supply in OVS_ACTION_ATTR_USERSPACE
      * actions as the OVS_USERSPACE_ATTR_PID attribute's value, for use in
@@ -162,7 +162,7 @@ struct dpif_class {
      *
      * A dpif provider that doesn't have meaningful Netlink PIDs can use NULL
      * for this function.  This is equivalent to always returning 0. */
-    uint32_t (*port_get_pid)(const struct dpif *dpif, uint32_t port_no);
+    uint32_t (*port_get_pid)(const struct dpif *dpif, odp_port_t port_no);
 
     /* Attempts to begin dumping the ports in a dpif.  On success, returns 0
      * and initializes '*statep' with any data needed for iteration.  On
@@ -279,12 +279,22 @@ struct dpif_class {
      * called again once it returns nonzero within a given iteration (but the
      * 'flow_dump_done' function will be called afterward).
      *
-     * On success, if 'key' and 'key_len' are nonnull then '*key' and
-     * '*key_len' must be set to Netlink attributes with types OVS_KEY_ATTR_*
-     * representing the dumped flow's key.  If 'actions' and 'actions_len' are
-     * nonnull then they should be set to Netlink attributes with types
-     * OVS_ACTION_ATTR_* representing the dumped flow's actions.  If 'stats'
-     * is nonnull then it should be set to the dumped flow's statistics.
+     * On success:
+     *
+     *     - If 'key' and 'key_len' are nonnull, then '*key' and '*key_len'
+     *       must be set to Netlink attributes with types OVS_KEY_ATTR_*
+     *       representing the dumped flow's key.
+     *
+     *     - If 'mask' and 'mask_len' are nonnull then '*mask' and '*mask_len'
+     *       must be set to Netlink attributes with types of OVS_KEY_ATTR_*
+     *       representing the dumped flow's mask.
+     *
+     *     - If 'actions' and 'actions_len' are nonnull then they should be set
+     *       to Netlink attributes with types OVS_ACTION_ATTR_* representing
+     *       the dumped flow's actions.
+     *
+     *     - If 'stats' is nonnull then it should be set to the dumped flow's
+     *       statistics.
      *
      * All of the returned data is owned by 'dpif', not by the caller, and the
      * caller must not modify or free it.  'dpif' must guarantee that it
@@ -292,6 +302,7 @@ struct dpif_class {
      * 'flow_dump_next' or 'flow_dump_done' for 'state'. */
     int (*flow_dump_next)(const struct dpif *dpif, void *state,
                           const struct nlattr **key, size_t *key_len,
+                          const struct nlattr **mask, size_t *mask_len,
                           const struct nlattr **actions, size_t *actions_len,
                           const struct dpif_flow_stats **stats);
 

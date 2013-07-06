@@ -108,7 +108,7 @@ static void ofconn_reconfigure(struct ofconn *,
 
 static void ofconn_run(struct ofconn *,
                        bool (*handle_openflow)(struct ofconn *,
-                                               struct ofpbuf *ofp_msg));
+                                               const struct ofpbuf *ofp_msg));
 static void ofconn_wait(struct ofconn *, bool handling_openflow);
 
 static const char *ofconn_get_target(const struct ofconn *);
@@ -269,7 +269,8 @@ connmgr_destroy(struct connmgr *mgr)
  * fail-open processing) are suppressed too. */
 void
 connmgr_run(struct connmgr *mgr,
-            bool (*handle_openflow)(struct ofconn *, struct ofpbuf *ofp_msg))
+            bool (*handle_openflow)(struct ofconn *,
+                                    const struct ofpbuf *ofp_msg))
 {
     struct ofconn *ofconn, *next_ofconn;
     struct ofservice *ofservice;
@@ -314,7 +315,7 @@ connmgr_run(struct connmgr *mgr,
             ofconn_set_rate_limit(ofconn, ofservice->rate_limit,
                                   ofservice->burst_limit);
         } else if (retval != EAGAIN) {
-            VLOG_WARN_RL(&rl, "accept failed (%s)", strerror(retval));
+            VLOG_WARN_RL(&rl, "accept failed (%s)", ovs_strerror(retval));
         }
     }
 
@@ -326,7 +327,7 @@ connmgr_run(struct connmgr *mgr,
         if (!retval) {
             add_snooper(mgr, vconn);
         } else if (retval != EAGAIN) {
-            VLOG_WARN_RL(&rl, "accept failed (%s)", strerror(retval));
+            VLOG_WARN_RL(&rl, "accept failed (%s)", ovs_strerror(retval));
         }
     }
 }
@@ -757,7 +758,7 @@ set_pvconns(struct pvconn ***pvconnsp, size_t *n_pvconnsp,
         if (!error) {
             pvconns[n_pvconns++] = pvconn;
         } else {
-            VLOG_ERR("failed to listen on %s: %s", name, strerror(error));
+            VLOG_ERR("failed to listen on %s: %s", name, ovs_strerror(error));
             if (!retval) {
                 retval = error;
             }
@@ -1038,7 +1039,7 @@ ofconn_send_error(const struct ofconn *ofconn,
 /* Same as pktbuf_retrieve(), using the pktbuf owned by 'ofconn'. */
 enum ofperr
 ofconn_pktbuf_retrieve(struct ofconn *ofconn, uint32_t id,
-                       struct ofpbuf **bufferp, uint16_t *in_port)
+                       struct ofpbuf **bufferp, ofp_port_t *in_port)
 {
     return pktbuf_retrieve(ofconn->pktbuf, id, bufferp, in_port);
 }
@@ -1234,7 +1235,8 @@ ofconn_may_recv(const struct ofconn *ofconn)
 
 static void
 ofconn_run(struct ofconn *ofconn,
-           bool (*handle_openflow)(struct ofconn *, struct ofpbuf *ofp_msg))
+           bool (*handle_openflow)(struct ofconn *,
+                                   const struct ofpbuf *ofp_msg))
 {
     struct connmgr *mgr = ofconn->connmgr;
     size_t i;
@@ -1643,20 +1645,9 @@ any_extras_changed(const struct connmgr *mgr,
 /* In-band implementation. */
 
 bool
-connmgr_msg_in_hook(struct connmgr *mgr, const struct flow *flow,
-                    const struct ofpbuf *packet)
+connmgr_has_in_band(struct connmgr *mgr)
 {
-    return mgr->in_band && in_band_msg_in_hook(mgr->in_band, flow, packet);
-}
-
-bool
-connmgr_may_set_up_flow(struct connmgr *mgr, const struct flow *flow,
-                        uint32_t local_odp_port,
-                        const struct nlattr *odp_actions,
-                        size_t actions_len)
-{
-    return !mgr->in_band || in_band_rule_check(flow, local_odp_port,
-                                               odp_actions, actions_len);
+    return mgr->in_band != NULL;
 }
 
 /* Fail-open and in-band implementation. */

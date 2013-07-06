@@ -379,7 +379,8 @@ reconnect(struct rconn *rc)
         rc->backoff_deadline = time_now() + rc->backoff;
         state_transition(rc, S_CONNECTING);
     } else {
-        VLOG_WARN("%s: connection failed (%s)", rc->name, strerror(retval));
+        VLOG_WARN("%s: connection failed (%s)",
+                  rc->name, ovs_strerror(retval));
         rc->backoff_deadline = TIME_MAX; /* Prevent resetting backoff. */
         disconnect(rc, retval);
     }
@@ -417,7 +418,7 @@ run_CONNECTING(struct rconn *rc)
     } else if (retval != EAGAIN) {
         if (rconn_logging_connection_attempts__(rc)) {
             VLOG_INFO("%s: connection failed (%s)",
-                      rc->name, strerror(retval));
+                      rc->name, ovs_strerror(retval));
         }
         disconnect(rc, retval);
     } else if (timed_out(rc)) {
@@ -962,7 +963,8 @@ report_error(struct rconn *rc, int error)
         enum vlog_level level = rc->reliable ? VLL_INFO : VLL_DBG;
         VLOG(level, "%s: connection closed by peer", rc->name);
     } else {
-        VLOG_WARN("%s: connection dropped (%s)", rc->name, strerror(error));
+        VLOG_WARN("%s: connection dropped (%s)",
+                  rc->name, ovs_strerror(error));
     }
 }
 
@@ -1137,19 +1139,12 @@ is_admitted_msg(const struct ofpbuf *b)
     case OFPTYPE_QUEUE_GET_CONFIG_REPLY:
     case OFPTYPE_GET_ASYNC_REQUEST:
     case OFPTYPE_GET_ASYNC_REPLY:
-    case OFPTYPE_METER_MOD:
     case OFPTYPE_GROUP_REQUEST:
     case OFPTYPE_GROUP_REPLY:
     case OFPTYPE_GROUP_DESC_REQUEST:
     case OFPTYPE_GROUP_DESC_REPLY:
     case OFPTYPE_GROUP_FEATURES_REQUEST:
     case OFPTYPE_GROUP_FEATURES_REPLY:
-    case OFPTYPE_METER_REQUEST:
-    case OFPTYPE_METER_REPLY:
-    case OFPTYPE_METER_CONFIG_REQUEST:
-    case OFPTYPE_METER_CONFIG_REPLY:
-    case OFPTYPE_METER_FEATURES_REQUEST:
-    case OFPTYPE_METER_FEATURES_REPLY:
     case OFPTYPE_TABLE_FEATURES_REQUEST:
     case OFPTYPE_TABLE_FEATURES_REPLY:
         return false;
@@ -1160,6 +1155,7 @@ is_admitted_msg(const struct ofpbuf *b)
     case OFPTYPE_PACKET_OUT:
     case OFPTYPE_FLOW_MOD:
     case OFPTYPE_PORT_MOD:
+    case OFPTYPE_METER_MOD:
     case OFPTYPE_BARRIER_REQUEST:
     case OFPTYPE_BARRIER_REPLY:
     case OFPTYPE_DESC_STATS_REQUEST:
@@ -1176,6 +1172,12 @@ is_admitted_msg(const struct ofpbuf *b)
     case OFPTYPE_QUEUE_STATS_REPLY:
     case OFPTYPE_PORT_DESC_STATS_REQUEST:
     case OFPTYPE_PORT_DESC_STATS_REPLY:
+    case OFPTYPE_METER_REQUEST:
+    case OFPTYPE_METER_REPLY:
+    case OFPTYPE_METER_CONFIG_REQUEST:
+    case OFPTYPE_METER_CONFIG_REPLY:
+    case OFPTYPE_METER_FEATURES_REQUEST:
+    case OFPTYPE_METER_FEATURES_REPLY:
     case OFPTYPE_ROLE_REQUEST:
     case OFPTYPE_ROLE_REPLY:
     case OFPTYPE_SET_FLOW_FORMAT:

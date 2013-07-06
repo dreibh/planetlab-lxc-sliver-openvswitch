@@ -218,7 +218,7 @@ static int lisp_rcv(struct sock *sk, struct sk_buff *skb)
 
 	/* Save outer tunnel values */
 	iph = ip_hdr(skb);
-	tnl_tun_key_init(&tun_key, iph, key, OVS_TNL_F_KEY);
+	tnl_tun_key_init(&tun_key, iph, key, TUNNEL_KEY);
 
 	/* Drop non-IP inner packets */
 	inner_iph = (struct iphdr *)(lisph + 1);
@@ -239,6 +239,8 @@ static int lisp_rcv(struct sock *sk, struct sk_buff *skb)
 	ethh->h_dest[0] = 0x02;
 	ethh->h_source[0] = 0x02;
 	ethh->h_proto = protocol;
+
+	ovs_skb_postpush_rcsum(skb, skb->data, ETH_HLEN);
 
 	ovs_tnl_rcv(vport_from_priv(lisp_port), skb, &tun_key);
 	goto out;

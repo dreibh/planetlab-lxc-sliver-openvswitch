@@ -355,9 +355,9 @@ learn_execute(const struct ofpact_learn *learn, const struct flow *flow,
         case NX_LEARN_DST_OUTPUT:
             if (spec->n_bits <= 16
                 || is_all_zeros(value.u8, sizeof value - 2)) {
-                uint16_t port = ntohs(value.be16[7]);
+                ofp_port_t port = u16_to_ofp(ntohs(value.be16[7]));
 
-                if (port < OFPP_MAX
+                if (ofp_to_u16(port) < ofp_to_u16(OFPP_MAX)
                     || port == OFPP_IN_PORT
                     || port == OFPP_FLOOD
                     || port == OFPP_LOCAL
@@ -372,6 +372,22 @@ learn_execute(const struct ofpact_learn *learn, const struct flow *flow,
 
     fm->ofpacts = ofpacts->data;
     fm->ofpacts_len = ofpacts->size;
+}
+
+/* Perform a bitwise-OR on 'wc''s fields that are relevant as sources in
+ * the learn action 'learn'. */
+void
+learn_mask(const struct ofpact_learn *learn, struct flow_wildcards *wc)
+{
+    const struct ofpact_learn_spec *spec;
+    union mf_subvalue value;
+
+    memset(&value, 0xff, sizeof value);
+    for (spec = learn->specs; spec < &learn->specs[learn->n_specs]; spec++) {
+        if (spec->src_type == NX_LEARN_SRC_FIELD) {
+            mf_write_subfield_flow(&spec->src, &value, &wc->masks);
+        }
+    }
 }
 
 static void

@@ -98,7 +98,6 @@ configuration.
 .so lib/ssl-bootstrap.man
 .so lib/vlog.man
 .so lib/common.man
-.so lib/leak-checker.man
 .
 .SH "RUNTIME MANAGEMENT COMMANDS"
 \fBovs\-appctl\fR(8) can send commands to a running
@@ -211,6 +210,26 @@ enabled.
 .so lib/coverage-unixctl.man
 .so lib/stress-unixctl.man
 .
+.SH "OPENFLOW IMPLEMENTATION"
+.
+.PP
+This section documents aspects of OpenFlow for which the OpenFlow
+specification requires documentation.
+.
+.SS "Packet buffering."
+The OpenFlow specification, version 1.2, says:
+.
+.IP
+Switches that implement buffering are expected to expose, through
+documentation, both the amount of available buffering, and the length
+of time before buffers may be reused.
+.
+.PP
+Open vSwitch maintains a separate set of 256 packet buffers for each
+OpenFlow connection.  Any given packet buffer is preserved until it is
+referenced by an \fBOFPT_FLOW_MOD\fR or \fBOFPT_PACKET_OUT\fR request
+or for 5 seconds, whichever comes first.
+.
 .SH "LIMITS"
 .
 .PP
@@ -227,7 +246,9 @@ requires 17 file descriptors per datapath.)
 per bridge due to fixed hash table sizing.
 .
 .IP \(bu
-2,048 MAC learning entries per bridge.
+2,048 MAC learning entries per bridge, by default.  (This is
+configurable via \fBother\-config:mac\-table\-size\fR in the
+\fBBridge\fR table.  See \fBovs\-vswitchd.conf.db\fR(5) for details.)
 .
 .IP \(bu
 Kernel flows are limited only by memory available to the kernel.

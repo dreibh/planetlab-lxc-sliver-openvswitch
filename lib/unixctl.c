@@ -168,7 +168,7 @@ unixctl_command_reply(struct unixctl_conn *conn, const char *result)
 }
 
 /* Replies to the active unixctl connection 'conn'. 'error' is sent to the
- * client indicating an error occured processing the command.  Only one call to
+ * client indicating an error occurred processing the command.  Only one call to
  * unixctl_command_reply() or unixctl_command_reply_error() may be made per
  * request. */
 void
@@ -358,7 +358,7 @@ unixctl_server_run(struct unixctl_server *server)
         } else {
             VLOG_WARN_RL(&rl, "%s: accept failed: %s",
                          pstream_get_name(server->listener),
-                         strerror(error));
+                         ovs_strerror(error));
         }
     }
 

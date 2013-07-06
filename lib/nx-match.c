@@ -148,7 +148,7 @@ nx_pull_raw(const uint8_t *p, unsigned int match_len, bool strict,
             error = OFPERR_OFPBMC_BAD_PREREQ;
         } else if (!mf_is_all_wild(mf, &match->wc)) {
             error = OFPERR_OFPBMC_DUP_FIELD;
-        } else if (header != OXM_OF_IN_PORT) {
+        } else {
             unsigned int width = mf->n_bytes;
             union mf_value value;
 
@@ -169,17 +169,6 @@ nx_pull_raw(const uint8_t *p, unsigned int match_len, bool strict,
                     check_mask_consistency(p, mf);
                     mf_set(mf, &value, &mask, match);
                 }
-            }
-        } else {
-            /* Special case for 32bit ports when using OXM,
-             * ports are 16 bits wide otherwise. */
-            ovs_be32 port_of11;
-            uint16_t port;
-
-            memcpy(&port_of11, p + 4, sizeof port_of11);
-            error = ofputil_port_from_ofp11(port_of11, &port);
-            if (!error) {
-                match_set_in_port(match, port);
             }
         }
 
@@ -291,7 +280,7 @@ oxm_pull_match__(struct ofpbuf *b, bool strict, struct match *match)
                        strict, match, NULL, NULL);
 }
 
-/* Parses the oxm formatted match description preceeded by a struct ofp11_match
+/* Parses the oxm formatted match description preceded by a struct ofp11_match
  * in 'b' with length 'match_len'.  Stores the result in 'match'.
  *
  * Fails with an error when encountering unknown OXM headers.
@@ -579,12 +568,12 @@ nx_put_raw(struct ofpbuf *b, bool oxm, const struct match *match,
     BUILD_ASSERT_DECL(FLOW_WC_SEQ == 20);
 
     /* Metadata. */
-    if (match->wc.masks.in_port) {
-        uint16_t in_port = flow->in_port;
+    if (match->wc.masks.in_port.ofp_port) {
+        ofp_port_t in_port = flow->in_port.ofp_port;
         if (oxm) {
             nxm_put_32(b, OXM_OF_IN_PORT, ofputil_port_to_ofp11(in_port));
         } else {
-            nxm_put_16(b, NXM_OF_IN_PORT, htons(in_port));
+            nxm_put_16(b, NXM_OF_IN_PORT, htons(ofp_to_u16(in_port)));
         }
     }
 
@@ -1290,10 +1279,14 @@ nxm_reg_load_to_nxast(const struct ofpact_reg_load *load,
 
 void
 nxm_execute_reg_move(const struct ofpact_reg_move *move,
-                     struct flow *flow)
+                     struct flow *flow, struct flow_wildcards *wc)
 {
+    union mf_subvalue mask_value;
     union mf_value src_value;
     union mf_value dst_value;
+
+    memset(&mask_value, 0xff, sizeof mask_value);
+    mf_write_subfield_flow(&move->src, &mask_value, &wc->masks);
 
     mf_get_value(move->dst.field, flow, &dst_value);
     mf_get_value(move->src.field, flow, &src_value);
@@ -1439,9 +1432,14 @@ nx_stack_pop(struct ofpbuf *stack)
 
 void
 nxm_execute_stack_push(const struct ofpact_stack *push,
-                       const struct flow *flow, struct ofpbuf *stack)
+                       const struct flow *flow, struct flow_wildcards *wc,
+                       struct ofpbuf *stack)
 {
+    union mf_subvalue mask_value;
     union mf_subvalue dst_value;
+
+    memset(&mask_value, 0xff, sizeof mask_value);
+    mf_write_subfield_flow(&push->subfield, &mask_value, &wc->masks);
 
     mf_read_subfield(&push->subfield, flow, &dst_value);
     nx_stack_push(stack, &dst_value);

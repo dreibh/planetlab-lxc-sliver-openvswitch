@@ -49,7 +49,7 @@ struct mac_entry {
     /* Learned port. */
     union {
         void *p;
-        int i;
+        ofp_port_t ofp_port;
     } port;
 };
 
@@ -85,11 +85,14 @@ struct mac_learning {
     unsigned long *flood_vlans; /* Bitmap of learning disabled VLANs. */
     unsigned int idle_time;     /* Max age before deleting an entry. */
     size_t max_entries;         /* Max number of learned MACs. */
+    struct tag_set tags;        /* Tags which have changed. */
+    int ref_cnt;
 };
 
 /* Basics. */
 struct mac_learning *mac_learning_create(unsigned int idle_time);
-void mac_learning_destroy(struct mac_learning *);
+struct mac_learning *mac_learning_ref(const struct mac_learning *);
+void mac_learning_unref(struct mac_learning *);
 
 void mac_learning_run(struct mac_learning *, struct tag_set *);
 void mac_learning_wait(struct mac_learning *);
@@ -107,7 +110,7 @@ bool mac_learning_may_learn(const struct mac_learning *,
 struct mac_entry *mac_learning_insert(struct mac_learning *,
                                       const uint8_t src[ETH_ADDR_LEN],
                                       uint16_t vlan);
-tag_type mac_learning_changed(struct mac_learning *, struct mac_entry *);
+void mac_learning_changed(struct mac_learning *, struct mac_entry *);
 
 /* Lookup. */
 struct mac_entry *mac_learning_lookup(const struct mac_learning *,

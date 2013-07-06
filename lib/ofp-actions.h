@@ -97,9 +97,10 @@
     DEFINE_OFPACT(SAMPLE,          ofpact_sample,        ofpact)    \
                                                                     \
     /* Instructions */                                              \
+    DEFINE_OFPACT(METER,           ofpact_meter,         ofpact)    \
     /* XXX Write-Actions */                                         \
-    DEFINE_OFPACT(WRITE_METADATA,  ofpact_metadata,      ofpact)    \
     DEFINE_OFPACT(CLEAR_ACTIONS,   ofpact_null,          ofpact)    \
+    DEFINE_OFPACT(WRITE_METADATA,  ofpact_metadata,      ofpact)    \
     DEFINE_OFPACT(GOTO_TABLE,      ofpact_goto_table,    ofpact)
 
 /* enum ofpact_type, with a member OFPACT_<ENUM> for each action. */
@@ -198,7 +199,7 @@ struct ofpact_null {
  * Used for OFPAT10_OUTPUT. */
 struct ofpact_output {
     struct ofpact ofpact;
-    uint16_t port;              /* Output port. */
+    ofp_port_t port;            /* Output port. */
     uint16_t max_len;           /* Max send len, for port OFPP_CONTROLLER. */
 };
 
@@ -217,7 +218,7 @@ struct ofpact_controller {
  * Used for OFPAT10_ENQUEUE. */
 struct ofpact_enqueue {
     struct ofpact ofpact;
-    uint16_t port;
+    ofp_port_t port;
     uint32_t queue;
 };
 
@@ -247,7 +248,7 @@ struct ofpact_bundle {
 
     /* Slaves for output. */
     unsigned int n_slaves;
-    uint16_t slaves[];
+    ofp_port_t slaves[];
 };
 
 /* OFPACT_SET_VLAN_VID.
@@ -374,25 +375,33 @@ struct ofpact_metadata {
     ovs_be64 mask;
 };
 
+/* OFPACT_METER.
+ *
+ * Used for OFPIT13_METER. */
+struct ofpact_meter {
+    struct ofpact ofpact;
+    uint32_t meter_id;
+};
+
 /* OFPACT_RESUBMIT.
  *
  * Used for NXAST_RESUBMIT, NXAST_RESUBMIT_TABLE. */
 struct ofpact_resubmit {
     struct ofpact ofpact;
-    uint16_t in_port;
+    ofp_port_t in_port;
     uint8_t table_id;
 };
 
 /* Part of struct ofpact_learn, below. */
 struct ofpact_learn_spec {
-    int n_bits;
+    int n_bits;                 /* Number of bits in source and dest. */
 
-    int src_type;
-    struct mf_subfield src;
-    union mf_subvalue src_imm;
+    int src_type;               /* One of NX_LEARN_SRC_*. */
+    struct mf_subfield src;     /* NX_LEARN_SRC_FIELD only. */
+    union mf_subvalue src_imm;  /* NX_LEARN_SRC_IMMEDIATE only. */
 
-    int dst_type;
-    struct mf_subfield dst;
+    int dst_type;             /* One of NX_LEARN_DST_*. */
+    struct mf_subfield dst;   /* NX_LEARN_DST_MATCH, NX_LEARN_DST_LOAD only. */
 };
 
 /* OFPACT_LEARN.
@@ -492,7 +501,8 @@ enum ofperr ofpacts_pull_openflow11_instructions(struct ofpbuf *openflow,
                                                  unsigned int instructions_len,
                                                  struct ofpbuf *ofpacts);
 enum ofperr ofpacts_check(const struct ofpact[], size_t ofpacts_len,
-                          const struct flow *, int max_ports);
+                          struct flow *, ofp_port_t max_ports,
+                          uint8_t table_id);
 enum ofperr ofpacts_verify(const struct ofpact ofpacts[], size_t ofpacts_len);
 
 /* Converting ofpacts to OpenFlow. */
@@ -506,7 +516,7 @@ void ofpacts_put_openflow11_instructions(const struct ofpact[],
 
 /* Working with ofpacts. */
 bool ofpacts_output_to_port(const struct ofpact[], size_t ofpacts_len,
-                            uint16_t port);
+                            ofp_port_t port);
 bool ofpacts_equal(const struct ofpact a[], size_t a_len,
                    const struct ofpact b[], size_t b_len);
 
@@ -600,6 +610,10 @@ void ofpact_pad(struct ofpbuf *);
  * It is enforced on parser from text string.
  */
 #define OVS_INSTRUCTIONS                                    \
+    DEFINE_INST(OFPIT13_METER,                              \
+                ofp13_instruction_meter,          false,    \
+                "meter")                                    \
+                                                            \
     DEFINE_INST(OFPIT11_APPLY_ACTIONS,                      \
                 ofp11_instruction_actions,        true,     \
                 "apply_actions")                            \
@@ -632,18 +646,10 @@ enum {
 #undef DEFINE_INST
 };
 
-
-static inline bool
-ofpact_is_instruction(const struct ofpact *a)
-{
-    /* XXX Write-Actions */
-    return a->type == OFPACT_CLEAR_ACTIONS
-        || a->type == OFPACT_WRITE_METADATA
-        || a->type == OFPACT_GOTO_TABLE;
-}
-
-const char *ofpact_instruction_name_from_type(enum ovs_instruction_type type);
-int ofpact_instruction_type_from_name(const char *name);
+const char *ovs_instruction_name_from_type(enum ovs_instruction_type type);
+int ovs_instruction_type_from_name(const char *name);
+enum ovs_instruction_type ovs_instruction_type_from_ofpact_type(
+    enum ofpact_type);
 
 void ofpact_set_field_init(struct ofpact_reg_load *load,
                            const struct mf_field *mf, const void *src);

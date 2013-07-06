@@ -20,6 +20,7 @@
 #include <linux/if.h>
 #include <linux/if_vlan.h>
 #include <linux/jhash.h>
+#include <linux/kconfig.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
@@ -39,8 +40,10 @@
 static const struct vport_ops *vport_ops_list[] = {
 	&ovs_netdev_vport_ops,
 	&ovs_internal_vport_ops,
+#if IS_ENABLED(CONFIG_NET_IPGRE_DEMUX)
 	&ovs_gre_vport_ops,
 	&ovs_gre64_vport_ops,
+#endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
 	&ovs_vxlan_vport_ops,
 	&ovs_lisp_vport_ops,
@@ -382,7 +385,7 @@ int ovs_vport_send(struct vport *vport, struct sk_buff *skb)
 {
 	int sent = vport->ops->send(vport, skb);
 
-	if (likely(sent)) {
+	if (likely(sent > 0)) {
 		struct pcpu_tstats *stats;
 
 		stats = this_cpu_ptr(vport->percpu_stats);
@@ -407,7 +410,7 @@ int ovs_vport_send(struct vport *vport, struct sk_buff *skb)
  * @err_type: one of enum vport_err_type types to indicate the error type
  *
  * If using the vport generic stats layer indicate that an error of the given
- * type has occured.
+ * type has occurred.
  */
 void ovs_vport_record_error(struct vport *vport, enum vport_err_type err_type)
 {

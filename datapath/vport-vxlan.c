@@ -129,14 +129,13 @@ static int vxlan_rcv(struct sock *sk, struct sk_buff *skb)
 		     vxh->vx_vni & htonl(0xff)))
 		goto error;
 
-	__skb_pull(skb, VXLAN_HLEN);
-	skb_postpull_rcsum(skb, skb_transport_header(skb), VXLAN_HLEN + ETH_HLEN);
+	skb_pull_rcsum(skb, VXLAN_HLEN);
 
 	key = cpu_to_be64(ntohl(vxh->vx_vni) >> 8);
 
 	/* Save outer tunnel values */
 	iph = ip_hdr(skb);
-	tnl_tun_key_init(&tun_key, iph, key, OVS_TNL_F_KEY);
+	tnl_tun_key_init(&tun_key, iph, key, TUNNEL_KEY);
 
 	ovs_tnl_rcv(vport_from_priv(vxlan_vport), skb, &tun_key);
 	goto out;

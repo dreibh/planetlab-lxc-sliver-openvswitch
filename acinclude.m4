@@ -264,6 +264,8 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
                   [OVS_DEFINE([HAVE_BOOL_TYPE])])
   OVS_GREP_IFELSE([$KSRC/include/linux/types.h], [__wsum],
                   [OVS_DEFINE([HAVE_CSUM_TYPES])])
+  OVS_GREP_IFELSE([$KSRC/include/uapi/linux/types.h], [__wsum],
+                  [OVS_DEFINE([HAVE_CSUM_TYPES])])
 
   OVS_GREP_IFELSE([$KSRC/include/net/checksum.h], [csum_replace4])
   OVS_GREP_IFELSE([$KSRC/include/net/checksum.h], [csum_unfold])
@@ -306,7 +308,8 @@ AC_DEFUN([OVS_CHECK_IF_PACKET],
 
 dnl Checks for net/if_dl.h.
 dnl
-dnl (We use this as a proxy for checking whether we're building on FreeBSD.)
+dnl (We use this as a proxy for checking whether we're building on FreeBSD
+dnl or NetBSD.)
 AC_DEFUN([OVS_CHECK_IF_DL],
   [AC_CHECK_HEADER([net/if_dl.h],
                    [HAVE_IF_DL=yes],
@@ -316,7 +319,7 @@ AC_DEFUN([OVS_CHECK_IF_DL],
       AC_DEFINE([HAVE_IF_DL], [1],
                 [Define to 1 if net/if_dl.h is available.])
 
-      # On FreeBSD we use libpcap to access network devices.
+      # On these platforms we use libpcap to access network devices.
       AC_SEARCH_LIBS([pcap_open_live], [pcap])
    fi])
 
@@ -359,15 +362,15 @@ dnl This file is free software; the Free Software Foundation
 dnl gives unlimited permission to copy and/or distribute it,
 dnl with or without modifications, as long as this notice is preserved.
 
-dnl OVS_CHECK_CC_OPTION([OPTION], [ACTION-IF-ACCEPTED], [ACTION-IF-REJECTED])
-dnl Check whether the given C compiler OPTION is accepted.
-dnl If so, execute ACTION-IF-ACCEPTED, otherwise ACTION-IF-REJECTED.
-AC_DEFUN([OVS_CHECK_CC_OPTION],
-[
+AC_DEFUN([_OVS_CHECK_CC_OPTION], [dnl
   m4_define([ovs_cv_name], [ovs_cv_[]m4_translit([$1], [-], [_])])dnl
   AC_CACHE_CHECK([whether $CC accepts $1], [ovs_cv_name], 
     [ovs_save_CFLAGS="$CFLAGS"
-     CFLAGS="$CFLAGS $1"
+     dnl Include -Werror in the compiler options, because without -Werror
+     dnl clang's GCC-compatible compiler driver does not return a failure
+     dnl exit status even though it complains about options it does not
+     dnl understand.
+     CFLAGS="$CFLAGS $WERROR $1"
      AC_COMPILE_IFELSE([AC_LANG_PROGRAM(,)], [ovs_cv_name[]=yes], [ovs_cv_name[]=no])
      CFLAGS="$ovs_save_CFLAGS"])
   if test $ovs_cv_name = yes; then
@@ -376,6 +379,21 @@ AC_DEFUN([OVS_CHECK_CC_OPTION],
     m4_if([$3], [], [:], [$3])
   fi
 ])
+
+dnl OVS_CHECK_WERROR
+dnl
+dnl Check whether the C compiler accepts -Werror.
+dnl Sets $WERROR to "-Werror", if so, and otherwise to the empty string.
+AC_DEFUN([OVS_CHECK_WERROR],
+  [WERROR=
+   _OVS_CHECK_CC_OPTION([-Werror], [WERROR=-Werror])])
+
+dnl OVS_CHECK_CC_OPTION([OPTION], [ACTION-IF-ACCEPTED], [ACTION-IF-REJECTED])
+dnl Check whether the given C compiler OPTION is accepted.
+dnl If so, execute ACTION-IF-ACCEPTED, otherwise ACTION-IF-REJECTED.
+AC_DEFUN([OVS_CHECK_CC_OPTION],
+  [AC_REQUIRE([OVS_CHECK_WERROR])
+   _OVS_CHECK_CC_OPTION([$1], [$2], [$3])])
 
 dnl OVS_ENABLE_OPTION([OPTION])
 dnl Check whether the given C compiler OPTION is accepted.

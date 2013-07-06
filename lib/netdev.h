@@ -106,9 +106,11 @@ void netdev_run(void);
 void netdev_wait(void);
 
 void netdev_enumerate_types(struct sset *types);
+bool netdev_is_reserved_name(const char *name);
 
 /* Open and close. */
 int netdev_open(const char *name, const char *type, struct netdev **);
+struct netdev *netdev_ref(const struct netdev *);
 void netdev_close(struct netdev *);
 
 void netdev_parse_name(const char *netdev_name, char **name, char **type);

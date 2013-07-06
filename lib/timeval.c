@@ -30,6 +30,7 @@
 #include "fatal-signal.h"
 #include "hash.h"
 #include "hmap.h"
+#include "ovs-thread.h"
 #include "signals.h"
 #include "unixctl.h"
 #include "util.h"
@@ -167,35 +168,6 @@ set_up_signal(int flags)
     xsigaction(SIGALRM, &sa, NULL);
 }
 
-/* Remove SA_RESTART from the flags for SIGALRM, so that any system call that
- * is interrupted by the periodic timer interrupt will return EINTR instead of
- * continuing after the signal handler returns.
- *
- * time_disable_restart() and time_enable_restart() may be usefully wrapped
- * around function calls that might otherwise block forever unless interrupted
- * by a signal, e.g.:
- *
- *   time_disable_restart();
- *   fcntl(fd, F_SETLKW, &lock);
- *   time_enable_restart();
- */
-void
-time_disable_restart(void)
-{
-    time_init();
-    set_up_signal(0);
-}
-
-/* Add SA_RESTART to the flags for SIGALRM, so that any system call that
- * is interrupted by the periodic timer interrupt will continue after the
- * signal handler returns instead of returning EINTR. */
-void
-time_enable_restart(void)
-{
-    time_init();
-    set_up_signal(SA_RESTART);
-}
-
 static void
 set_up_timer(void)
 {
@@ -207,7 +179,7 @@ set_up_timer(void)
     }
 
     if (timer_create(monotonic_clock, NULL, &timer_id)) {
-        VLOG_FATAL("timer_create failed (%s)", strerror(errno));
+        VLOG_FATAL("timer_create failed (%s)", ovs_strerror(errno));
     }
 
     itimer.it_interval.tv_sec = 0;
@@ -215,7 +187,7 @@ set_up_timer(void)
     itimer.it_value = itimer.it_interval;
 
     if (timer_settime(timer_id, 0, &itimer, NULL)) {
-        VLOG_FATAL("timer_settime failed (%s)", strerror(errno));
+        VLOG_FATAL("timer_settime failed (%s)", ovs_strerror(errno));
     }
 }
 
@@ -326,17 +298,13 @@ time_alarm(unsigned int secs)
     long long int now;
     long long int msecs;
 
-    sigset_t oldsigs;
-
+    assert_single_threaded();
     time_init();
     time_refresh();
 
     now = time_msec();
     msecs = secs * 1000LL;
-
-    block_sigalrm(&oldsigs);
     deadline = now < LLONG_MAX - msecs ? now + msecs : LLONG_MAX;
-    unblock_sigalrm(&oldsigs);
 }
 
 /* Like poll(), except:
@@ -488,7 +456,7 @@ void
 xgettimeofday(struct timeval *tv)
 {
     if (gettimeofday(tv, NULL) == -1) {
-        VLOG_FATAL("gettimeofday failed (%s)", strerror(errno));
+        VLOG_FATAL("gettimeofday failed (%s)", ovs_strerror(errno));
     }
 }
 

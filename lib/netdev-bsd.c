@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2011 Gaetano Catalli.
+ * Copyright (c) 2013 YAMAMOTO Takashi.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,11 +33,16 @@
 #include <net/if_media.h>
 #include <net/if_tap.h>
 #include <netinet/in.h>
+#ifdef HAVE_NET_IF_MIB_H
 #include <net/if_mib.h>
+#endif
 #include <poll.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/sysctl.h>
+#if defined(__NetBSD__)
+#include <net/route.h>
+#endif
 
 #include "rtbsd.h"
 #include "coverage.h"
@@ -86,6 +92,8 @@ struct netdev_bsd {
     /* Used for sending packets on non-tap devices. */
     pcap_t *pcap;
     int fd;
+
+    char *kernel_name;
 };
 
 
@@ -100,6 +108,11 @@ enum {
 
 /* An AF_INET socket (used for ioctl operations). */
 static int af_inet_sock = -1;
+
+#if defined(__NetBSD__)
+/* AF_LINK socket used for netdev_bsd_get_stats and set_etheraddr */
+static int af_link_sock = -1;
+#endif /* defined(__NetBSD__) */
 
 #define PCAP_SNAPLEN 2048
 
@@ -132,6 +145,9 @@ static int set_etheraddr(const char *netdev_name, int hwaddr_family,
                          int hwaddr_len, const uint8_t[ETH_ADDR_LEN]);
 static int get_ifindex(const struct netdev *, int *ifindexp);
 
+static int ifr_get_flags(const struct ifreq *);
+static void ifr_set_flags(struct ifreq *, int flags);
+
 static int netdev_bsd_init(void);
 
 static bool
@@ -154,6 +170,12 @@ netdev_rx_bsd_cast(const struct netdev_rx *rx)
     return CONTAINER_OF(rx, struct netdev_rx_bsd, up);
 }
 
+static const char *
+netdev_get_kernel_name(const struct netdev *netdev)
+{
+    return netdev_bsd_cast(netdev)->kernel_name;
+}
+
 /* Initialize the AF_INET socket used for ioctl operations */
 static int
 netdev_bsd_init(void)
@@ -166,10 +188,20 @@ netdev_bsd_init(void)
 
     af_inet_sock = socket(AF_INET, SOCK_DGRAM, 0);
     status = af_inet_sock >= 0 ? 0 : errno;
-
     if (status) {
-        VLOG_ERR("failed to create inet socket: %s", strerror(status));
+        VLOG_ERR("failed to create inet socket: %s", ovs_strerror(status));
+        return status;
     }
+
+#if defined(__NetBSD__)
+    af_link_sock = socket(AF_LINK, SOCK_DGRAM, 0);
+    status = af_link_sock >= 0 ? 0 : errno;
+    if (status) {
+        VLOG_ERR("failed to create link socket: %s", Ovs_strerror(status));
+        close(af_inet_sock);
+        af_inet_sock = -1;
+    }
+#endif /* defined(__NetBSD__) */
 
     return status;
 }
@@ -286,6 +318,7 @@ netdev_bsd_create_system(const struct netdev_class *class, const char *name,
     netdev->change_seq = 1;
     netdev_init(&netdev->up, name, class);
     netdev->tap_fd = -1;
+    netdev->kernel_name = xstrdup(name);
 
     /* Verify that the netdev really exists by attempting to read its flags */
     error = netdev_get_flags(&netdev->up, &flags);
@@ -310,6 +343,7 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
     struct netdev_bsd *netdev = NULL;
     int error = 0;
     struct ifreq ifr;
+    char *kernel_name = NULL;
 
     error = cache_notifier_ref();
     if (error) {
@@ -327,7 +361,7 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
     netdev->change_seq = 1;
     if (netdev->tap_fd < 0) {
         error = errno;
-        VLOG_WARN("opening \"/dev/tap\" failed: %s", strerror(error));
+        VLOG_WARN("opening \"/dev/tap\" failed: %s", ovs_strerror(error));
         goto error_undef_notifier;
     }
 
@@ -339,33 +373,42 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
     }
 
     /* Change the name of the tap device */
+#if defined(SIOCSIFNAME)
     ifr.ifr_data = (void *)name;
     if (ioctl(af_inet_sock, SIOCSIFNAME, &ifr) == -1) {
         error = errno;
         destroy_tap(netdev->tap_fd, ifr.ifr_name);
         goto error_undef_notifier;
     }
+    kernel_name = xstrdup(name);
+#else
+    /*
+     * NetBSD doesn't support inteface renaming.
+     */
+    VLOG_INFO("tap %s is created for bridge %s", ifr.ifr_name, name);
+    kernel_name = xstrdup(ifr.ifr_name);
+#endif
 
     /* set non-blocking. */
     error = set_nonblocking(netdev->tap_fd);
     if (error) {
-        destroy_tap(netdev->tap_fd, name);
+        destroy_tap(netdev->tap_fd, kernel_name);
         goto error_undef_notifier;
     }
 
     /* Turn device UP */
-    ifr.ifr_flags = (uint16_t)IFF_UP;
-    ifr.ifr_flagshigh = 0;
-    strncpy(ifr.ifr_name, name, sizeof ifr.ifr_name);
+    ifr_set_flags(&ifr, IFF_UP);
+    strncpy(ifr.ifr_name, kernel_name, sizeof ifr.ifr_name);
     if (ioctl(af_inet_sock, SIOCSIFFLAGS, &ifr) == -1) {
         error = errno;
-        destroy_tap(netdev->tap_fd, name);
+        destroy_tap(netdev->tap_fd, kernel_name);
         goto error_undef_notifier;
     }
 
     /* initialize the device structure and
      * link the structure to its netdev */
     netdev_init(&netdev->up, name, class);
+    netdev->kernel_name = kernel_name;
     *netdevp = &netdev->up;
 
     return 0;
@@ -374,6 +417,7 @@ error_undef_notifier:
     cache_notifier_unref();
 error:
     free(netdev);
+    free(kernel_name);
     return error;
 }
 
@@ -385,11 +429,12 @@ netdev_bsd_destroy(struct netdev *netdev_)
     cache_notifier_unref();
 
     if (netdev->tap_fd >= 0) {
-        destroy_tap(netdev->tap_fd, netdev_get_name(netdev_));
+        destroy_tap(netdev->tap_fd, netdev_get_kernel_name(netdev_));
     }
     if (netdev->pcap) {
         pcap_close(netdev->pcap);
     }
+    free(netdev->kernel_name);
     free(netdev);
 }
 
@@ -437,7 +482,7 @@ netdev_bsd_open_pcap(const char *name, pcap_t **pcapp, int *fdp)
      * buffer becomes full or a timeout occurs. */
     if (ioctl(fd, BIOCIMMEDIATE, &one) < 0 ) {
         VLOG_ERR_RL(&rl, "ioctl(BIOCIMMEDIATE) on %s device failed: %s",
-                    name, strerror(errno));
+                    name, ovs_strerror(errno));
         error = errno;
         goto error;
     }
@@ -475,7 +520,8 @@ netdev_bsd_rx_open(struct netdev *netdev_, struct netdev_rx **rxp)
         pcap = NULL;
         fd = netdev->tap_fd;
     } else {
-        int error = netdev_bsd_open_pcap(netdev_get_name(netdev_), &pcap, &fd);
+        int error = netdev_bsd_open_pcap(netdev_get_kernel_name(netdev_),
+                                         &pcap, &fd);
         if (error) {
             return error;
         }
@@ -591,7 +637,7 @@ netdev_rx_bsd_recv_tap(struct netdev_rx_bsd *rx, void *data, size_t size)
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error receiving Ethernet packet on %s: %s",
-                             strerror(errno), netdev_rx_get_name(&rx->up));
+                             ovs_strerror(errno), netdev_rx_get_name(&rx->up));
             }
             return -errno;
         }
@@ -628,10 +674,10 @@ netdev_rx_bsd_drain(struct netdev_rx *rx_)
     struct ifreq ifr;
     struct netdev_rx_bsd *rx = netdev_rx_bsd_cast(rx_);
 
-    strcpy(ifr.ifr_name, netdev_rx_get_name(rx_));
+    strcpy(ifr.ifr_name, netdev_get_kernel_name(netdev_rx_get_netdev(rx_)));
     if (ioctl(rx->fd, BIOCFLUSH, &ifr) == -1) {
         VLOG_DBG_RL(&rl, "%s: ioctl(BIOCFLUSH) failed: %s",
-                    netdev_rx_get_name(rx_), strerror(errno));
+                    netdev_rx_get_name(rx_), ovs_strerror(errno));
         return errno;
     }
     return 0;
@@ -666,7 +712,7 @@ netdev_bsd_send(struct netdev *netdev_, const void *data, size_t size)
                 continue;
             } else if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error sending Ethernet packet on %s: %s",
-                             name, strerror(errno));
+                             name, ovs_strerror(errno));
             }
             return errno;
         } else if (retval != size) {
@@ -713,8 +759,8 @@ netdev_bsd_set_etheraddr(struct netdev *netdev_,
 
     if (!(netdev->cache_valid & VALID_ETHERADDR)
         || !eth_addr_equals(netdev->etheraddr, mac)) {
-        error = set_etheraddr(netdev_get_name(netdev_), AF_LINK, ETH_ADDR_LEN,
-                              mac);
+        error = set_etheraddr(netdev_get_kernel_name(netdev_), AF_LINK,
+                              ETH_ADDR_LEN, mac);
         if (!error) {
             netdev->cache_valid |= VALID_ETHERADDR;
             memcpy(netdev->etheraddr, mac, ETH_ADDR_LEN);
@@ -737,7 +783,7 @@ netdev_bsd_get_etheraddr(const struct netdev *netdev_,
     struct netdev_bsd *netdev = netdev_bsd_cast(netdev_);
 
     if (!(netdev->cache_valid & VALID_ETHERADDR)) {
-        int error = get_etheraddr(netdev_get_name(netdev_),
+        int error = get_etheraddr(netdev_get_kernel_name(netdev_),
                                   netdev->etheraddr);
         if (error) {
             return error;
@@ -763,8 +809,8 @@ netdev_bsd_get_mtu(const struct netdev *netdev_, int *mtup)
         struct ifreq ifr;
         int error;
 
-        error = netdev_bsd_do_ioctl(netdev_get_name(netdev_), &ifr, SIOCGIFMTU,
-                                    "SIOCGIFMTU");
+        error = netdev_bsd_do_ioctl(netdev_get_kernel_name(netdev_), &ifr,
+                                    SIOCGIFMTU, "SIOCGIFMTU");
         if (error) {
             return error;
         }
@@ -794,11 +840,12 @@ netdev_bsd_get_carrier(const struct netdev *netdev_, bool *carrier)
         struct ifmediareq ifmr;
 
         memset(&ifmr, 0, sizeof(ifmr));
-        strncpy(ifmr.ifm_name, netdev_get_name(netdev_), sizeof ifmr.ifm_name);
+        strncpy(ifmr.ifm_name, netdev_get_kernel_name(netdev_),
+                sizeof ifmr.ifm_name);
 
         if (ioctl(af_inet_sock, SIOCGIFMEDIA, &ifmr) == -1) {
             VLOG_DBG_RL(&rl, "%s: ioctl(SIOCGIFMEDIA) failed: %s",
-                        netdev_get_name(netdev_), strerror(errno));
+                        netdev_get_name(netdev_), ovs_strerror(errno));
             return errno;
         }
 
@@ -816,10 +863,40 @@ netdev_bsd_get_carrier(const struct netdev *netdev_, bool *carrier)
     return 0;
 }
 
+static void
+convert_stats(struct netdev_stats *stats, const struct if_data *ifd)
+{
+    /*
+     * note: UINT64_MAX means unsupported
+     */
+    stats->rx_packets = ifd->ifi_ipackets;
+    stats->tx_packets = ifd->ifi_opackets;
+    stats->rx_bytes = ifd->ifi_obytes;
+    stats->tx_bytes = ifd->ifi_ibytes;
+    stats->rx_errors = ifd->ifi_ierrors;
+    stats->tx_errors = ifd->ifi_oerrors;
+    stats->rx_dropped = ifd->ifi_iqdrops;
+    stats->tx_dropped = UINT64_MAX;
+    stats->multicast = ifd->ifi_imcasts;
+    stats->collisions = ifd->ifi_collisions;
+    stats->rx_length_errors = UINT64_MAX;
+    stats->rx_over_errors = UINT64_MAX;
+    stats->rx_crc_errors = UINT64_MAX;
+    stats->rx_frame_errors = UINT64_MAX;
+    stats->rx_fifo_errors = UINT64_MAX;
+    stats->rx_missed_errors = UINT64_MAX;
+    stats->tx_aborted_errors = UINT64_MAX;
+    stats->tx_carrier_errors = UINT64_MAX;
+    stats->tx_fifo_errors = UINT64_MAX;
+    stats->tx_heartbeat_errors = UINT64_MAX;
+    stats->tx_window_errors = UINT64_MAX;
+}
+
 /* Retrieves current device stats for 'netdev'. */
 static int
 netdev_bsd_get_stats(const struct netdev *netdev_, struct netdev_stats *stats)
 {
+#if defined(__FreeBSD__)
     int if_count, i;
     int mib[6];
     size_t len;
@@ -836,7 +913,7 @@ netdev_bsd_get_stats(const struct netdev *netdev_, struct netdev_stats *stats)
 
     if (sysctl(mib, 5, &if_count, &len, (void *)0, 0) == -1) {
         VLOG_DBG_RL(&rl, "%s: sysctl failed: %s",
-                    netdev_get_name(netdev_), strerror(errno));
+                    netdev_get_name(netdev_), ovs_strerror(errno));
         return errno;
     }
 
@@ -847,37 +924,33 @@ netdev_bsd_get_stats(const struct netdev *netdev_, struct netdev_stats *stats)
         mib[4] = i; //row
         if (sysctl(mib, 6, &ifmd, &len, (void *)0, 0) == -1) {
             VLOG_DBG_RL(&rl, "%s: sysctl failed: %s",
-                        netdev_get_name(netdev_), strerror(errno));
+                        netdev_get_name(netdev_), ovs_strerror(errno));
             return errno;
         } else if (!strcmp(ifmd.ifmd_name, netdev_get_name(netdev_))) {
-            stats->rx_packets = ifmd.ifmd_data.ifi_ipackets;
-            stats->tx_packets = ifmd.ifmd_data.ifi_opackets;
-            stats->rx_bytes = ifmd.ifmd_data.ifi_ibytes;
-            stats->tx_bytes = ifmd.ifmd_data.ifi_obytes;
-            stats->rx_errors = ifmd.ifmd_data.ifi_ierrors;
-            stats->tx_errors = ifmd.ifmd_data.ifi_oerrors;
-            stats->rx_dropped = ifmd.ifmd_data.ifi_iqdrops;
-            stats->tx_dropped = UINT64_MAX;
-            stats->multicast = ifmd.ifmd_data.ifi_imcasts;
-            stats->collisions = ifmd.ifmd_data.ifi_collisions;
-
-            stats->rx_length_errors = UINT64_MAX;
-            stats->rx_over_errors = UINT64_MAX;
-            stats->rx_crc_errors = UINT64_MAX;
-            stats->rx_frame_errors = UINT64_MAX;
-            stats->rx_fifo_errors = UINT64_MAX;
-            stats->rx_missed_errors = UINT64_MAX;
-
-            stats->tx_aborted_errors = UINT64_MAX;
-            stats->tx_carrier_errors = UINT64_MAX;
-            stats->tx_fifo_errors = UINT64_MAX;
-            stats->tx_heartbeat_errors = UINT64_MAX;
-            stats->tx_window_errors = UINT64_MAX;
+            convert_stats(stats, &ifmd.ifmd_data);
             break;
         }
     }
 
     return 0;
+#elif defined(__NetBSD__)
+    struct ifdatareq ifdr;
+    int saved_errno;
+    int ret;
+
+    memset(&ifdr, 0, sizeof(ifdr));
+    strncpy(ifdr.ifdr_name, netdev_get_kernel_name(netdev_),
+            sizeof(ifdr.ifdr_name));
+    ret = ioctl(af_link_sock, SIOCGIFDATA, &ifdr);
+    saved_errno = errno;
+    if (ret == -1) {
+        return saved_errno;
+    }
+    convert_stats(stats, &ifdr.ifdr_data);
+    return 0;
+#else
+#error not implemented
+#endif
 }
 
 static uint32_t
@@ -980,7 +1053,7 @@ netdev_bsd_get_features(const struct netdev *netdev,
      * them. */
     if (ioctl(af_inet_sock, SIOCGIFMEDIA, &ifmr) == -1) {
         VLOG_DBG_RL(&rl, "%s: ioctl(SIOCGIFMEDIA) failed: %s",
-                    netdev_get_name(netdev), strerror(errno));
+                    netdev_get_name(netdev), ovs_strerror(errno));
         return errno;
     }
 
@@ -996,7 +1069,7 @@ netdev_bsd_get_features(const struct netdev *netdev,
 
     if (ioctl(af_inet_sock, SIOCGIFMEDIA, &ifmr) == -1) {
         VLOG_DBG_RL(&rl, "%s: ioctl(SIOCGIFMEDIA) failed: %s",
-                    netdev_get_name(netdev), strerror(errno));
+                    netdev_get_name(netdev), ovs_strerror(errno));
         error = errno;
         goto cleanup;
     }
@@ -1038,7 +1111,7 @@ netdev_bsd_get_in4(const struct netdev *netdev_, struct in_addr *in4,
         int error;
 
         ifr.ifr_addr.sa_family = AF_INET;
-        error = netdev_bsd_do_ioctl(netdev_get_name(netdev_), &ifr,
+        error = netdev_bsd_do_ioctl(netdev_get_kernel_name(netdev_), &ifr,
                                     SIOCGIFADDR, "SIOCGIFADDR");
         if (error) {
             return error;
@@ -1047,7 +1120,7 @@ netdev_bsd_get_in4(const struct netdev *netdev_, struct in_addr *in4,
         sin = (struct sockaddr_in *) &ifr.ifr_addr;
         netdev->in4 = sin->sin_addr;
         netdev->cache_valid |= VALID_IN4;
-        error = netdev_bsd_do_ioctl(netdev_get_name(netdev_), &ifr,
+        error = netdev_bsd_do_ioctl(netdev_get_kernel_name(netdev_), &ifr,
                                     SIOCGIFNETMASK, "SIOCGIFNETMASK");
         if (error) {
             return error;
@@ -1095,7 +1168,7 @@ netdev_bsd_get_in6(const struct netdev *netdev_, struct in6_addr *in6)
 
         if (getifaddrs(&head) != 0) {
             VLOG_ERR("getifaddrs on %s device failed: %s", netdev_name,
-                    strerror(errno));
+                    ovs_strerror(errno));
             return errno;
         }
 
@@ -1118,6 +1191,150 @@ netdev_bsd_get_in6(const struct netdev *netdev_, struct in6_addr *in6)
     return 0;
 }
 
+#if defined(__NetBSD__)
+static struct netdev *
+find_netdev_by_kernel_name(const char *kernel_name)
+{
+    struct shash device_shash;
+    struct shash_node *node;
+
+    shash_init(&device_shash);
+    netdev_get_devices(&netdev_tap_class, &device_shash);
+    SHASH_FOR_EACH(node, &device_shash) {
+        struct netdev_bsd * const dev = node->data;
+
+        if (!strcmp(dev->kernel_name, kernel_name)) {
+            shash_destroy(&device_shash);
+            return &dev->up;
+        }
+    }
+    shash_destroy(&device_shash);
+    return NULL;
+}
+
+static const char *
+netdev_bsd_convert_kernel_name_to_ovs_name(const char *kernel_name)
+{
+    const struct netdev * const netdev =
+      find_netdev_by_kernel_name(kernel_name);
+
+    if (netdev == NULL) {
+        return NULL;
+    }
+    return netdev_get_name(netdev);
+}
+#endif
+
+static int
+netdev_bsd_get_next_hop(const struct in_addr *host OVS_UNUSED,
+                        struct in_addr *next_hop OVS_UNUSED,
+                        char **netdev_name OVS_UNUSED)
+{
+#if defined(__NetBSD__)
+    static int seq = 0;
+    struct sockaddr_in sin;
+    struct sockaddr_dl sdl;
+    int s;
+    int i;
+    struct {
+        struct rt_msghdr h;
+        char space[512];
+    } buf;
+    struct rt_msghdr *rtm = &buf.h;
+    const pid_t pid = getpid();
+    char *cp;
+    ssize_t ssz;
+    bool gateway = false;
+    char *ifname = NULL;
+    int saved_errno;
+
+    memset(next_hop, 0, sizeof(*next_hop));
+    *netdev_name = NULL;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_len = sizeof(sin);
+    sin.sin_family = AF_INET;
+    sin.sin_port = 0;
+    sin.sin_addr = *host;
+
+    memset(&sdl, 0, sizeof(sdl));
+    sdl.sdl_len = sizeof(sdl);
+    sdl.sdl_family = AF_LINK;
+
+    s = socket(PF_ROUTE, SOCK_RAW, 0);
+    memset(&buf, 0, sizeof(buf));
+    rtm->rtm_flags = RTF_HOST|RTF_UP;
+    rtm->rtm_version = RTM_VERSION;
+    rtm->rtm_addrs = RTA_DST|RTA_IFP;
+    cp = (void *)&buf.space;
+    memcpy(cp, &sin, sizeof(sin));
+    RT_ADVANCE(cp, (struct sockaddr *)(void *)&sin);
+    memcpy(cp, &sdl, sizeof(sdl));
+    RT_ADVANCE(cp, (struct sockaddr *)(void *)&sdl);
+    rtm->rtm_msglen = cp - (char *)(void *)rtm;
+    rtm->rtm_seq = ++seq;
+    rtm->rtm_type = RTM_GET;
+    rtm->rtm_pid = pid;
+    write(s, rtm, rtm->rtm_msglen);
+    memset(&buf, 0, sizeof(buf));
+    do {
+        ssz = read(s, &buf, sizeof(buf));
+    } while (ssz > 0 && (rtm->rtm_seq != seq || rtm->rtm_pid != pid));
+    saved_errno = errno;
+    close(s);
+    if (ssz <= 0) {
+        if (ssz < 0) {
+            return saved_errno;
+        }
+        return EPIPE; /* XXX */
+    }
+    cp = (void *)&buf.space;
+    for (i = 1; i; i <<= 1) {
+        if ((rtm->rtm_addrs & i) != 0) {
+            const struct sockaddr *sa = (const void *)cp;
+
+            if ((i == RTA_GATEWAY) && sa->sa_family == AF_INET) {
+                const struct sockaddr_in * const sin =
+                  (const struct sockaddr_in *)sa;
+
+                *next_hop = sin->sin_addr;
+                gateway = true;
+            }
+            if ((i == RTA_IFP) && sa->sa_family == AF_LINK) {
+                const struct sockaddr_dl * const sdl =
+                  (const struct sockaddr_dl *)sa;
+                const size_t nlen = sdl->sdl_nlen;
+                char * const kernel_name = xmalloc(nlen + 1);
+                const char *name;
+
+                memcpy(kernel_name, sdl->sdl_data, nlen);
+                kernel_name[nlen] = 0;
+                name = netdev_bsd_convert_kernel_name_to_ovs_name(kernel_name);
+                if (name == NULL) {
+                    ifname = xstrdup(kernel_name);
+                } else {
+                    ifname = xstrdup(name);
+                }
+                free(kernel_name);
+            }
+            RT_ADVANCE(cp, sa);
+        }
+    }
+    if (ifname == NULL) {
+        return ENXIO;
+    }
+    if (!gateway) {
+        *next_hop = *host;
+    }
+    *netdev_name = ifname;
+    VLOG_DBG("host " IP_FMT " next-hop " IP_FMT " if %s",
+      IP_ARGS(host->s_addr), IP_ARGS(next_hop->s_addr), *netdev_name);
+    return 0;
+#else
+    return EOPNOTSUPP;
+#endif
+}
+
 static void
 make_in4_sockaddr(struct sockaddr *sa, struct in_addr addr)
 {
@@ -1137,7 +1354,8 @@ do_set_addr(struct netdev *netdev,
 {
     struct ifreq ifr;
     make_in4_sockaddr(&ifr.ifr_addr, addr);
-    return netdev_bsd_do_ioctl(netdev, &ifr, ioctl_nr, ioctl_name);
+    return netdev_bsd_do_ioctl(netdev_get_kernel_name(netdev), &ifr, ioctl_nr,
+                               ioctl_name);
 }
 
 static int
@@ -1149,7 +1367,9 @@ nd_to_iff_flags(enum netdev_flags nd)
     }
     if (nd & NETDEV_PROMISC) {
         iff |= IFF_PROMISC;
+#if defined(IFF_PPROMISC)
         iff |= IFF_PPROMISC;
+#endif
     }
     return iff;
 }
@@ -1180,7 +1400,7 @@ netdev_bsd_update_flags(struct netdev *netdev_, enum netdev_flags off,
         *old_flagsp = iff_to_nd_flags(old_flags);
         new_flags = (old_flags & ~nd_to_iff_flags(off)) | nd_to_iff_flags(on);
         if (new_flags != old_flags) {
-            error = set_flags(netdev_get_name(netdev_), new_flags);
+            error = set_flags(netdev_get_kernel_name(netdev_), new_flags);
             netdev_bsd_changed(netdev);
         }
     }
@@ -1240,7 +1460,7 @@ const struct netdev_class netdev_bsd_class = {
     netdev_bsd_set_in4,
     netdev_bsd_get_in6,
     NULL, /* add_router */
-    NULL, /* get_next_hop */
+    netdev_bsd_get_next_hop,
     NULL, /* get_status */
     NULL, /* arp_lookup */
 
@@ -1295,7 +1515,7 @@ const struct netdev_class netdev_tap_class = {
     netdev_bsd_set_in4,
     netdev_bsd_get_in6,
     NULL, /* add_router */
-    NULL, /* get_next_hop */
+    netdev_bsd_get_next_hop,
     NULL, /* get_status */
     NULL, /* arp_lookup */
 
@@ -1329,11 +1549,10 @@ get_flags(const struct netdev *netdev, int *flags)
     struct ifreq ifr;
     int error;
 
-    error = netdev_bsd_do_ioctl(netdev->name, &ifr,
+    error = netdev_bsd_do_ioctl(netdev_get_kernel_name(netdev), &ifr,
                                 SIOCGIFFLAGS, "SIOCGIFFLAGS");
 
-    *flags = 0xFFFF0000 & (ifr.ifr_flagshigh << 16);
-    *flags |= 0x0000FFFF & ifr.ifr_flags;
+    *flags = ifr_get_flags(&ifr);
 
     return error;
 }
@@ -1343,8 +1562,7 @@ set_flags(const char *name, int flags)
 {
     struct ifreq ifr;
 
-    ifr.ifr_flags = 0x0000FFFF & flags;
-    ifr.ifr_flagshigh = (0xFFFF0000 & flags) >> 16;
+    ifr_set_flags(&ifr, flags);
 
     return netdev_bsd_do_ioctl(name, &ifr, SIOCSIFFLAGS, "SIOCSIFFLAGS");
 }
@@ -1375,7 +1593,7 @@ get_etheraddr(const char *netdev_name, uint8_t ea[ETH_ADDR_LEN])
 
     if (getifaddrs(&head) != 0) {
         VLOG_ERR("getifaddrs on %s device failed: %s", netdev_name,
-                strerror(errno));
+                ovs_strerror(errno));
         return errno;
     }
 
@@ -1398,9 +1616,11 @@ get_etheraddr(const char *netdev_name, uint8_t ea[ETH_ADDR_LEN])
 }
 
 static int
-set_etheraddr(const char *netdev_name, int hwaddr_family,
-              int hwaddr_len, const uint8_t mac[ETH_ADDR_LEN])
+set_etheraddr(const char *netdev_name OVS_UNUSED, int hwaddr_family OVS_UNUSED,
+              int hwaddr_len OVS_UNUSED,
+              const uint8_t mac[ETH_ADDR_LEN] OVS_UNUSED)
 {
+#if defined(__FreeBSD__)
     struct ifreq ifr;
 
     memset(&ifr, 0, sizeof ifr);
@@ -1410,10 +1630,63 @@ set_etheraddr(const char *netdev_name, int hwaddr_family,
     memcpy(ifr.ifr_addr.sa_data, mac, hwaddr_len);
     if (ioctl(af_inet_sock, SIOCSIFLLADDR, &ifr) < 0) {
         VLOG_ERR("ioctl(SIOCSIFLLADDR) on %s device failed: %s",
-                 netdev_name, strerror(errno));
+                 netdev_name, ovs_strerror(errno));
         return errno;
     }
     return 0;
+#elif defined(__NetBSD__)
+    struct if_laddrreq req;
+    struct sockaddr_dl *sdl;
+    struct sockaddr_storage oldaddr;
+    int ret;
+
+    /*
+     * get the old address, add new one, and then remove old one.
+     */
+
+    if (hwaddr_len != ETH_ADDR_LEN) {
+        /* just to be safe about sockaddr storage size */
+        return EOPNOTSUPP;
+    }
+    memset(&req, 0, sizeof(req));
+    strncpy(req.iflr_name, netdev_name, sizeof(req.iflr_name));
+    req.addr.ss_len = sizeof(req.addr);
+    req.addr.ss_family = hwaddr_family;
+    sdl = (struct sockaddr_dl *)&req.addr;
+    sdl->sdl_alen = hwaddr_len;
+    ret = ioctl(af_link_sock, SIOCGLIFADDR, &req);
+    if (ret == -1) {
+        return errno;
+    }
+    if (!memcmp(&sdl->sdl_data[sdl->sdl_nlen], mac, hwaddr_len)) {
+        return 0;
+    }
+    oldaddr = req.addr;
+
+    memset(&req, 0, sizeof(req));
+    strncpy(req.iflr_name, netdev_name, sizeof(req.iflr_name));
+    req.flags = IFLR_ACTIVE;
+    sdl = (struct sockaddr_dl *)&req.addr;
+    sdl->sdl_len = offsetof(struct sockaddr_dl, sdl_data) + hwaddr_len;
+    sdl->sdl_alen = hwaddr_len;
+    sdl->sdl_family = hwaddr_family;
+    memcpy(sdl->sdl_data, mac, hwaddr_len);
+    ret = ioctl(af_link_sock, SIOCALIFADDR, &req);
+    if (ret == -1) {
+        return errno;
+    }
+
+    memset(&req, 0, sizeof(req));
+    strncpy(req.iflr_name, netdev_name, sizeof(req.iflr_name));
+    req.addr = oldaddr;
+    ret = ioctl(af_link_sock, SIOCDLIFADDR, &req);
+    if (ret == -1) {
+        return errno;
+    }
+    return 0;
+#else
+#error not implemented
+#endif
 }
 
 static int
@@ -1423,8 +1696,27 @@ netdev_bsd_do_ioctl(const char *name, struct ifreq *ifr, unsigned long cmd,
     strncpy(ifr->ifr_name, name, sizeof ifr->ifr_name);
     if (ioctl(af_inet_sock, cmd, ifr) == -1) {
         VLOG_DBG_RL(&rl, "%s: ioctl(%s) failed: %s", name, cmd_name,
-                    strerror(errno));
+                    ovs_strerror(errno));
         return errno;
     }
     return 0;
+}
+
+static int
+ifr_get_flags(const struct ifreq *ifr)
+{
+#ifdef HAVE_STRUCT_IFREQ_IFR_FLAGSHIGH
+    return (ifr->ifr_flagshigh << 16) | ifr->ifr_flags;
+#else
+    return ifr->ifr_flags;
+#endif
+}
+
+static void
+ifr_set_flags(struct ifreq *ifr, int flags)
+{
+    ifr->ifr_flags = flags;
+#ifdef HAVE_STRUCT_IFREQ_IFR_FLAGSHIGH
+    ifr->ifr_flagshigh = flags >> 16;
+#endif
 }

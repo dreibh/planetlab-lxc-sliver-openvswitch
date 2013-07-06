@@ -1,4 +1,4 @@
-# Copyright (C) 2009, 2010, 2011, 2012 Nicira, Inc.
+# Copyright (C) 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
 #
 # Copying and distribution of this file, with or without modification,
 # are permitted in any medium without royalty provided the copyright
@@ -57,6 +57,8 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/flow.h \
 	lib/hash.c \
 	lib/hash.h \
+	lib/hindex.c \
+	lib/hindex.h \
 	lib/hmap.c \
 	lib/hmap.h \
 	lib/hmapx.c \
@@ -69,8 +71,6 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/jsonrpc.h \
 	lib/lacp.c \
 	lib/lacp.h \
-	lib/leak-checker.c \
-	lib/leak-checker.h \
 	lib/learn.c \
 	lib/learn.h \
 	lib/learning-switch.c \
@@ -102,6 +102,8 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/netlink.h \
 	lib/nx-match.c \
 	lib/nx-match.h \
+	lib/odp-execute.c \
+	lib/odp-execute.h \
 	lib/odp-util.c \
 	lib/odp-util.h \
 	lib/ofp-actions.c \
@@ -121,6 +123,15 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/ofp-version-opt.c \
 	lib/ofpbuf.c \
 	lib/ofpbuf.h \
+	lib/ovs-atomic-c11.h \
+	lib/ovs-atomic-gcc4+.c \
+	lib/ovs-atomic-gcc4+.h \
+	lib/ovs-atomic-gcc4.7+.h \
+	lib/ovs-atomic-pthreads.c \
+	lib/ovs-atomic-pthreads.h \
+	lib/ovs-atomic.h \
+	lib/ovs-thread.c \
+	lib/ovs-thread.h \
 	lib/ovsdb-data.c \
 	lib/ovsdb-data.h \
 	lib/ovsdb-error.c \
@@ -293,7 +304,6 @@ MAN_FRAGMENTS += \
 	lib/coverage-unixctl.man \
 	lib/daemon.man \
 	lib/daemon-syn.man \
-	lib/leak-checker.man \
 	lib/memory-unixctl.man \
 	lib/ofp-version.man \
 	lib/ovs.tmac \
@@ -339,9 +349,12 @@ lib/dirs.c: lib/dirs.c.in Makefile
 	mv lib/dirs.c.tmp lib/dirs.c
 
 $(srcdir)/lib/ofp-errors.inc: \
-	lib/ofp-errors.h $(srcdir)/build-aux/extract-ofp-errors
+	lib/ofp-errors.h include/openflow/openflow-common.h \
+	$(srcdir)/build-aux/extract-ofp-errors
 	$(run_python) $(srcdir)/build-aux/extract-ofp-errors \
-		$(srcdir)/lib/ofp-errors.h > $@.tmp && mv $@.tmp $@
+		$(srcdir)/lib/ofp-errors.h \
+		$(srcdir)/include/openflow/openflow-common.h > $@.tmp
+	mv $@.tmp $@
 $(srcdir)/lib/ofp-errors.c: $(srcdir)/lib/ofp-errors.inc
 EXTRA_DIST += build-aux/extract-ofp-errors lib/ofp-errors.inc
 

@@ -108,6 +108,8 @@ struct bond {
      * where we can't otherwise provide revalidation feedback to the client.
      * That's only unixctl commands now; I hope no other cases will arise. */
     struct tag_set unixctl_tags;
+
+    int ref_cnt;
 };
 
 static struct hmap all_bonds = HMAP_INITIALIZER(&all_bonds);
@@ -128,6 +130,7 @@ static struct bond_entry *lookup_bond_entry(const struct bond *,
 static tag_type bond_get_active_slave_tag(const struct bond *);
 static struct bond_slave *choose_output_slave(const struct bond *,
                                               const struct flow *,
+                                              struct flow_wildcards *,
                                               uint16_t vlan, tag_type *tags);
 static void bond_update_fake_slave_stats(struct bond *);
 
@@ -178,6 +181,7 @@ bond_create(const struct bond_settings *s)
     hmap_init(&bond->slaves);
     bond->no_slaves_tag = tag_create_random();
     bond->next_fake_iface_update = LLONG_MAX;
+    bond->ref_cnt = 1;
 
     bond_reconfigure(bond, s);
 
@@ -186,13 +190,28 @@ bond_create(const struct bond_settings *s)
     return bond;
 }
 
+struct bond *
+bond_ref(const struct bond *bond_)
+{
+    struct bond *bond = CONST_CAST(struct bond *, bond_);
+
+    ovs_assert(bond->ref_cnt > 0);
+    bond->ref_cnt++;
+    return bond;
+}
+
 /* Frees 'bond'. */
 void
-bond_destroy(struct bond *bond)
+bond_unref(struct bond *bond)
 {
     struct bond_slave *slave, *next_slave;
 
     if (!bond) {
+        return;
+    }
+
+    ovs_assert(bond->ref_cnt > 0);
+    if (--bond->ref_cnt) {
         return;
     }
 
@@ -505,7 +524,7 @@ bond_compose_learning_packet(struct bond *bond,
 
     memset(&flow, 0, sizeof flow);
     memcpy(flow.dl_src, eth_src, ETH_ADDR_LEN);
-    slave = choose_output_slave(bond, &flow, vlan, &tags);
+    slave = choose_output_slave(bond, &flow, NULL, vlan, &tags);
 
     packet = ofpbuf_new(0);
     compose_rarp(packet, eth_src);
@@ -538,6 +557,10 @@ bond_check_admissibility(struct bond *bond, const void *slave_,
 {
     struct bond_slave *slave = bond_slave_lookup(bond, slave_);
 
+    if (!slave) {
+        return BV_DROP;
+    }
+
     /* LACP bonds have very loose admissibility restrictions because we can
      * assume the remote switch is aware of the bond and will "do the right
      * thing".  However, as a precaution we drop packets on disabled slaves
@@ -555,7 +578,7 @@ bond_check_admissibility(struct bond *bond, const void *slave_,
     /* Drop all multicast packets on inactive slaves. */
     if (eth_addr_is_multicast(eth_dst)) {
         *tags |= bond_get_active_slave_tag(bond);
-        if (bond->active_slave != bond_slave_lookup(bond, slave_)) {
+        if (bond->active_slave != slave) {
             return BV_DROP;
         }
     }
@@ -605,12 +628,17 @@ bond_check_admissibility(struct bond *bond, const void *slave_,
  * packet belongs to (so for an access port it will be the access port's VLAN).
  *
  * Adds a tag to '*tags' that associates the flow with the returned slave.
+ *
+ * If 'wc' is non-NULL, bitwise-OR's 'wc' with the set of bits that were
+ * significant in the selection.  At some point earlier, 'wc' should
+ * have been initialized (e.g., by flow_wildcards_init_catchall()).
  */
 void *
 bond_choose_output_slave(struct bond *bond, const struct flow *flow,
-                         uint16_t vlan, tag_type *tags)
+                         struct flow_wildcards *wc, uint16_t vlan,
+                         tag_type *tags)
 {
-    struct bond_slave *slave = choose_output_slave(bond, flow, vlan, tags);
+    struct bond_slave *slave = choose_output_slave(bond, flow, wc, vlan, tags);
     if (slave) {
         *tags |= slave->tag;
         return slave->aux;
@@ -1349,7 +1377,7 @@ lookup_bond_entry(const struct bond *bond, const struct flow *flow,
 
 static struct bond_slave *
 choose_output_slave(const struct bond *bond, const struct flow *flow,
-                    uint16_t vlan, tag_type *tags)
+                    struct flow_wildcards *wc, uint16_t vlan, tag_type *tags)
 {
     struct bond_entry *e;
 
@@ -1368,8 +1396,14 @@ choose_output_slave(const struct bond *bond, const struct flow *flow,
             /* Must have LACP negotiations for TCP balanced bonds. */
             return NULL;
         }
+        if (wc) {
+            flow_mask_hash_fields(flow, wc, NX_HASH_FIELDS_SYMMETRIC_L4);
+        }
         /* Fall Through. */
     case BM_SLB:
+        if (wc) {
+            flow_mask_hash_fields(flow, wc, NX_HASH_FIELDS_ETH_SRC);
+        }
         e = lookup_bond_entry(bond, flow, vlan);
         if (!e->slave || !e->slave->enabled) {
             e->slave = CONTAINER_OF(hmap_random_node(&bond->slaves),

@@ -17,12 +17,11 @@
 
 #include <errno.h>
 
-#include "ofproto/ofproto-provider.h"
 #include "byte-order.h"
 #include "dynamic-string.h"
 #include "hash.h"
 #include "hmap.h"
-#include "netdev-vport.h"
+#include "netdev.h"
 #include "odp-util.h"
 #include "packets.h"
 #include "smap.h"
@@ -30,17 +29,13 @@
 #include "tunnel.h"
 #include "vlog.h"
 
-/* XXX:
- *
- * Disallow netdevs with names like "gre64_system" to prevent collisions. */
-
 VLOG_DEFINE_THIS_MODULE(tunnel);
 
 struct tnl_match {
     ovs_be64 in_key;
     ovs_be32 ip_src;
     ovs_be32 ip_dst;
-    uint32_t odp_port;
+    odp_port_t odp_port;
     uint32_t skb_mark;
     bool in_key_flow;
     bool ip_src_flow;
@@ -48,46 +43,47 @@ struct tnl_match {
 };
 
 struct tnl_port {
+    struct hmap_node ofport_node;
     struct hmap_node match_node;
 
-    const struct ofport *ofport;
+    const struct ofport_dpif *ofport;
     unsigned int netdev_seq;
+    struct netdev *netdev;
+
     struct tnl_match match;
 };
 
 static struct hmap tnl_match_map = HMAP_INITIALIZER(&tnl_match_map);
-
-/* Returned to callers when their ofport will never be used to receive or send
- * tunnel traffic. Alternatively, we could ask the caller to delete their
- * ofport, but this would be unclean in the reconfguration case.  For the first
- * time, an ofproto provider would have to call ofproto_port_del() on itself.*/
-static struct tnl_port void_tnl_port;
+static struct hmap ofport_map = HMAP_INITIALIZER(&ofport_map);
 
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
 static struct vlog_rate_limit dbg_rl = VLOG_RATE_LIMIT_INIT(60, 60);
 
 static struct tnl_port *tnl_find(struct tnl_match *);
 static struct tnl_port *tnl_find_exact(struct tnl_match *);
+static struct tnl_port *tnl_find_ofport(const struct ofport_dpif *);
+
 static uint32_t tnl_hash(struct tnl_match *);
 static void tnl_match_fmt(const struct tnl_match *, struct ds *);
 static char *tnl_port_fmt(const struct tnl_port *);
 static void tnl_port_mod_log(const struct tnl_port *, const char *action);
 static const char *tnl_port_get_name(const struct tnl_port *);
 
-static struct tnl_port *
-tnl_port_add__(const struct ofport *ofport, uint32_t odp_port,
-               bool warn)
+static bool
+tnl_port_add__(const struct ofport_dpif *ofport, const struct netdev *netdev,
+               odp_port_t odp_port, bool warn)
 {
     const struct netdev_tunnel_config *cfg;
     struct tnl_port *existing_port;
     struct tnl_port *tnl_port;
 
-    cfg = netdev_get_tunnel_config(ofport->netdev);
+    cfg = netdev_get_tunnel_config(netdev);
     ovs_assert(cfg);
 
     tnl_port = xzalloc(sizeof *tnl_port);
     tnl_port->ofport = ofport;
-    tnl_port->netdev_seq = netdev_change_seq(tnl_port->ofport->netdev);
+    tnl_port->netdev = netdev_ref(netdev);
+    tnl_port->netdev_seq = netdev_change_seq(tnl_port->netdev);
 
     tnl_port->match.in_key = cfg->in_key;
     tnl_port->match.ip_src = cfg->ip_src;
@@ -109,56 +105,60 @@ tnl_port_add__(const struct ofport *ofport, uint32_t odp_port,
             ds_destroy(&ds);
             free(tnl_port);
         }
-        return &void_tnl_port;
+        return false;
     }
 
+    hmap_insert(&ofport_map, &tnl_port->ofport_node, hash_pointer(ofport, 0));
     hmap_insert(&tnl_match_map, &tnl_port->match_node,
                 tnl_hash(&tnl_port->match));
     tnl_port_mod_log(tnl_port, "adding");
-    return tnl_port;
+    return true;
 }
 
 /* Adds 'ofport' to the module with datapath port number 'odp_port'. 'ofport's
  * must be added before they can be used by the module. 'ofport' must be a
  * tunnel. */
-struct tnl_port *
-tnl_port_add(const struct ofport *ofport, uint32_t odp_port)
+void
+tnl_port_add(const struct ofport_dpif *ofport, const struct netdev *netdev,
+             odp_port_t odp_port)
 {
-    return tnl_port_add__(ofport, odp_port, true);
+    tnl_port_add__(ofport, netdev, odp_port, true);
 }
 
-/* Checks if the tnl_port pointed to by 'tnl_portp' needs reconfiguration due
- * to changes in its netdev_tunnel_config.  If it does, updates 'tnl_portp' to
- * point to a new tnl_port and returns true.  Otherwise, returns false.
- * 'ofport' and 'odp_port' should be the same as would be passed to
+/* Checks if the tunnel represented by 'ofport' reconfiguration due to changes
+ * in its netdev_tunnel_config.  If it does, returns true. Otherwise, returns
+ * false.  'ofport' and 'odp_port' should be the same as would be passed to
  * tnl_port_add(). */
 bool
-tnl_port_reconfigure(const struct ofport *ofport, uint32_t odp_port,
-                     struct tnl_port **tnl_portp)
+tnl_port_reconfigure(const struct ofport_dpif *ofport,
+                     const struct netdev *netdev, odp_port_t odp_port)
 {
-    struct tnl_port *tnl_port = *tnl_portp;
+    struct tnl_port *tnl_port = tnl_find_ofport(ofport);
 
-    if (tnl_port == &void_tnl_port) {
-        *tnl_portp = tnl_port_add__(ofport, odp_port, false);
-        return *tnl_portp != &void_tnl_port;
-    } else if (tnl_port->ofport != ofport
+    if (!tnl_port) {
+        return tnl_port_add__(ofport, netdev, odp_port, false);
+    } else if (tnl_port->netdev != netdev
                || tnl_port->match.odp_port != odp_port
-               || tnl_port->netdev_seq != netdev_change_seq(ofport->netdev)) {
+               || tnl_port->netdev_seq != netdev_change_seq(netdev)) {
         VLOG_DBG("reconfiguring %s", tnl_port_get_name(tnl_port));
-        tnl_port_del(tnl_port);
-        *tnl_portp = tnl_port_add(ofport, odp_port);
+        tnl_port_del(ofport);
+        tnl_port_add(ofport, netdev, odp_port);
         return true;
     }
     return false;
 }
 
-/* Removes 'tnl_port' from the module. */
+/* Removes 'ofport' from the module. */
 void
-tnl_port_del(struct tnl_port *tnl_port)
+tnl_port_del(const struct ofport_dpif *ofport)
 {
-    if (tnl_port && tnl_port != &void_tnl_port) {
+    struct tnl_port *tnl_port = ofport ? tnl_find_ofport(ofport) : NULL;
+
+    if (tnl_port) {
         tnl_port_mod_log(tnl_port, "removing");
         hmap_remove(&tnl_match_map, &tnl_port->match_node);
+        hmap_remove(&ofport_map, &tnl_port->ofport_node);
+        netdev_close(tnl_port->netdev);
         free(tnl_port);
     }
 }
@@ -169,7 +169,7 @@ tnl_port_del(struct tnl_port *tnl_port)
  *
  * Callers should verify that 'flow' needs to be received by calling
  * tnl_port_should_receive() before this function. */
-const struct ofport *
+const struct ofport_dpif *
 tnl_port_receive(const struct flow *flow)
 {
     char *pre_flow_str = NULL;
@@ -177,7 +177,7 @@ tnl_port_receive(const struct flow *flow)
     struct tnl_match match;
 
     memset(&match, 0, sizeof match);
-    match.odp_port = flow->in_port;
+    match.odp_port = flow->in_port.odp_port;
     match.ip_src = flow->tunnel.ip_dst;
     match.ip_dst = flow->tunnel.ip_src;
     match.in_key = flow->tunnel.tun_id;
@@ -214,19 +214,21 @@ tnl_port_receive(const struct flow *flow)
 
 /* Given that 'flow' should be output to the ofport corresponding to
  * 'tnl_port', updates 'flow''s tunnel headers and returns the actual datapath
- * port that the output should happen on.  May return OVSP_NONE if the output
+ * port that the output should happen on.  May return ODPP_NONE if the output
  * shouldn't occur. */
-uint32_t
-tnl_port_send(const struct tnl_port *tnl_port, struct flow *flow)
+odp_port_t
+tnl_port_send(const struct ofport_dpif *ofport, struct flow *flow,
+              struct flow_wildcards *wc)
 {
+    struct tnl_port *tnl_port = tnl_find_ofport(ofport);
     const struct netdev_tunnel_config *cfg;
     char *pre_flow_str = NULL;
 
-    if (tnl_port == &void_tnl_port) {
-        return OVSP_NONE;
+    if (!tnl_port) {
+        return ODPP_NONE;
     }
 
-    cfg = netdev_get_tunnel_config(tnl_port->ofport->netdev);
+    cfg = netdev_get_tunnel_config(tnl_port->netdev);
     ovs_assert(cfg);
 
     if (!VLOG_DROP_DBG(&dbg_rl)) {
@@ -246,15 +248,22 @@ tnl_port_send(const struct tnl_port *tnl_port, struct flow *flow)
     }
 
     if (cfg->ttl_inherit && is_ip_any(flow)) {
+        wc->masks.nw_ttl = 0xff;
         flow->tunnel.ip_ttl = flow->nw_ttl;
     } else {
         flow->tunnel.ip_ttl = cfg->ttl;
     }
 
     if (cfg->tos_inherit && is_ip_any(flow)) {
+        wc->masks.nw_tos = 0xff;
         flow->tunnel.ip_tos = flow->nw_tos & IP_DSCP_MASK;
     } else {
         flow->tunnel.ip_tos = cfg->tos;
+    }
+
+    /* ECN fields are always inherited. */
+    if (is_ip_any(flow)) {
+        wc->masks.nw_tos |= IP_ECN_MASK;
     }
 
     if ((flow->nw_tos & IP_ECN_MASK) == IP_ECN_CE) {
@@ -288,6 +297,20 @@ tnl_hash(struct tnl_match *match)
 {
     BUILD_ASSERT_DECL(sizeof *match % sizeof(uint32_t) == 0);
     return hash_words((uint32_t *) match, sizeof *match / sizeof(uint32_t), 0);
+}
+
+static struct tnl_port *
+tnl_find_ofport(const struct ofport_dpif *ofport)
+{
+    struct tnl_port *tnl_port;
+
+    HMAP_FOR_EACH_IN_BUCKET (tnl_port, ofport_node, hash_pointer(ofport, 0),
+                             &ofport_map) {
+        if (tnl_port->ofport == ofport) {
+            return tnl_port;
+        }
+    }
+    return NULL;
 }
 
 static struct tnl_port *
@@ -397,12 +420,12 @@ static char *
 tnl_port_fmt(const struct tnl_port *tnl_port)
 {
     const struct netdev_tunnel_config *cfg =
-        netdev_get_tunnel_config(tnl_port->ofport->netdev);
+        netdev_get_tunnel_config(tnl_port->netdev);
     struct ds ds = DS_EMPTY_INITIALIZER;
 
     ds_put_format(&ds, "port %"PRIu32": %s (%s: ", tnl_port->match.odp_port,
                   tnl_port_get_name(tnl_port),
-                  netdev_get_type(tnl_port->ofport->netdev));
+                  netdev_get_type(tnl_port->netdev));
     tnl_match_fmt(&tnl_port->match, &ds);
 
     if (cfg->out_key != cfg->in_key ||
@@ -446,5 +469,5 @@ tnl_port_fmt(const struct tnl_port *tnl_port)
 static const char *
 tnl_port_get_name(const struct tnl_port *tnl_port)
 {
-    return netdev_get_name(tnl_port->ofport->netdev);
+    return netdev_get_name(tnl_port->netdev);
 }

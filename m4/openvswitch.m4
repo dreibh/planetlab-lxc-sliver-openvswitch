@@ -1,6 +1,6 @@
 # -*- autoconf -*-
 
-# Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
+# Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -169,7 +169,9 @@ AC_DEFUN([OVS_CHECK_DBDIR],
 
 dnl Defines HAVE_BACKTRACE if backtrace() is found.
 AC_DEFUN([OVS_CHECK_BACKTRACE],
-  [AC_SEARCH_LIBS([backtrace], [execinfo ubacktrace])])
+  [AC_SEARCH_LIBS([backtrace], [execinfo ubacktrace],
+                  [AC_DEFINE([HAVE_BACKTRACE], [1],
+                             [Define to 1 if you have backtrace(3).])])])
 
 dnl Checks for __malloc_hook, etc., supported by glibc.
 AC_DEFUN([OVS_CHECK_MALLOC_HOOKS],
@@ -388,3 +390,59 @@ AC_DEFUN([OVS_CHECK_GROFF],
        ovs_cv_groff=no
      fi])
    AM_CONDITIONAL([HAVE_GROFF], [test "$ovs_cv_groff" = yes])])
+
+dnl Checks for thread-local storage support.
+dnl
+dnl Checks whether the compiler and linker support the C11
+dnl thread_local macro from <threads.h>, and if so defines
+dnl HAVE_THREAD_LOCAL.  If not, checks whether the compiler and linker
+dnl support the GCC __thread extension, and if so defines
+dnl HAVE___THREAD.
+AC_DEFUN([OVS_CHECK_TLS],
+  [AC_CACHE_CHECK(
+     [whether $CC has <threads.h> that supports thread_local],
+     [ovs_cv_thread_local],
+     [AC_LINK_IFELSE(
+        [AC_LANG_PROGRAM([#include <threads.h>
+static thread_local int var;], [return var;])],
+        [ovs_cv_thread_local=yes],
+        [ovs_cv_thread_local=no])])
+   if test $ovs_cv_thread_local = yes; then
+     AC_DEFINE([HAVE_THREAD_LOCAL], [1],
+               [Define to 1 if the C compiler and linker supports the C11
+                thread_local matcro defined in <threads.h>.])
+   else
+     AC_CACHE_CHECK(
+       [whether $CC supports __thread],
+       [ovs_cv___thread],
+       [AC_LINK_IFELSE(
+          [AC_LANG_PROGRAM([static __thread int var;], [return var;])],
+          [ovs_cv___thread=yes],
+          [ovs_cv___thread=no])])
+     if test $ovs_cv___thread = yes; then
+       AC_DEFINE([HAVE___THREAD], [1],
+                 [Define to 1 if the C compiler and linker supports the
+                  GCC __thread extenions.])
+     fi
+   fi])
+
+dnl OVS_CHECK_ATOMIC_ALWAYS_LOCK_FREE(SIZE)
+dnl
+dnl Checks __atomic_always_lock_free(SIZE, 0)
+AC_DEFUN([OVS_CHECK_ATOMIC_ALWAYS_LOCK_FREE], 
+  [AC_CACHE_CHECK(
+    [value of __atomic_always_lock_free($1)],
+    [ovs_cv_atomic_always_lock_free_$1],
+    [AC_COMPUTE_INT(
+        [ovs_cv_atomic_always_lock_free_$1],
+        [__atomic_always_lock_free($1, 0)],
+        [],
+        [ovs_cv_atomic_always_lock_free_$1=unsupported])])
+   if test ovs_cv_atomic_always_lock_free_$1 != unsupported; then
+     AC_DEFINE_UNQUOTED(
+       [ATOMIC_ALWAYS_LOCK_FREE_$1B],
+       [$ovs_cv_atomic_always_lock_free_$1],
+       [If the C compiler is GCC 4.7 or later, define to the return value of
+        __atomic_always_lock_free($1, 0).  If the C compiler is not GCC or is
+        an older version of GCC, the value does not matter.])
+   fi])

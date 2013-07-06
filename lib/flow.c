@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -337,7 +337,7 @@ invalid:
 }
 
 /* Initializes 'flow' members from 'packet', 'skb_priority', 'tnl', and
- * 'ofp_in_port'.
+ * 'in_port'.
  *
  * Initializes 'packet' header pointers as follows:
  *
@@ -357,7 +357,7 @@ invalid:
  */
 void
 flow_extract(struct ofpbuf *packet, uint32_t skb_priority, uint32_t skb_mark,
-             const struct flow_tnl *tnl, uint16_t ofp_in_port,
+             const struct flow_tnl *tnl, const union flow_in_port *in_port,
              struct flow *flow)
 {
     struct ofpbuf b = *packet;
@@ -371,7 +371,9 @@ flow_extract(struct ofpbuf *packet, uint32_t skb_priority, uint32_t skb_mark,
         ovs_assert(tnl != &flow->tunnel);
         flow->tunnel = *tnl;
     }
-    flow->in_port = ofp_in_port;
+    if (in_port) {
+        flow->in_port = *in_port;
+    }
     flow->skb_priority = skb_priority;
     flow->skb_mark = skb_mark;
 
@@ -498,7 +500,7 @@ flow_get_metadata(const struct flow *flow, struct flow_metadata *fmd)
     fmd->tun_dst = flow->tunnel.ip_dst;
     fmd->metadata = flow->metadata;
     memcpy(fmd->regs, flow->regs, sizeof fmd->regs);
-    fmd->in_port = flow->in_port;
+    fmd->in_port = flow->in_port.ofp_port;
 }
 
 char *
@@ -604,13 +606,13 @@ flow_wildcards_is_catchall(const struct flow_wildcards *wc)
     return true;
 }
 
-/* Initializes 'dst' as the combination of wildcards in 'src1' and 'src2'.
- * That is, a bit or a field is wildcarded in 'dst' if it is wildcarded in
- * 'src1' or 'src2' or both.  */
+/* Sets 'dst' as the bitwise AND of wildcards in 'src1' and 'src2'.
+ * That is, a bit or a field is wildcarded in 'dst' if it is wildcarded
+ * in 'src1' or 'src2' or both.  */
 void
-flow_wildcards_combine(struct flow_wildcards *dst,
-                       const struct flow_wildcards *src1,
-                       const struct flow_wildcards *src2)
+flow_wildcards_and(struct flow_wildcards *dst,
+                   const struct flow_wildcards *src1,
+                   const struct flow_wildcards *src2)
 {
     uint32_t *dst_u32 = (uint32_t *) &dst->masks;
     const uint32_t *src1_u32 = (const uint32_t *) &src1->masks;
@@ -620,6 +622,51 @@ flow_wildcards_combine(struct flow_wildcards *dst,
     for (i = 0; i < FLOW_U32S; i++) {
         dst_u32[i] = src1_u32[i] & src2_u32[i];
     }
+}
+
+/* Sets 'dst' as the bitwise OR of wildcards in 'src1' and 'src2'.  That
+ * is, a bit or a field is wildcarded in 'dst' if it is neither
+ * wildcarded in 'src1' nor 'src2'. */
+void
+flow_wildcards_or(struct flow_wildcards *dst,
+                  const struct flow_wildcards *src1,
+                  const struct flow_wildcards *src2)
+{
+    uint32_t *dst_u32 = (uint32_t *) &dst->masks;
+    const uint32_t *src1_u32 = (const uint32_t *) &src1->masks;
+    const uint32_t *src2_u32 = (const uint32_t *) &src2->masks;
+    size_t i;
+
+    for (i = 0; i < FLOW_U32S; i++) {
+        dst_u32[i] = src1_u32[i] | src2_u32[i];
+    }
+}
+
+/* Perform a bitwise OR of miniflow 'src' flow data with the equivalent
+ * fields in 'dst', storing the result in 'dst'. */
+static void
+flow_union_with_miniflow(struct flow *dst, const struct miniflow *src)
+{
+    uint32_t *dst_u32 = (uint32_t *) dst;
+    int ofs;
+    int i;
+
+    ofs = 0;
+    for (i = 0; i < MINI_N_MAPS; i++) {
+        uint32_t map;
+
+        for (map = src->map[i]; map; map = zero_rightmost_1bit(map)) {
+            dst_u32[raw_ctz(map) + i * 32] |= src->values[ofs++];
+        }
+    }
+}
+
+/* Fold minimask 'mask''s wildcard mask into 'wc's wildcard mask. */
+void
+flow_wildcards_fold_minimask(struct flow_wildcards *wc,
+                             const struct minimask *mask)
+{
+    flow_union_with_miniflow(&wc->masks, &mask->masks);
 }
 
 /* Returns a hash of the wildcards in 'wc'. */
@@ -732,6 +779,39 @@ flow_hash_symmetric_l4(const struct flow *flow, uint32_t basis)
     return jhash_bytes(&fields, sizeof fields, basis);
 }
 
+/* Masks the fields in 'wc' that are used by the flow hash 'fields'. */
+void
+flow_mask_hash_fields(const struct flow *flow, struct flow_wildcards *wc,
+                      enum nx_hash_fields fields)
+{
+    switch (fields) {
+    case NX_HASH_FIELDS_ETH_SRC:
+        memset(&wc->masks.dl_src, 0xff, sizeof wc->masks.dl_src);
+        break;
+
+    case NX_HASH_FIELDS_SYMMETRIC_L4:
+        memset(&wc->masks.dl_src, 0xff, sizeof wc->masks.dl_src);
+        memset(&wc->masks.dl_dst, 0xff, sizeof wc->masks.dl_dst);
+        if (flow->dl_type == htons(ETH_TYPE_IP)) {
+            memset(&wc->masks.nw_src, 0xff, sizeof wc->masks.nw_src);
+            memset(&wc->masks.nw_dst, 0xff, sizeof wc->masks.nw_dst);
+        } else {
+            memset(&wc->masks.ipv6_src, 0xff, sizeof wc->masks.ipv6_src);
+            memset(&wc->masks.ipv6_dst, 0xff, sizeof wc->masks.ipv6_dst);
+        }
+        if (is_ip_any(flow)) {
+            memset(&wc->masks.nw_proto, 0xff, sizeof wc->masks.nw_proto);
+            memset(&wc->masks.tp_src, 0xff, sizeof wc->masks.tp_src);
+            memset(&wc->masks.tp_dst, 0xff, sizeof wc->masks.tp_dst);
+        }
+        wc->masks.vlan_tci |= htons(VLAN_VID_MASK | VLAN_CFI);
+        break;
+
+    default:
+        NOT_REACHED();
+    }
+}
+
 /* Hashes the portions of 'flow' designated by 'fields'. */
 uint32_t
 flow_hash_fields(const struct flow *flow, enum nx_hash_fields fields,
@@ -766,6 +846,24 @@ flow_hash_fields_valid(enum nx_hash_fields fields)
 {
     return fields == NX_HASH_FIELDS_ETH_SRC
         || fields == NX_HASH_FIELDS_SYMMETRIC_L4;
+}
+
+/* Returns a hash value for the bits of 'flow' that are active based on
+ * 'wc', given 'basis'. */
+uint32_t
+flow_hash_in_wildcards(const struct flow *flow,
+                       const struct flow_wildcards *wc, uint32_t basis)
+{
+    const uint32_t *wc_u32 = (const uint32_t *) &wc->masks;
+    const uint32_t *flow_u32 = (const uint32_t *) flow;
+    uint32_t hash;
+    size_t i;
+
+    hash = basis;
+    for (i = 0; i < FLOW_U32S; i++) {
+        hash = mhash_add(hash, flow_u32[i] & wc_u32[i]);
+    }
+    return mhash_finish(hash, 4 * FLOW_U32S);
 }
 
 /* Sets the VLAN VID that 'flow' matches to 'vid', which is interpreted as an
@@ -1024,20 +1122,8 @@ miniflow_destroy(struct miniflow *flow)
 void
 miniflow_expand(const struct miniflow *src, struct flow *dst)
 {
-    uint32_t *dst_u32 = (uint32_t *) dst;
-    int ofs;
-    int i;
-
-    memset(dst_u32, 0, sizeof *dst);
-
-    ofs = 0;
-    for (i = 0; i < MINI_N_MAPS; i++) {
-        uint32_t map;
-
-        for (map = src->map[i]; map; map = zero_rightmost_1bit(map)) {
-            dst_u32[raw_ctz(map) + i * 32] = src->values[ofs++];
-        }
-    }
+    memset(dst, 0, sizeof *dst);
+    flow_union_with_miniflow(dst, src);
 }
 
 static const uint32_t *

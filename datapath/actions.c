@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2012 Nicira, Inc.
+ * Copyright (c) 2007-2013 Nicira, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -132,8 +132,16 @@ static int set_eth_addr(struct sk_buff *skb,
 	if (unlikely(err))
 		return err;
 
+	if (get_ip_summed(skb) == OVS_CSUM_COMPLETE)
+		skb->csum = csum_sub(skb->csum, csum_partial(eth_hdr(skb),
+							     ETH_ALEN * 2, 0));
+
 	memcpy(eth_hdr(skb)->h_source, eth_key->eth_src, ETH_ALEN);
 	memcpy(eth_hdr(skb)->h_dest, eth_key->eth_dst, ETH_ALEN);
+
+	if (get_ip_summed(skb) == OVS_CSUM_COMPLETE)
+		skb->csum = csum_add(skb->csum, csum_partial(eth_hdr(skb),
+							     ETH_ALEN * 2, 0));
 
 	return 0;
 }
@@ -376,8 +384,10 @@ static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 	const struct nlattr *a;
 	int rem;
 
+	BUG_ON(!OVS_CB(skb)->pkt_key);
+
 	upcall.cmd = OVS_PACKET_CMD_ACTION;
-	upcall.key = &OVS_CB(skb)->flow->key;
+	upcall.key = OVS_CB(skb)->pkt_key;
 	upcall.userdata = NULL;
 	upcall.portid = 0;
 

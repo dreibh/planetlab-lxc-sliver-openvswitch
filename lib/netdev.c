@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include "coverage.h"
+#include "dpif.h"
 #include "dynamic-string.h"
 #include "fatal-signal.h"
 #include "hash.h"
@@ -84,7 +85,7 @@ netdev_initialize(void)
         netdev_register_provider(&netdev_tap_class);
         netdev_vport_tunnel_register();
 #endif
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined(__NetBSD__)
         netdev_register_provider(&netdev_tap_class);
         netdev_register_provider(&netdev_bsd_class);
 #endif
@@ -140,7 +141,7 @@ netdev_register_provider(const struct netdev_class *new_class)
         int error = new_class->init();
         if (error) {
             VLOG_ERR("failed to initialize %s network device class: %s",
-                     new_class->type, strerror(error));
+                     new_class->type, ovs_strerror(error));
             return error;
         }
     }
@@ -202,6 +203,43 @@ netdev_enumerate_types(struct sset *types)
     }
 }
 
+/* Check that the network device name is not the same as any of the registered
+ * vport providers' dpif_port name (dpif_port is NULL if the vport provider
+ * does not define it) or the datapath internal port name (e.g. ovs-system).
+ *
+ * Returns true if there is a name conflict, false otherwise. */
+bool
+netdev_is_reserved_name(const char *name)
+{
+    struct shash_node *node;
+
+    netdev_initialize();
+    SHASH_FOR_EACH (node, &netdev_classes) {
+        const char *dpif_port;
+        dpif_port = netdev_vport_class_get_dpif_port(node->data);
+        if (dpif_port && !strcmp(dpif_port, name)) {
+            return true;
+        }
+    }
+
+    if (!strncmp(name, "ovs-", 4)) {
+        struct sset types;
+        const char *type;
+
+        sset_init(&types);
+        dp_enumerate_types(&types);
+        SSET_FOR_EACH (type, &types) {
+            if (!strcmp(name+4, type)) {
+                sset_destroy(&types);
+                return true;
+            }
+        }
+        sset_destroy(&types);
+    }
+
+    return false;
+}
+
 /* Opens the network device named 'name' (e.g. "eth0") of the specified 'type'
  * (e.g. "system") and returns zero if successful, otherwise a positive errno
  * value.  On success, sets '*netdevp' to the new network device, otherwise to
@@ -239,6 +277,20 @@ netdev_open(const char *name, const char *type, struct netdev **netdevp)
 
     *netdevp = netdev;
     return 0;
+}
+
+/* Returns a reference to 'netdev_' for the caller to own. Returns null if
+ * 'netdev_' is null. */
+struct netdev *
+netdev_ref(const struct netdev *netdev_)
+{
+    struct netdev *netdev = CONST_CAST(struct netdev *, netdev_);
+
+    if (netdev) {
+        ovs_assert(netdev->ref_cnt > 0);
+        netdev->ref_cnt++;
+    }
+    return netdev;
 }
 
 /* Reconfigures the device 'netdev' with 'args'.  'args' may be empty
@@ -476,7 +528,7 @@ netdev_get_mtu(const struct netdev *netdev, int *mtup)
         *mtup = 0;
         if (error != EOPNOTSUPP) {
             VLOG_DBG_RL(&rl, "failed to retrieve MTU for network device %s: "
-                         "%s", netdev_get_name(netdev), strerror(error));
+                         "%s", netdev_get_name(netdev), ovs_strerror(error));
         }
     }
     return error;
@@ -497,7 +549,7 @@ netdev_set_mtu(const struct netdev *netdev, int mtu)
     error = class->set_mtu ? class->set_mtu(netdev, mtu) : EOPNOTSUPP;
     if (error && error != EOPNOTSUPP) {
         VLOG_DBG_RL(&rl, "failed to set MTU for network device %s: %s",
-                     netdev_get_name(netdev), strerror(error));
+                     netdev_get_name(netdev), ovs_strerror(error));
     }
 
     return error;
@@ -775,7 +827,7 @@ do_update_flags(struct netdev *netdev, enum netdev_flags off,
     if (error) {
         VLOG_WARN_RL(&rl, "failed to %s flags for network device %s: %s",
                      off || on ? "set" : "get", netdev_get_name(netdev),
-                     strerror(error));
+                     ovs_strerror(error));
         old_flags = 0;
     } else if ((off || on) && sfp) {
         enum netdev_flags new_flags = (old_flags & ~off) | on;
@@ -906,7 +958,7 @@ netdev_get_carrier(const struct netdev *netdev)
                                                               &carrier);
     if (error) {
         VLOG_DBG("%s: failed to get network device carrier status, assuming "
-                 "down: %s", netdev_get_name(netdev), strerror(error));
+                 "down: %s", netdev_get_name(netdev), ovs_strerror(error));
         carrier = false;
     }
 

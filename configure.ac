@@ -45,6 +45,7 @@ AC_SEARCH_LIBS([pow], [m])
 AC_SEARCH_LIBS([clock_gettime], [rt])
 AC_SEARCH_LIBS([timer_create], [rt])
 AC_SEARCH_LIBS([pthread_sigmask], [pthread])
+AC_FUNC_STRERROR_R
 
 OVS_CHECK_ESX
 OVS_CHECK_COVERAGE
@@ -59,10 +60,14 @@ OVS_CHECK_DOT
 OVS_CHECK_IF_PACKET
 OVS_CHECK_IF_DL
 OVS_CHECK_STRTOK_R
+AC_CHECK_DECLS([sys_siglist], [], [], [[#include <signal.h>]])
 AC_CHECK_MEMBERS([struct stat.st_mtim.tv_nsec, struct stat.st_mtimensec],
   [], [], [[#include <sys/stat.h>]])
-AC_CHECK_FUNCS([mlockall strnlen strsignal getloadavg statvfs getmntent_r])
-AC_CHECK_HEADERS([mntent.h sys/statvfs.h linux/types.h linux/if_ether.h])
+AC_CHECK_MEMBERS([struct ifreq.ifr_flagshigh], [], [], [[#include <net/if.h>]])
+AC_CHECK_FUNCS([mlockall strnlen getloadavg statvfs getmntent_r])
+AC_CHECK_HEADERS([mntent.h sys/statvfs.h linux/types.h linux/if_ether.h stdatomic.h])
+AC_CHECK_HEADERS([net/if_mib.h], [], [], [[#include <sys/types.h>
+#include <net/if.h>]])
 
 OVS_CHECK_PKIDIR
 OVS_CHECK_RUNDIR
@@ -76,6 +81,11 @@ OVS_CHECK_XENSERVER_VERSION
 OVS_CHECK_GROFF
 OVS_CHECK_GNU_MAKE
 OVS_CHECK_CACHE_TIME
+OVS_CHECK_TLS
+OVS_CHECK_ATOMIC_ALWAYS_LOCK_FREE(1)
+OVS_CHECK_ATOMIC_ALWAYS_LOCK_FREE(2)
+OVS_CHECK_ATOMIC_ALWAYS_LOCK_FREE(4)
+OVS_CHECK_ATOMIC_ALWAYS_LOCK_FREE(8)
 
 OVS_ENABLE_OPTION([-Wall])
 OVS_ENABLE_OPTION([-Wno-sign-compare])

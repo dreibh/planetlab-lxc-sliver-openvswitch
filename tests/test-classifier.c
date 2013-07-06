@@ -240,8 +240,9 @@ match(const struct cls_rule *wild_, const struct flow *fixed)
             eq = !((fixed->dl_type ^ wild.flow.dl_type)
                    & wild.wc.masks.dl_type);
         } else if (f_idx == CLS_F_IDX_IN_PORT) {
-            eq = !((fixed->in_port ^ wild.flow.in_port)
-                   & wild.wc.masks.in_port);
+            eq = !((fixed->in_port.ofp_port
+                    ^ wild.flow.in_port.ofp_port)
+                   & wild.wc.masks.in_port.ofp_port);
         } else {
             NOT_REACHED();
         }
@@ -298,7 +299,7 @@ static ovs_be64 tun_id_values[] = {
 static ovs_be64 metadata_values[] = {
     0,
     CONSTANT_HTONLL(UINT64_C(0xfedcba9876543210)) };
-static uint16_t in_port_values[] = { 1, OFPP_LOCAL };
+static ofp_port_t in_port_values[] = { OFP_PORT_C(1), OFPP_LOCAL };
 static ovs_be16 vlan_tci_values[] = { CONSTANT_HTONS(101), CONSTANT_HTONS(0) };
 static ovs_be16 dl_type_values[]
             = { CONSTANT_HTONS(ETH_TYPE_IP), CONSTANT_HTONS(ETH_TYPE_ARP) };
@@ -410,7 +411,8 @@ compare_classifiers(struct classifier *cls, struct tcls *tcls)
         flow.nw_dst = nw_dst_values[get_value(&x, N_NW_DST_VALUES)];
         flow.tunnel.tun_id = tun_id_values[get_value(&x, N_TUN_ID_VALUES)];
         flow.metadata = metadata_values[get_value(&x, N_METADATA_VALUES)];
-        flow.in_port = in_port_values[get_value(&x, N_IN_PORT_VALUES)];
+        flow.in_port.ofp_port = in_port_values[get_value(&x,
+                                                   N_IN_PORT_VALUES)];
         flow.vlan_tci = vlan_tci_values[get_value(&x, N_VLAN_TCI_VALUES)];
         flow.dl_type = dl_type_values[get_value(&x, N_DL_TYPE_VALUES)];
         flow.tp_src = tp_src_values[get_value(&x, N_TP_SRC_VALUES)];
@@ -422,7 +424,7 @@ compare_classifiers(struct classifier *cls, struct tcls *tcls)
         flow.nw_proto = nw_proto_values[get_value(&x, N_NW_PROTO_VALUES)];
         flow.nw_tos = nw_dscp_values[get_value(&x, N_NW_DSCP_VALUES)];
 
-        cr0 = classifier_lookup(cls, &flow);
+        cr0 = classifier_lookup(cls, &flow, NULL);
         cr1 = tcls_lookup(tcls, &flow);
         assert((cr0 == NULL) == (cr1 == NULL));
         if (cr0 != NULL) {
@@ -546,7 +548,7 @@ make_rule(int wc_fields, unsigned int priority, int value_pat)
         } else if (f_idx == CLS_F_IDX_DL_TYPE) {
             match.wc.masks.dl_type = htons(UINT16_MAX);
         } else if (f_idx == CLS_F_IDX_IN_PORT) {
-            match.wc.masks.in_port = UINT16_MAX;
+            match.wc.masks.in_port.ofp_port = u16_to_ofp(UINT16_MAX);
         } else {
             NOT_REACHED();
         }
@@ -1279,7 +1281,7 @@ test_minimask_combine(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
         minimask_init(&minimask2, &mask2);
 
         minimask_combine(&minicombined, &minimask, &minimask2, storage);
-        flow_wildcards_combine(&combined, &mask, &mask2);
+        flow_wildcards_and(&combined, &mask, &mask2);
         minimask_expand(&minicombined, &combined2);
         assert(flow_wildcards_equal(&combined, &combined2));
 

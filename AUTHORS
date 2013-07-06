@@ -6,6 +6,7 @@ Alexey I. Froloff       raorn@altlinux.org
 Alex Wang               alexw@nicira.com
 Andrew Evans            aevans@nicira.com
 Andrew Lambeth          wal@nicira.com
+Andy Hill               hillad@gmail.com
 Andy Southgate          andy.southgate@citrix.com
 Andy Zhou               azhou@nicira.com
 Ansis Atteka            aatteka@nicira.com
@@ -40,11 +41,13 @@ Henry Mai               hmai@nicira.com
 Hao Zheng               hzheng@nicira.com
 Ian Campbell            Ian.Campbell@citrix.com
 Isaku Yamahata          yamahata@valinux.co.jp
+James P.                roampune@gmail.com
 James Page              james.page@ubuntu.com
 Jarno Rajahalme         jarno.rajahalme@nsn.com
 Jean Tourrilhes         jt@hpl.hp.com
 Jeremy Stribling        strib@nicira.com
 Jesse Gross             jesse@nicira.com
+Jing Ai                 jinga@google.com
 Joe Perches             joe@perches.com
 Joe Stringer            joe@wand.net.nz
 Jun Nakajima            jun.nakajima@intel.com
@@ -57,6 +60,7 @@ Lorand Jakab            lojakab@cisco.com
 Luca Giraudo            lgiraudo@nicira.com
 Martin Casado           casado@nicira.com
 Mehak Mahajan           mmahajan@nicira.com
+Murphy McCauley         murphy.mccauley@gmail.com
 Natasha Gude            natasha@nicira.com
 Neil McKee              neil.mckee@inmon.com
 Paraneetharan Chandrasekaran    paraneetharanc@gmail.com
@@ -121,6 +125,7 @@ Brent Salisbury         brent.salisbury@gmail.com
 Bryan Fulton            bryan@nicira.com
 Bryan Osoro             bosoro@nicira.com
 Cedric Hobbs            cedric@nicira.com
+Christopher Paggen      cpaggen@cisco.com
 Dave Walker             DaveWalker@ubuntu.com
 David Palma             palma@onesource.pt
 Derek Cormier           derek.cormier@lab.ntt.co.jp
@@ -153,7 +158,6 @@ Jari Sundell            sundell.software@gmail.com
 Jed Daniels             openvswitch@jeddaniels.com
 Jeff Merrick            jmerrick@vmware.com
 Jeongkeun Lee           jklee@hp.com
-Jing Ai                 ai_jing2000@hotmail.com
 Joan Cirer              joan@ev0.net
 John Galgay             john@galgay.net
 Kevin Mancuso           kevin.mancuso@rackspace.com
@@ -166,6 +170,7 @@ Krishna Miriyala        krishna@nicira.com
 Logan Rosen             logatronico@gmail.com
 Luca Falavigna          dktrkranz@debian.org
 Luiz Henrique Ozaki     luiz.ozaki@gmail.com
+Maxime Brun             m.brun@alphalink.fr
 Michael A. Collins      mike.a.collins@ark-net.org
 Michael Hu              mhu@nicira.com
 Michael Mao             mmao@nicira.com
@@ -173,9 +178,10 @@ Michael Shigorin        mike@osdn.org.ua
 Mike Bursell            mike.bursell@citrix.com
 Mike Kruze              mkruze@nicira.com
 Min Chen                ustcer.tonychan@gmail.com
-Murphy McCauley         murphy.mccauley@gmail.com
 Mikael Doverhag         mdoverhag@nicira.com
+Nagi Reddy Jonnala      njonnala@Brocade.com
 Niklas Andersson        nandersson@nicira.com
+Padmanabhan Krishnan    kprad1@yahoo.com
 Pankaj Thakkar          thakkar@nicira.com
 Paul Ingram             paul@nicira.com
 Paulo Cravero           pcravero@as2594.net
@@ -206,6 +212,7 @@ Vjekoslav Brajkovic     balkan@cs.washington.edu
 Voravit T.              voravit@kth.se
 YAMAMOTO Takashi        yamamoto@valinux.co.jp
 Yeming Zhao             zhaoyeming@gmail.com
+Ying Chen               yingchen@vmware.com
 Yongqiang Liu           liuyq7809@gmail.com
 kk yap                  yapkke@stanford.edu
 likunyun                kunyunli@hotmail.com

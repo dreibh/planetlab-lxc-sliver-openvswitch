@@ -23,6 +23,7 @@
 #include "cfm.h"
 #include "classifier.h"
 #include "heap.h"
+#include "hindex.h"
 #include "list.h"
 #include "ofp-errors.h"
 #include "ofp-util.h"
@@ -34,6 +35,7 @@ struct match;
 struct ofpact;
 struct ofputil_flow_mod;
 struct bfd_cfg;
+struct meter;
 
 /* An OpenFlow switch.
  *
@@ -48,9 +50,6 @@ struct ofproto {
     /* Settings. */
     uint64_t fallback_dpid;     /* Datapath ID if no better choice found. */
     uint64_t datapath_id;       /* Datapath ID. */
-    unsigned flow_eviction_threshold; /* Threshold at which to begin flow
-                                       * table eviction. Only affects the
-                                       * ofproto-dpif implementation */
     bool forward_bpdu;          /* Option to allow forwarding of BPDU frames
                                  * when NORMAL action is invoked. */
     char *mfr_desc;             /* Manufacturer (NULL for default)b. */
@@ -65,16 +64,25 @@ struct ofproto {
     struct shash port_by_name;
     unsigned long *ofp_port_ids;/* Bitmap of used OpenFlow port numbers. */
     struct simap ofp_requests;  /* OpenFlow port number requests. */
-    uint16_t alloc_port_no;     /* Last allocated OpenFlow port number. */
-    uint16_t max_ports;         /* Max possible OpenFlow port num, plus one. */
+    ofp_port_t alloc_port_no;   /* Last allocated OpenFlow port number. */
+    ofp_port_t max_ports;       /* Max possible OpenFlow port num, plus one. */
 
     /* Flow tables. */
     struct oftable *tables;
     int n_tables;
 
+    struct hindex cookies;      /* Rules indexed on their cookie values. */
+
     /* Optimisation for flow expiry.
      * These flows should all be present in tables. */
     struct list expirable;      /* Expirable 'struct rule"s in all tables. */
+
+    /* Meter table.
+     * OpenFlow meters start at 1.  To avoid confusion we leave the first
+     * pointer in the array un-used, and index directly with the OpenFlow
+     * meter_id. */
+    struct ofputil_meter_features meter_features;
+    struct meter **meters; /* 'meter_features.max_meter' + 1 pointers. */
 
     /* OpenFlow connections. */
     struct connmgr *connmgr;
@@ -103,10 +111,10 @@ struct ofproto {
 };
 
 void ofproto_init_tables(struct ofproto *, int n_tables);
-void ofproto_init_max_ports(struct ofproto *, uint16_t max_ports);
+void ofproto_init_max_ports(struct ofproto *, ofp_port_t max_ports);
 
 struct ofproto *ofproto_lookup(const char *name);
-struct ofport *ofproto_get_port(const struct ofproto *, uint16_t ofp_port);
+struct ofport *ofproto_get_port(const struct ofproto *, ofp_port_t ofp_port);
 
 /* An OpenFlow port within a "struct ofproto".
  *
@@ -117,8 +125,9 @@ struct ofport {
     struct ofproto *ofproto;    /* The ofproto that contains this port. */
     struct netdev *netdev;
     struct ofputil_phy_port pp;
-    uint16_t ofp_port;          /* OpenFlow port number. */
+    ofp_port_t ofp_port;        /* OpenFlow port number. */
     unsigned int change_seq;
+    long long int created;      /* Time created, in msec. */
     int mtu;
 };
 
@@ -205,6 +214,7 @@ struct rule {
     struct ofoperation *pending; /* Operation now in progress, if nonnull. */
 
     ovs_be64 flow_cookie;        /* Controller-issued identifier. */
+    struct hindex_node cookie_node; /* In owning ofproto's 'cookies' index. */
 
     long long int created;       /* Creation time. */
     long long int modified;      /* Time of last modification. */
@@ -222,6 +232,9 @@ struct rule {
     struct ofpact *ofpacts;      /* Sequence of "struct ofpacts". */
     unsigned int ofpacts_len;    /* Size of 'ofpacts', in bytes. */
 
+    uint32_t meter_id;           /* Non-zero OF meter_id, or zero. */
+    struct list meter_list_node; /* In owning meter's 'rules' list. */
+
     /* Flow monitors. */
     enum nx_flow_monitor_flags monitor_flags;
     uint64_t add_seqno;         /* Sequence number when added. */
@@ -231,6 +244,14 @@ struct rule {
     struct list expirable;      /* In ofproto's 'expirable' list if this rule
                                  * is expirable, otherwise empty. */
 };
+
+/* Threshold at which to begin flow table eviction. Only affects the
+ * ofproto-dpif implementation */
+extern unsigned flow_eviction_threshold;
+
+/* Determines which model to use for handling misses in the ofproto-dpif
+ * implementation */
+extern enum ofproto_flow_miss_model flow_miss_model;
 
 static inline struct rule *
 rule_from_cls_rule(const struct cls_rule *cls_rule)
@@ -242,12 +263,12 @@ void ofproto_rule_update_used(struct rule *, long long int used);
 void ofproto_rule_expire(struct rule *, uint8_t reason);
 void ofproto_rule_destroy(struct rule *);
 
-bool ofproto_rule_has_out_port(const struct rule *, uint16_t out_port);
+bool ofproto_rule_has_out_port(const struct rule *, ofp_port_t out_port);
 
 void ofoperation_complete(struct ofoperation *, enum ofperr);
 struct rule *ofoperation_get_victim(struct ofoperation *);
 
-bool ofoperation_has_out_port(const struct ofoperation *, uint16_t out_port);
+bool ofoperation_has_out_port(const struct ofoperation *, ofp_port_t out_port);
 
 bool ofproto_rule_is_hidden(const struct rule *);
 
@@ -688,7 +709,7 @@ struct ofproto_class {
      * It doesn't matter whether the new port will be returned by a later call
      * to ->port_poll(); the implementation may do whatever is more
      * convenient. */
-    int (*port_del)(struct ofproto *ofproto, uint16_t ofp_port);
+    int (*port_del)(struct ofproto *ofproto, ofp_port_t ofp_port);
 
     /* Get port stats */
     int (*port_get_stats)(const struct ofport *port,
@@ -1311,10 +1332,52 @@ struct ofproto_class {
      * If 'realdev_ofp_port' is zero, then this function deconfigures 'ofport'
      * as a VLAN splinter port.
      *
-     * This function should be NULL if a an implementation does not support
-     * it. */
+     * This function should be NULL if an implementation does not support it.
+     */
     int (*set_realdev)(struct ofport *ofport,
-                       uint16_t realdev_ofp_port, int vid);
+                       ofp_port_t realdev_ofp_port, int vid);
+
+/* ## ------------------------ ## */
+/* ## OpenFlow meter functions ## */
+/* ## ------------------------ ## */
+
+    /* These functions should be NULL if an implementation does not support
+     * them.  They must be all null or all non-null.. */
+
+    /* Initializes 'features' to describe the metering features supported by
+     * 'ofproto'. */
+    void (*meter_get_features)(const struct ofproto *ofproto,
+                               struct ofputil_meter_features *features);
+
+    /* If '*id' is UINT32_MAX, adds a new meter with the given 'config'.  On
+     * success the function must store a provider meter ID other than
+     * UINT32_MAX in '*id'.  All further references to the meter will be made
+     * with the returned provider meter id rather than the OpenFlow meter id.
+     * The caller does not try to interpret the provider meter id, giving the
+     * implementation the freedom to either use the OpenFlow meter_id value
+     * provided in the meter configuration, or any other value suitable for the
+     * implementation.
+     *
+     * If '*id' is a value other than UINT32_MAX, modifies the existing meter
+     * with that meter provider ID to have configuration 'config'.  On failure,
+     * the existing meter configuration is left intact.  Regardless of success,
+     * any change to '*id' updates the provider meter id used for this
+     * meter. */
+    enum ofperr (*meter_set)(struct ofproto *ofproto, ofproto_meter_id *id,
+                             const struct ofputil_meter_config *config);
+
+    /* Gets the meter and meter band packet and byte counts for maximum of
+     * 'stats->n_bands' bands for the meter with provider ID 'id' within
+     * 'ofproto'.  The caller fills in the other stats values.  The band stats
+     * are copied to memory at 'stats->bands' provided by the caller.  The
+     * number of returned band stats is returned in 'stats->n_bands'. */
+    enum ofperr (*meter_get)(const struct ofproto *ofproto,
+                             ofproto_meter_id id,
+                             struct ofputil_meter_stats *stats);
+
+    /* Deletes a meter, making the 'ofproto_meter_id' invalid for any
+     * further calls. */
+    void (*meter_del)(struct ofproto *, ofproto_meter_id);
 };
 
 extern const struct ofproto_class ofproto_dpif_class;
@@ -1334,7 +1397,7 @@ int ofproto_class_unregister(const struct ofproto_class *);
 enum { OFPROTO_POSTPONE = 1 << 16 };
 BUILD_ASSERT_DECL(OFPROTO_POSTPONE < OFPERR_OFS);
 
-int ofproto_flow_mod(struct ofproto *, const struct ofputil_flow_mod *);
+int ofproto_flow_mod(struct ofproto *, struct ofputil_flow_mod *);
 void ofproto_add_flow(struct ofproto *, const struct match *,
                       unsigned int priority,
                       const struct ofpact *ofpacts, size_t ofpacts_len);
