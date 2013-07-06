@@ -57,6 +57,9 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Sat Jul 06 2013 Giuseppe Lettieri <g.lettieri@iet.unipi.it> - sliver-openvswitch-1.10.90-3
+- merge with mainstream
+
 * Wed May 01 2013 Giuseppe Lettieri <g.lettieri@iet.unipi.it> - sliver-openvswitch-1.10.90-2
 - - fixed several bugs in the external-nodes support in exp-tool/Makefile
 - - let sliver-ovs return an error if tap device configuration failed
