@@ -252,7 +252,7 @@ netdev_rx_tunnel_recv(struct netdev_rx *rx_, void *buffer, size_t size)
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error receiveing Ethernet packet on %s: %s",
-                    netdev_rx_get_name(rx_), strerror(errno));
+                    netdev_rx_get_name(rx_), ovs_strerror(errno));
 	            netdev->stats.rx_errors++;
             }
             return -errno;
@@ -294,7 +294,7 @@ netdev_tunnel_send(struct netdev *netdev_, const void *buffer, size_t size)
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error sending Ethernet packet on %s: %s",
-                    netdev_get_name(netdev_), strerror(errno));
+                    netdev_get_name(netdev_), ovs_strerror(errno));
 		dev->stats.tx_errors++;
             }
             return errno;

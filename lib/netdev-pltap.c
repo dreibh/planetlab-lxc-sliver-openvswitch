@@ -149,7 +149,7 @@ netdev_pltap_create(const struct netdev_class *class OVS_UNUSED, const char *nam
     netdev->fd = tun_alloc(IFF_TAP, netdev->real_name);
     if (netdev->fd < 0) {
         error = errno;
-        VLOG_WARN("tun_alloc(IFF_TAP, %s) failed: %s", name, strerror(error));
+        VLOG_WARN("tun_alloc(IFF_TAP, %s) failed: %s", name, ovs_strerror(error));
         goto cleanup;
     }
     VLOG_DBG("real_name = %s", netdev->real_name);
@@ -249,13 +249,13 @@ static int vsys_transaction(const char *script,
 
     ofd = open(ofname, O_RDONLY | O_NONBLOCK);
     if (ofd < 0) {
-        VLOG_ERR("Cannot open %s: %s", ofname, strerror(errno));
+        VLOG_ERR("Cannot open %s: %s", ofname, ovs_strerror(errno));
 	error = errno;
 	goto cleanup;
     }
     ifd = open(ifname, O_WRONLY | O_NONBLOCK);
     if (ifd < 0) {
-        VLOG_ERR("Cannot open %s: %s", ifname, strerror(errno));
+        VLOG_ERR("Cannot open %s: %s", ifname, ovs_strerror(errno));
 	error = errno;
 	goto cleanup;
     }
@@ -278,7 +278,7 @@ static int vsys_transaction(const char *script,
 	if (select(maxfd + 1, &readset, &writeset, &errorset, NULL) < 0) {
 	    if (errno == EINTR)
 	        continue;
-	    VLOG_ERR("selec error: %s", strerror(errno));
+	    VLOG_ERR("selec error: %s", ovs_strerror(errno));
 	    error = errno;
 	    goto cleanup;
 	}
@@ -290,7 +290,7 @@ static int vsys_transaction(const char *script,
 	    ssize_t n = write(ifd, msg + bytes_written, bytes_to_write);    
 	    if (n < 0) {
 	    	if (errno != EAGAIN && errno != EINTR) {
-	            VLOG_ERR("write on %s: %s", ifname, strerror(errno));
+	            VLOG_ERR("write on %s: %s", ifname, ovs_strerror(errno));
 		    error = errno;
 		    goto cleanup;
 		}
@@ -305,7 +305,7 @@ static int vsys_transaction(const char *script,
 	    ssize_t n = read(ofd, reply + bytes_read, bytes_to_read);    
 	    if (n < 0) {
 	    	if (errno != EAGAIN && errno != EINTR) {
-	            VLOG_ERR("read on %s: %s", ofname, strerror(errno));
+	            VLOG_ERR("read on %s: %s", ofname, ovs_strerror(errno));
 		    error = errno;
 		    goto cleanup;
 		}
@@ -473,7 +473,7 @@ netdev_rx_pltap_recv(struct netdev_rx *rx_, void *buffer, size_t size)
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error receiveing Ethernet packet on %s: %s",
-                    netdev_rx_get_name(rx_), strerror(errno));
+                    netdev_rx_get_name(rx_), ovs_strerror(errno));
             }
             return -errno;
         }
@@ -515,7 +515,7 @@ netdev_pltap_send(struct netdev *netdev_, const void *buffer, size_t size)
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error sending Ethernet packet on %s: %s",
-                    netdev_get_name(netdev_), strerror(errno));
+                    netdev_get_name(netdev_), ovs_strerror(errno));
             }
             return errno;
         }
@@ -576,7 +576,7 @@ get_etheraddr(struct netdev_pltap *dev, uint8_t ea[ETH_ADDR_LEN])
          * to INFO for that case. */
         VLOG(errno == ENODEV ? VLL_INFO : VLL_ERR,
              "ioctl(SIOCGIFHWADDR) on %s device failed: %s",
-             dev->real_name, strerror(errno));
+             dev->real_name, ovs_strerror(errno));
         return errno;
     }
     hwaddr_family = ifr.ifr_hwaddr.sa_family;
@@ -700,7 +700,7 @@ netdev_pltap_init(void)
     list_init(&sync_list);
     af_inet_sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (af_inet_sock < 0) {
-        VLOG_ERR("failed to create inet socket: %s", strerror(errno));
+        VLOG_ERR("failed to create inet socket: %s", ovs_strerror(errno));
     }
     unixctl_command_register("netdev-pltap/get-tapname", "port",
                              1, 1, netdev_pltap_get_real_name, NULL);
