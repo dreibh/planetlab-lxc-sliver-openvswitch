@@ -61,10 +61,17 @@ struct netdev_dev_pltap {
     unsigned int change_seq;
 };
 
+static const struct netdev_rx_class netdev_rx_pltap_class;
+
 static struct list sync_list;
 
 struct netdev_pltap {
     struct netdev netdev;
+};
+
+struct netdev_rx_pltap {
+    struct netdev_rx up;    
+    int fd;
 };
 
 static int af_inet_sock = -1;
@@ -86,7 +93,7 @@ netdev_pltap_finalized(struct netdev_dev_pltap *dev)
 }
 
 static bool
-is_pltap_class(const struct netdev_class *class)
+is_netdev_pltap_class(const struct netdev_class *class)
 {
     return class->create == netdev_pltap_create;
 }
@@ -94,7 +101,7 @@ is_pltap_class(const struct netdev_class *class)
 static struct netdev_dev_pltap *
 netdev_dev_pltap_cast(const struct netdev_dev *netdev_dev)
 {
-    ovs_assert(is_pltap_class(netdev_dev_get_class(netdev_dev)));
+    ovs_assert(is_netdev_pltap_class(netdev_dev_get_class(netdev_dev)));
     return CONTAINER_OF(netdev_dev, struct netdev_dev_pltap, netdev_dev);
 }
 
@@ -102,8 +109,15 @@ static struct netdev_pltap *
 netdev_pltap_cast(const struct netdev *netdev)
 {
     struct netdev_dev *netdev_dev = netdev_get_dev(netdev);
-    ovs_assert(is_pltap_class(netdev_dev_get_class(netdev_dev)));
+    ovs_assert(is_netdev_pltap_class(netdev_dev_get_class(netdev_dev)));
     return CONTAINER_OF(netdev, struct netdev_pltap, netdev);
+}
+
+static struct netdev_rx_pltap*
+netdev_rx_pltap_cast(const struct netdev_rx *rx)
+{
+    netdev_rx_assert_class(rx, &netdev_rx_pltap_class);
+    return CONTAINER_OF(rx, struct netdev_rx_pltap, up);
 }
 
 static void sync_needed(struct netdev_dev_pltap *dev)
@@ -200,6 +214,39 @@ netdev_pltap_close(struct netdev *netdev_)
 {
     struct netdev_pltap *netdev = netdev_pltap_cast(netdev_);
     free(netdev);
+}
+
+
+static int netdev_pltap_up(struct netdev_dev_pltap *dev);
+
+static int
+netdev_pltap_rx_open(struct netdev *netdev_, struct netdev_rx **rxp)
+{
+    struct netdev_dev_pltap *netdev_dev =
+        netdev_dev_pltap_cast(netdev_get_dev(netdev_));
+    struct netdev_rx_pltap *rx;
+    int err;
+
+    rx = xmalloc(sizeof *rx);
+    netdev_rx_init(&rx->up, netdev_get_dev(netdev_), &netdev_rx_pltap_class);
+    rx->fd = netdev_dev->fd;
+    *rxp = &rx->up;
+    if (!netdev_pltap_finalized(netdev_dev))
+        return 0;
+    err = netdev_pltap_up(netdev_dev);
+    if (err) {
+        free(rx);
+        *rxp = NULL;
+        return err;
+    }
+    return 0;
+}
+
+static void
+netdev_rx_pltap_destroy(struct netdev_rx *rx_)
+{
+    struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
+    free(rx);
 }
 
 static int vsys_transaction(const char *script,
@@ -438,20 +485,9 @@ netdev_pltap_set_config(struct netdev_dev *dev_, const struct smap *args)
 }
 
 static int
-netdev_pltap_listen(struct netdev *netdev_ OVS_UNUSED)
+netdev_rx_pltap_recv(struct netdev_rx *rx_, void *buffer, size_t size)
 {
-    struct netdev_dev_pltap *dev = 
-    	netdev_dev_pltap_cast(netdev_get_dev(netdev_));
-    if (!netdev_pltap_finalized(dev))
-        return 0;
-    return netdev_pltap_up(dev);
-}
-
-static int
-netdev_pltap_recv(struct netdev *netdev_, void *buffer, size_t size)
-{
-    struct netdev_dev_pltap *dev = 
-    	netdev_dev_pltap_cast(netdev_get_dev(netdev_));
+    struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
     char prefix[4];
     struct iovec iov[2] = {
         { .iov_base = prefix, .iov_len = 4 },
@@ -459,7 +495,7 @@ netdev_pltap_recv(struct netdev *netdev_, void *buffer, size_t size)
     };
     for (;;) {
         ssize_t retval;
-        retval = readv(dev->fd, iov, 2);
+        retval = readv(rx->fd, iov, 2);
         if (retval >= 0) {
             if (retval <= size) {
 	    	return retval;
@@ -469,7 +505,7 @@ netdev_pltap_recv(struct netdev *netdev_, void *buffer, size_t size)
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error receiveing Ethernet packet on %s: %s",
-                    netdev_get_name(netdev_), strerror(errno));
+                    netdev_rx_get_name(rx_), strerror(errno));
             }
             return -errno;
         }
@@ -477,12 +513,13 @@ netdev_pltap_recv(struct netdev *netdev_, void *buffer, size_t size)
 }
 
 static void
-netdev_pltap_recv_wait(struct netdev *netdev_)
+netdev_rx_pltap_wait(struct netdev_rx *rx_)
 {
-    struct netdev_dev_pltap *dev = 
-    	netdev_dev_pltap_cast(netdev_get_dev(netdev_));
-    if (dev->fd >= 0 && netdev_pltap_finalized(dev)) {
-        poll_fd_wait(dev->fd, POLLIN);
+    struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
+    struct netdev_dev_pltap *netdev_dev =
+        netdev_dev_pltap_cast(rx->up.netdev_dev);
+    if (rx->fd >= 0 && netdev_pltap_finalized(netdev_dev)) {
+        poll_fd_wait(rx->fd, POLLIN);
     }
 }
 
@@ -528,17 +565,16 @@ netdev_pltap_send_wait(struct netdev *netdev_)
 }
 
 static int
-netdev_pltap_drain(struct netdev *netdev_)
+netdev_rx_pltap_drain(struct netdev_rx *rx_)
 {
-    struct netdev_dev_pltap *dev = 
-    	netdev_dev_pltap_cast(netdev_get_dev(netdev_));
+    struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
     char buffer[128];
     int error;
 
-    if (dev->fd < 0)
+    if (rx->fd < 0)
     	return EAGAIN;
     for (;;) {
-    	error = recv(dev->fd, buffer, 128, MSG_TRUNC);
+    	error = recv(rx->fd, buffer, 128, MSG_TRUNC);
 	if (error) {
             if (error == -EAGAIN)
 	        break;
@@ -736,10 +772,7 @@ const struct netdev_class netdev_pltap_class = {
     netdev_pltap_open,
     netdev_pltap_close,
 
-    netdev_pltap_listen,
-    netdev_pltap_recv,
-    netdev_pltap_recv_wait,
-    netdev_pltap_drain,
+    netdev_pltap_rx_open,
 
     netdev_pltap_send, 
     netdev_pltap_send_wait,  
@@ -781,4 +814,12 @@ const struct netdev_class netdev_pltap_class = {
     netdev_pltap_update_flags,
 
     netdev_pltap_change_seq
+};
+
+static const struct netdev_rx_class netdev_rx_pltap_class = {
+    netdev_rx_pltap_destroy,
+    netdev_rx_pltap_recv,
+    netdev_rx_pltap_wait,
+    netdev_rx_pltap_drain,
+
 };

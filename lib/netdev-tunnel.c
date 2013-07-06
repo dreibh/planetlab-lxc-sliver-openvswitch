@@ -54,7 +54,14 @@ struct netdev_dev_tunnel {
 
 struct netdev_tunnel {
     struct netdev netdev;
-} ;
+};
+
+struct netdev_rx_tunnel {
+    struct netdev_rx up;
+    int fd;
+};
+
+static const struct netdev_rx_class netdev_rx_tunnel_class;
 
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
@@ -65,7 +72,7 @@ static int netdev_tunnel_create(const struct netdev_class *, const char *,
 static void netdev_tunnel_update_seq(struct netdev_dev_tunnel *);
 
 static bool
-is_tunnel_class(const struct netdev_class *class)
+is_netdev_tunnel_class(const struct netdev_class *class)
 {
     return class->create == netdev_tunnel_create;
 }
@@ -73,7 +80,7 @@ is_tunnel_class(const struct netdev_class *class)
 static struct netdev_dev_tunnel *
 netdev_dev_tunnel_cast(const struct netdev_dev *netdev_dev)
 {
-    ovs_assert(is_tunnel_class(netdev_dev_get_class(netdev_dev)));
+    ovs_assert(is_netdev_tunnel_class(netdev_dev_get_class(netdev_dev)));
     return CONTAINER_OF(netdev_dev, struct netdev_dev_tunnel, netdev_dev);
 }
 
@@ -81,8 +88,15 @@ static struct netdev_tunnel *
 netdev_tunnel_cast(const struct netdev *netdev)
 {
     struct netdev_dev *netdev_dev = netdev_get_dev(netdev);
-    ovs_assert(is_tunnel_class(netdev_dev_get_class(netdev_dev)));
+    ovs_assert(is_netdev_tunnel_class(netdev_dev_get_class(netdev_dev)));
     return CONTAINER_OF(netdev, struct netdev_tunnel, netdev);
+}
+
+static struct netdev_rx_tunnel *
+netdev_rx_tunnel_cast(const struct netdev_rx *rx)
+{
+    netdev_rx_assert_class(rx, &netdev_rx_tunnel_class);
+    return CONTAINER_OF(rx, struct netdev_rx_tunnel, up);
 }
 
 static int
@@ -224,38 +238,53 @@ netdev_tunnel_set_config(struct netdev_dev *dev_, const struct smap *args)
 }
 
 static int
-netdev_tunnel_listen(struct netdev *netdev_ OVS_UNUSED)
-{
+netdev_tunnel_rx_open(struct netdev *netdev_, struct netdev_rx **rxp)
+{   
+    struct netdev_dev_tunnel *netdev_dev =
+        netdev_dev_tunnel_cast(netdev_get_dev(netdev_));
+    struct netdev_rx_tunnel *rx;
+    rx = xmalloc(sizeof *rx);
+    netdev_rx_init(&rx->up, netdev_get_dev(netdev_), &netdev_rx_tunnel_class);
+    rx->fd = netdev_dev->sockfd;
+    *rxp = &rx->up;
     return 0;
 }
 
-static int
-netdev_tunnel_recv(struct netdev *netdev_, void *buffer, size_t size)
+static void
+netdev_rx_tunnel_destroy(struct netdev_rx *rx_)
 {
-    struct netdev_dev_tunnel *dev = 
-    	netdev_dev_tunnel_cast(netdev_get_dev(netdev_));
-    if (!dev->connected)
+    struct netdev_rx_tunnel *rx = netdev_rx_tunnel_cast(rx_);
+    free(rx);
+}
+
+static int
+netdev_rx_tunnel_recv(struct netdev_rx *rx_, void *buffer, size_t size)
+{
+    struct netdev_rx_tunnel *rx = netdev_rx_tunnel_cast(rx_);
+    struct netdev_dev_tunnel *netdev_dev =
+        netdev_dev_tunnel_cast(rx_->netdev_dev);
+    if (!netdev_dev->connected)
         return -EAGAIN;
     for (;;) {
         ssize_t retval;
-        retval = recv(dev->sockfd, buffer, size, MSG_TRUNC);
-	VLOG_DBG("%s: recv(%"PRIxPTR", %zu, MSG_TRUNC) = %zd",
-		 netdev_get_name(netdev_), (uintptr_t)buffer, size, retval);
+        retval = recv(rx->fd, buffer, size, MSG_TRUNC);
+	    VLOG_DBG("%s: recv(%"PRIxPTR", %zu, MSG_TRUNC) = %zd",
+		    netdev_rx_get_name(rx_), (uintptr_t)buffer, size, retval);
         if (retval >= 0) {
-	    dev->stats.rx_packets++;
-	    dev->stats.rx_bytes += retval;
+	    netdev_dev->stats.rx_packets++;
+	    netdev_dev->stats.rx_bytes += retval;
             if (retval <= size) {
-	    	return retval;
-	    } else {
-	    	dev->stats.rx_errors++;
-		dev->stats.rx_length_errors++;
-	    	return -EMSGSIZE;
-	    }
+	    	    return retval;
+            } else {
+                netdev_dev->stats.rx_errors++;
+                netdev_dev->stats.rx_length_errors++;
+                return -EMSGSIZE;
+            }
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error receiveing Ethernet packet on %s: %s",
-                    netdev_get_name(netdev_), strerror(errno));
-	        dev->stats.rx_errors++;
+                    netdev_rx_get_name(rx_), strerror(errno));
+	            netdev_dev->stats.rx_errors++;
             }
             return -errno;
         }
@@ -263,12 +292,12 @@ netdev_tunnel_recv(struct netdev *netdev_, void *buffer, size_t size)
 }
 
 static void
-netdev_tunnel_recv_wait(struct netdev *netdev_)
+netdev_rx_tunnel_wait(struct netdev_rx *rx_)
 {
-    struct netdev_dev_tunnel *dev = 
-    	netdev_dev_tunnel_cast(netdev_get_dev(netdev_));
-    if (dev->sockfd >= 0) {
-        poll_fd_wait(dev->sockfd, POLLIN);
+    struct netdev_rx_tunnel *rx = 
+    	netdev_rx_tunnel_cast(rx_);
+    if (rx->fd >= 0) {
+        poll_fd_wait(rx->fd, POLLIN);
     }
 }
 
@@ -315,17 +344,19 @@ netdev_tunnel_send_wait(struct netdev *netdev_)
 }
 
 static int
-netdev_tunnel_drain(struct netdev *netdev_)
+netdev_rx_tunnel_drain(struct netdev_rx *rx_)
 {
-    struct netdev_dev_tunnel *dev = 
-    	netdev_dev_tunnel_cast(netdev_get_dev(netdev_));
+    struct netdev_dev_tunnel *netdev_dev =
+        netdev_dev_tunnel_cast(rx_->netdev_dev);
+    struct netdev_rx_tunnel *rx = 
+    	netdev_rx_tunnel_cast(rx_);
     char buffer[128];
     int error;
 
-    if (!dev->connected)
+    if (!netdev_dev->connected)
     	return 0;
     for (;;) {
-    	error = recv(dev->sockfd, buffer, 128, MSG_TRUNC);
+    	error = recv(rx->fd, buffer, 128, MSG_TRUNC);
 	if (error) {
             if (error == -EAGAIN)
 	        break;
@@ -384,23 +415,23 @@ netdev_tunnel_set_stats(struct netdev *netdev, const struct netdev_stats *stats)
 }
 
 static int
-netdev_tunnel_update_flags(struct netdev *netdev,
+netdev_tunnel_update_flags(struct netdev_dev *dev_,
                           enum netdev_flags off, enum netdev_flags on,
                           enum netdev_flags *old_flagsp)
 {
-    struct netdev_dev_tunnel *dev =
-        netdev_dev_tunnel_cast(netdev_get_dev(netdev));
+    struct netdev_dev_tunnel *netdev_dev =
+        netdev_dev_tunnel_cast(dev_);
 
     if ((off | on) & ~(NETDEV_UP | NETDEV_PROMISC)) {
         return EINVAL;
     }
 
-    // XXX should we actually do something with this flags?
-    *old_flagsp = dev->flags;
-    dev->flags |= on;
-    dev->flags &= ~off;
-    if (*old_flagsp != dev->flags) {
-        netdev_tunnel_update_seq(dev);
+    // XXX should we actually do something with these flags?
+    *old_flagsp = netdev_dev->flags;
+    netdev_dev->flags |= on;
+    netdev_dev->flags &= ~off;
+    if (*old_flagsp != netdev_dev->flags) {
+        netdev_tunnel_update_seq(netdev_dev);
     }
     return 0;
 }
@@ -496,25 +527,22 @@ const struct netdev_class netdev_tunnel_class = {
     netdev_tunnel_destroy,
     netdev_tunnel_get_config,
     netdev_tunnel_set_config, 
-    NULL,			/* get_tunnel_config */
+    NULL,			            /* get_tunnel_config */
 
     netdev_tunnel_open,
     netdev_tunnel_close,
 
-    netdev_tunnel_listen,
-    netdev_tunnel_recv,
-    netdev_tunnel_recv_wait,
-    netdev_tunnel_drain,
+    netdev_tunnel_rx_open,
 
     netdev_tunnel_send, 
     netdev_tunnel_send_wait,  
 
     netdev_tunnel_set_etheraddr,
     netdev_tunnel_get_etheraddr,
-    NULL,			/* get_mtu */
-    NULL,			/* set_mtu */
+    NULL,			            /* get_mtu */
+    NULL,			            /* set_mtu */
     NULL,                       /* get_ifindex */
-    NULL,			/* get_carrier */
+    NULL,			            /* get_carrier */
     NULL,                       /* get_carrier_resets */
     NULL,                       /* get_miimon */
     netdev_tunnel_get_stats,
@@ -547,3 +575,12 @@ const struct netdev_class netdev_tunnel_class = {
 
     netdev_tunnel_change_seq
 };
+
+
+static const struct netdev_rx_class netdev_rx_tunnel_class = {
+    netdev_rx_tunnel_destroy,
+    netdev_rx_tunnel_recv,
+    netdev_rx_tunnel_wait,
+    netdev_rx_tunnel_drain,
+};
+
