@@ -213,6 +213,7 @@ static uint64_t pick_datapath_id(const struct ofproto *);
 static uint64_t pick_fallback_dpid(void);
 static void ofproto_destroy__(struct ofproto *);
 static void update_mtu(struct ofproto *, struct ofport *);
+static void meter_delete(struct ofproto *, uint32_t first, uint32_t last);
 
 /* unixctl. */
 static void ofproto_unixctl_init(void);
@@ -1084,6 +1085,11 @@ ofproto_destroy__(struct ofproto *ofproto)
 
     ovs_assert(list_is_empty(&ofproto->pending));
     ovs_assert(!ofproto->n_pending);
+
+    if (ofproto->meters) {
+        meter_delete(ofproto, 1, ofproto->meter_features.max_meters);
+        free(ofproto->meters);
+    }
 
     connmgr_destroy(ofproto->connmgr);
 
@@ -3475,7 +3481,7 @@ modify_flows__(struct ofproto *ofproto, struct ofconn *ofconn,
 
         op = ofoperation_create(group, rule, OFOPERATION_MODIFY, 0);
 
-        if (fm->new_cookie != htonll(UINT64_MAX)) {
+        if (fm->modify_cookie && fm->new_cookie != htonll(UINT64_MAX)) {
             ofproto_rule_change_cookie(ofproto, rule, fm->new_cookie);
         }
         if (actions_changed) {
@@ -4255,6 +4261,22 @@ meter_create(const struct ofputil_meter_config *config,
     return meter;
 }
 
+static void
+meter_delete(struct ofproto *ofproto, uint32_t first, uint32_t last)
+{
+    uint32_t mid;
+    for (mid = first; mid <= last; ++mid) {
+        struct meter *meter = ofproto->meters[mid];
+        if (meter) {
+            ofproto->meters[mid] = NULL;
+            ofproto->ofproto_class->meter_del(ofproto,
+                                              meter->provider_meter_id);
+            free(meter->bands);
+            free(meter);
+        }
+    }
+}
+
 static enum ofperr
 handle_add_meter(struct ofproto *ofproto, struct ofputil_meter_mod *mm)
 {
@@ -4335,16 +4357,7 @@ handle_delete_meter(struct ofconn *ofconn, const struct ofp_header *oh,
     }
 
     /* Delete the meters. */
-    for (meter_id = first; meter_id <= last; ++meter_id) {
-        struct meter *meter = ofproto->meters[meter_id];
-        if (meter) {
-            ofproto->meters[meter_id] = NULL;
-            ofproto->ofproto_class->meter_del(ofproto,
-                                              meter->provider_meter_id);
-            free(meter->bands);
-            free(meter);
-        }
-    }
+    meter_delete(ofproto, first, last);
 
     return 0;
 }
@@ -4458,7 +4471,7 @@ handle_meter_request(struct ofconn *ofconn, const struct ofp_header *request,
         if (!meter) {
             continue; /* Skip non-existing meters. */
         }
-        if (type == OFPTYPE_METER_REQUEST) {
+        if (type == OFPTYPE_METER_STATS_REQUEST) {
             struct ofputil_meter_stats stats;
 
             stats.meter_id = meter_id;
@@ -4590,20 +4603,20 @@ handle_openflow__(struct ofconn *ofconn, const struct ofpbuf *msg)
     case OFPTYPE_FLOW_MONITOR_STATS_REQUEST:
         return handle_flow_monitor_request(ofconn, oh);
 
-    case OFPTYPE_METER_REQUEST:
-    case OFPTYPE_METER_CONFIG_REQUEST:
+    case OFPTYPE_METER_STATS_REQUEST:
+    case OFPTYPE_METER_CONFIG_STATS_REQUEST:
         return handle_meter_request(ofconn, oh, type);
 
-    case OFPTYPE_METER_FEATURES_REQUEST:
+    case OFPTYPE_METER_FEATURES_STATS_REQUEST:
         return handle_meter_features_request(ofconn, oh);
 
         /* FIXME: Change the following once they are implemented: */
     case OFPTYPE_QUEUE_GET_CONFIG_REQUEST:
     case OFPTYPE_GET_ASYNC_REQUEST:
-    case OFPTYPE_GROUP_REQUEST:
-    case OFPTYPE_GROUP_DESC_REQUEST:
-    case OFPTYPE_GROUP_FEATURES_REQUEST:
-    case OFPTYPE_TABLE_FEATURES_REQUEST:
+    case OFPTYPE_GROUP_STATS_REQUEST:
+    case OFPTYPE_GROUP_DESC_STATS_REQUEST:
+    case OFPTYPE_GROUP_FEATURES_STATS_REQUEST:
+    case OFPTYPE_TABLE_FEATURES_STATS_REQUEST:
         return OFPERR_OFPBRC_BAD_TYPE;
 
     case OFPTYPE_HELLO:
@@ -4627,13 +4640,13 @@ handle_openflow__(struct ofconn *ofconn, const struct ofpbuf *msg)
     case OFPTYPE_FLOW_MONITOR_RESUMED:
     case OFPTYPE_FLOW_MONITOR_STATS_REPLY:
     case OFPTYPE_GET_ASYNC_REPLY:
-    case OFPTYPE_GROUP_REPLY:
-    case OFPTYPE_GROUP_DESC_REPLY:
-    case OFPTYPE_GROUP_FEATURES_REPLY:
-    case OFPTYPE_METER_REPLY:
-    case OFPTYPE_METER_CONFIG_REPLY:
-    case OFPTYPE_METER_FEATURES_REPLY:
-    case OFPTYPE_TABLE_FEATURES_REPLY:
+    case OFPTYPE_GROUP_STATS_REPLY:
+    case OFPTYPE_GROUP_DESC_STATS_REPLY:
+    case OFPTYPE_GROUP_FEATURES_STATS_REPLY:
+    case OFPTYPE_METER_STATS_REPLY:
+    case OFPTYPE_METER_CONFIG_STATS_REPLY:
+    case OFPTYPE_METER_FEATURES_STATS_REPLY:
+    case OFPTYPE_TABLE_FEATURES_STATS_REPLY:
     default:
         return OFPERR_OFPBRC_BAD_TYPE;
     }

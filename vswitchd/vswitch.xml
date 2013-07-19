@@ -1208,6 +1208,12 @@
         on a host.
       </column>
 
+      <column name="ifindex">
+        A positive interface index as defined for SNMP MIB-II in RFCs 1213 and
+        2863, if the interface has one, otherwise 0.  The ifindex is useful for
+        seamless integration with protocols such as SNMP and sFlow.
+      </column>
+
       <column name="mac_in_use">
         The MAC address in use by this interface.
       </column>
@@ -1841,7 +1847,7 @@
             times the expected reception rate, will signal a connectivity
             fault.  In the case of a unidirectional connectivity issue, the
             system not receiving BFD control messages will signal the problem
-            to its peer in the messages is transmists.
+            to its peer in the messages it transmits.
         </p>
 
         <p>
@@ -1881,6 +1887,12 @@
           this may be the case, it may set <code>cpath_down</code> to
           <code>true</code> which may cause the remote BFD session not to
           forward traffic to this <ref table="Interface"/>. Defaults to
+          <code>false</code>.
+      </column>
+
+      <column name="bfd" key="check_tnl_key" type='{"type": "boolean"}'>
+          When set to true, Check Tunnel Key will make BFD only accept control
+          messages with an <code>in_key</code> of zero. Defaults to
           <code>false</code>.
       </column>
 

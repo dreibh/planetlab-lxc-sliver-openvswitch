@@ -86,7 +86,6 @@ void ovs_assert_failure(const char *, const char *, const char *) NO_RETURN;
      (TYPE) (POINTER))
 
 extern const char *program_name;
-extern const char *subprogram_name;
 
 /* Returns the number of elements in ARRAY. */
 #define ARRAY_SIZE(ARRAY) (sizeof ARRAY / sizeof *ARRAY)
@@ -108,6 +107,25 @@ is_pow2(uintmax_t x)
 {
     return IS_POW2(x);
 }
+
+/* Returns X rounded up to a power of 2.  X must be a constant expression. */
+#define ROUND_UP_POW2(X) RUP2__(X)
+#define RUP2__(X) (RUP2_1(X) + 1)
+#define RUP2_1(X) (RUP2_2(X) | (RUP2_2(X) >> 16))
+#define RUP2_2(X) (RUP2_3(X) | (RUP2_3(X) >> 8))
+#define RUP2_3(X) (RUP2_4(X) | (RUP2_4(X) >> 4))
+#define RUP2_4(X) (RUP2_5(X) | (RUP2_5(X) >> 2))
+#define RUP2_5(X) (RUP2_6(X) | (RUP2_6(X) >> 1))
+#define RUP2_6(X) ((X) - 1)
+
+/* Returns X rounded down to a power of 2.  X must be a constant expression. */
+#define ROUND_DOWN_POW2(X) RDP2__(X)
+#define RDP2__(X) (RDP2_1(X) - (RDP2_1(X) >> 1))
+#define RDP2_1(X) (RDP2_2(X) | (RDP2_2(X) >> 16))
+#define RDP2_2(X) (RDP2_3(X) | (RDP2_3(X) >> 8))
+#define RDP2_3(X) (RDP2_4(X) | (RDP2_4(X) >> 4))
+#define RDP2_4(X) (RDP2_5(X) | (RDP2_5(X) >> 2))
+#define RDP2_5(X) (      (X) | (      (X) >> 1))
 
 #ifndef MIN
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
@@ -183,6 +201,9 @@ void set_program_name__(const char *name, const char *version,
                         const char *date, const char *time);
 #define set_program_name(name) \
         set_program_name__(name, VERSION, __DATE__, __TIME__)
+
+const char *get_subprogram_name(void);
+void set_subprogram_name(const char *name);
 
 const char *get_program_version(void);
 void ovs_print_version(uint8_t min_ofp, uint8_t max_ofp);

@@ -50,6 +50,7 @@
 #include "ofp-print.h"
 #include "ofproto-dpif-governor.h"
 #include "ofproto-dpif-ipfix.h"
+#include "ofproto-dpif-mirror.h"
 #include "ofproto-dpif-sflow.h"
 #include "ofproto-dpif-xlate.h"
 #include "poll-loop.h"
@@ -71,6 +72,11 @@ COVERAGE_DEFINE(facet_unexpected);
 COVERAGE_DEFINE(facet_suppress);
 COVERAGE_DEFINE(subfacet_install_fail);
 
+/* Number of implemented OpenFlow tables. */
+enum { N_TABLES = 255 };
+enum { TBL_INTERNAL = N_TABLES - 1 };    /* Used for internal hidden rules. */
+BUILD_ASSERT_DECL(N_TABLES >= 2 && N_TABLES <= 255);
+
 struct flow_miss;
 struct facet;
 
@@ -81,10 +87,25 @@ static struct rule_dpif *rule_dpif_lookup(struct ofproto_dpif *,
 static void rule_get_stats(struct rule *, uint64_t *packets, uint64_t *bytes);
 static void rule_invalidate(const struct rule_dpif *);
 
-static void mirror_destroy(struct ofmirror *);
-static void update_mirror_stats(struct ofproto_dpif *ofproto,
-                                mirror_mask_t mirrors,
-                                uint64_t packets, uint64_t bytes);
+struct ofbundle {
+    struct hmap_node hmap_node; /* In struct ofproto's "bundles" hmap. */
+    struct ofproto_dpif *ofproto; /* Owning ofproto. */
+    void *aux;                  /* Key supplied by ofproto's client. */
+    char *name;                 /* Identifier for log messages. */
+
+    /* Configuration. */
+    struct list ports;          /* Contains "struct ofport"s. */
+    enum port_vlan_mode vlan_mode; /* VLAN mode */
+    int vlan;                   /* -1=trunk port, else a 12-bit VLAN ID. */
+    unsigned long *trunks;      /* Bitmap of trunked VLANs, if 'vlan' == -1.
+                                 * NULL if all VLANs are trunked. */
+    struct lacp *lacp;          /* LACP if LACP is enabled, otherwise NULL. */
+    struct bond *bond;          /* Nonnull iff more than one port. */
+    bool use_priority_tags;     /* Use 802.1p tag for frames in VLAN 0? */
+
+    /* Status. */
+    bool floodable;          /* True if no port has OFPUTIL_PC_NO_FLOOD set. */
+};
 
 static void bundle_remove(struct ofport *);
 static void bundle_update(struct ofbundle *);
@@ -189,8 +210,7 @@ static void subfacet_uninstall(struct subfacet *);
 struct facet {
     /* Owners. */
     struct hmap_node hmap_node;  /* In owning ofproto's 'facets' hmap. */
-    struct list list_node;       /* In owning rule's 'facets' list. */
-    struct rule_dpif *rule;      /* Owning rule. */
+    struct ofproto_dpif *ofproto;
 
     /* Owned data. */
     struct list subfacets;
@@ -226,6 +246,7 @@ struct facet {
     uint8_t tcp_flags;           /* TCP flags seen for this 'rule'. */
 
     struct xlate_out xout;
+    bool fail_open;              /* Facet matched the fail open rule. */
 
     /* Storage for a single subfacet, to reduce malloc() time and space
      * overhead.  (A facet always has at least one subfacet and in the common
@@ -259,6 +280,38 @@ static void push_all_stats(void);
 
 static bool facet_is_controller_flow(struct facet *);
 
+struct ofport_dpif {
+    struct hmap_node odp_port_node; /* In dpif_backer's "odp_to_ofport_map". */
+    struct ofport up;
+
+    odp_port_t odp_port;
+    struct ofbundle *bundle;    /* Bundle that contains this port, if any. */
+    struct list bundle_node;    /* In struct ofbundle's "ports" list. */
+    struct cfm *cfm;            /* Connectivity Fault Management, if any. */
+    struct bfd *bfd;            /* BFD, if any. */
+    tag_type tag;               /* Tag associated with this port. */
+    bool may_enable;            /* May be enabled in bonds. */
+    bool is_tunnel;             /* This port is a tunnel. */
+    long long int carrier_seq;  /* Carrier status changes. */
+    struct ofport_dpif *peer;   /* Peer if patch port. */
+
+    /* Spanning tree. */
+    struct stp_port *stp_port;  /* Spanning Tree Protocol, if any. */
+    enum stp_state stp_state;   /* Always STP_DISABLED if STP not in use. */
+    long long int stp_state_entered;
+
+    struct hmap priorities;     /* Map of attached 'priority_to_dscp's. */
+
+    /* Linux VLAN device support (e.g. "eth0.10" for VLAN 10.)
+     *
+     * This is deprecated.  It is only for compatibility with broken device
+     * drivers in old versions of Linux that do not properly support VLANs when
+     * VLAN devices are not used.  When broken device drivers are no longer in
+     * widespread use, we will delete these interfaces. */
+    ofp_port_t realdev_ofp_port;
+    int vlandev_vid;
+};
+
 /* Node in 'ofport_dpif''s 'priorities' map.  Used to maintain a map from
  * 'priority' (the datapath's term for QoS queue) to the dscp bits which all
  * traffic egressing the 'ofport' with that priority should be marked with. */
@@ -287,8 +340,11 @@ static bool vsp_adjust_flow(const struct ofproto_dpif *, struct flow *);
 static void vsp_remove(struct ofport_dpif *);
 static void vsp_add(struct ofport_dpif *, ofp_port_t realdev_ofp_port, int vid);
 
+static odp_port_t ofp_port_to_odp_port(const struct ofproto_dpif *,
+                                       ofp_port_t);
+
 static ofp_port_t odp_port_to_ofp_port(const struct ofproto_dpif *,
-                                       odp_port_t odp_port);
+                                       odp_port_t);
 
 static struct ofport_dpif *
 ofport_dpif_cast(const struct ofport *ofport)
@@ -308,6 +364,17 @@ static void run_fast_rl(void);
 struct dpif_completion {
     struct list list_node;
     struct ofoperation *op;
+};
+
+/* Extra information about a classifier table.
+ * Currently used just for optimized flow revalidation. */
+struct table_dpif {
+    /* If either of these is nonnull, then this table has a form that allows
+     * flows to be tagged to avoid revalidating most flows for the most common
+     * kinds of flow table changes. */
+    struct cls_table *catchall_table; /* Table that wildcards all fields. */
+    struct cls_table *other_table;    /* Table with any other wildcard set. */
+    uint32_t basis;                   /* Keeps each table's tags separate. */
 };
 
 /* Reasons that we might need to revalidate every facet, and corresponding
@@ -400,6 +467,57 @@ static struct ofport_dpif *
 odp_port_to_ofport(const struct dpif_backer *, odp_port_t odp_port);
 static void update_moving_averages(struct dpif_backer *backer);
 
+struct ofproto_dpif {
+    struct hmap_node all_ofproto_dpifs_node; /* In 'all_ofproto_dpifs'. */
+    struct ofproto up;
+    struct dpif_backer *backer;
+
+    /* Special OpenFlow rules. */
+    struct rule_dpif *miss_rule; /* Sends flow table misses to controller. */
+    struct rule_dpif *no_packet_in_rule; /* Drops flow table misses. */
+    struct rule_dpif *drop_frags_rule; /* Used in OFPC_FRAG_DROP mode. */
+
+    /* Bridging. */
+    struct netflow *netflow;
+    struct dpif_sflow *sflow;
+    struct dpif_ipfix *ipfix;
+    struct hmap bundles;        /* Contains "struct ofbundle"s. */
+    struct mac_learning *ml;
+    bool has_bonded_bundles;
+    struct mbridge *mbridge;
+
+    /* Facets. */
+    struct classifier facets;     /* Contains 'struct facet's. */
+    long long int consistency_rl;
+
+    /* Revalidation. */
+    struct table_dpif tables[N_TABLES];
+
+    /* Support for debugging async flow mods. */
+    struct list completions;
+
+    struct netdev_stats stats; /* To account packets generated and consumed in
+                                * userspace. */
+
+    /* Spanning tree. */
+    struct stp *stp;
+    long long int stp_last_tick;
+
+    /* VLAN splinters. */
+    struct hmap realdev_vid_map; /* (realdev,vid) -> vlandev. */
+    struct hmap vlandev_map;     /* vlandev -> (realdev,vid). */
+
+    /* Ports. */
+    struct sset ports;             /* Set of standard port names. */
+    struct sset ghost_ports;       /* Ports with no datapath port. */
+    struct sset port_poll_set;     /* Queued names for port_poll() reply. */
+    int port_poll_errno;           /* Last errno for port_poll() reply. */
+
+    /* Per ofproto's dpif stats. */
+    uint64_t n_hit;
+    uint64_t n_missed;
+};
+
 /* Defer flow mod completion until "ovs-appctl ofproto/unclog"?  (Useful only
  * for debugging the asynchronous flow_mod implementation.) */
 static bool clogged;
@@ -412,6 +530,16 @@ static bool enable_megaflows = true;
 static struct hmap all_ofproto_dpifs = HMAP_INITIALIZER(&all_ofproto_dpifs);
 
 static void ofproto_dpif_unixctl_init(void);
+
+static inline struct ofproto_dpif *
+ofproto_dpif_cast(const struct ofproto *ofproto)
+{
+    ovs_assert(ofproto->ofproto_class == &ofproto_dpif_class);
+    return CONTAINER_OF(ofproto, struct ofproto_dpif, up);
+}
+
+static struct ofport_dpif *get_ofp_port(const struct ofproto_dpif *ofproto,
+                                        ofp_port_t ofp_port);
 
 /* Upcalls. */
 #define FLOW_MISS_MAX_BATCH 50
@@ -431,6 +559,20 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
 
 /* Initial mappings of port to bridge mappings. */
 static struct shash init_ofp_ports = SHASH_INITIALIZER(&init_ofp_ports);
+
+int
+ofproto_dpif_flow_mod(struct ofproto_dpif *ofproto,
+                      struct ofputil_flow_mod *fm)
+{
+    return ofproto_flow_mod(&ofproto->up, fm);
+}
+
+void
+ofproto_dpif_send_packet_in(struct ofproto_dpif *ofproto,
+                            struct ofputil_packet_in *pin)
+{
+    connmgr_send_packet_in(ofproto->up.connmgr, pin);
+}
 
 /* Factory functions. */
 
@@ -637,6 +779,36 @@ type_run(const char *type)
 
             if (ofproto->backer != backer) {
                 continue;
+            }
+
+            if (need_revalidate) {
+                struct ofport_dpif *ofport;
+                struct ofbundle *bundle;
+
+                xlate_ofproto_set(ofproto, ofproto->up.name, ofproto->ml,
+                                  ofproto->mbridge, ofproto->sflow,
+                                  ofproto->ipfix, ofproto->up.frag_handling,
+                                  ofproto->up.forward_bpdu,
+                                  connmgr_has_in_band(ofproto->up.connmgr),
+                                  ofproto->netflow != NULL,
+                                  ofproto->stp != NULL);
+
+                HMAP_FOR_EACH (bundle, hmap_node, &ofproto->bundles) {
+                    xlate_bundle_set(ofproto, bundle, bundle->name,
+                                     bundle->vlan_mode, bundle->vlan,
+                                     bundle->trunks, bundle->use_priority_tags,
+                                     bundle->bond, bundle->lacp,
+                                     bundle->floodable);
+                }
+
+                HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
+                    xlate_ofport_set(ofproto, ofport->bundle, ofport,
+                                     ofport->up.ofp_port, ofport->odp_port,
+                                     ofport->up.netdev, ofport->cfm,
+                                     ofport->bfd, ofport->peer,
+                                     ofport->up.pp.config, ofport->stp_state,
+                                     ofport->is_tunnel, ofport->may_enable);
+                }
             }
 
             cls_cursor_init(&cursor, &ofproto->facets, NULL);
@@ -1028,9 +1200,7 @@ construct(struct ofproto *ofproto_)
     ofproto->stp = NULL;
     hmap_init(&ofproto->bundles);
     ofproto->ml = mac_learning_create(MAC_ENTRY_DEFAULT_IDLE_TIME);
-    for (i = 0; i < MAX_MIRRORS; i++) {
-        ofproto->mirrors[i] = NULL;
-    }
+    ofproto->mbridge = mbridge_create();
     ofproto->has_bonded_bundles = false;
 
     classifier_init(&ofproto->facets);
@@ -1048,7 +1218,6 @@ construct(struct ofproto *ofproto_)
 
     ofproto_dpif_unixctl_init();
 
-    ofproto->has_mirrors = false;
     hmap_init(&ofproto->vlandev_map);
     hmap_init(&ofproto->realdev_vid_map);
 
@@ -1100,6 +1269,7 @@ add_internal_flow(struct ofproto_dpif *ofproto, int id,
     fm.new_cookie = htonll(0);
     fm.cookie = htonll(0);
     fm.cookie_mask = htonll(0);
+    fm.modify_cookie = false;
     fm.table_id = TBL_INTERNAL;
     fm.command = OFPFC_ADD;
     fm.idle_timeout = 0;
@@ -1177,9 +1347,10 @@ destruct(struct ofproto *ofproto_)
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
     struct rule_dpif *rule, *next_rule;
     struct oftable *table;
-    int i;
 
     ofproto->backer->need_revalidate = REV_RECONFIGURE;
+    xlate_remove_ofproto(ofproto);
+
     hmap_remove(&all_ofproto_dpifs, &ofproto->all_ofproto_dpifs_node);
     complete_operations(ofproto);
 
@@ -1192,9 +1363,7 @@ destruct(struct ofproto *ofproto_)
         }
     }
 
-    for (i = 0; i < MAX_MIRRORS; i++) {
-        mirror_destroy(ofproto->mirrors[i]);
-    }
+    mbridge_unref(ofproto->mbridge);
 
     netflow_destroy(ofproto->netflow);
     dpif_sflow_unref(ofproto->sflow);
@@ -1242,6 +1411,11 @@ run(struct ofproto *ofproto_)
 
     if (!clogged) {
         complete_operations(ofproto);
+    }
+
+    if (mbridge_need_revalidate(ofproto->mbridge)) {
+        ofproto->backer->need_revalidate = REV_RECONFIGURE;
+        mac_learning_flush(ofproto->ml, NULL);
     }
 
     /* Do not perform any periodic activity below required by 'ofproto' while
@@ -1370,7 +1544,7 @@ flush(struct ofproto *ofproto_)
     n_batch = 0;
     HMAP_FOR_EACH_SAFE (subfacet, next_subfacet, hmap_node,
                         &ofproto->backer->subfacets) {
-        if (ofproto_dpif_cast(subfacet->facet->rule->up.ofproto) != ofproto) {
+        if (subfacet->facet->ofproto != ofproto) {
             continue;
         }
 
@@ -1524,6 +1698,7 @@ port_destruct(struct ofport *port_)
     const char *dp_port_name;
 
     ofproto->backer->need_revalidate = REV_RECONFIGURE;
+    xlate_ofport_remove(port);
 
     dp_port_name = netdev_vport_get_dpif_port(port->up.netdev, namebuf,
                                               sizeof namebuf);
@@ -2131,24 +2306,6 @@ bundle_lookup(const struct ofproto_dpif *ofproto, void *aux)
     return NULL;
 }
 
-/* Looks up each of the 'n_auxes' pointers in 'auxes' as bundles and adds the
- * ones that are found to 'bundles'. */
-static void
-bundle_lookup_multiple(struct ofproto_dpif *ofproto,
-                       void **auxes, size_t n_auxes,
-                       struct hmapx *bundles)
-{
-    size_t i;
-
-    hmapx_init(bundles);
-    for (i = 0; i < n_auxes; i++) {
-        struct ofbundle *bundle = bundle_lookup(ofproto, auxes[i]);
-        if (bundle) {
-            hmapx_add(bundles, bundle);
-        }
-    }
-}
-
 static void
 bundle_update(struct ofbundle *bundle)
 {
@@ -2221,24 +2378,15 @@ bundle_destroy(struct ofbundle *bundle)
 {
     struct ofproto_dpif *ofproto;
     struct ofport_dpif *port, *next_port;
-    int i;
 
     if (!bundle) {
         return;
     }
 
     ofproto = bundle->ofproto;
-    for (i = 0; i < MAX_MIRRORS; i++) {
-        struct ofmirror *m = ofproto->mirrors[i];
-        if (m) {
-            if (m->out == bundle) {
-                mirror_destroy(m);
-            } else if (hmapx_find_and_delete(&m->srcs, bundle)
-                       || hmapx_find_and_delete(&m->dsts, bundle)) {
-                ofproto->backer->need_revalidate = REV_RECONFIGURE;
-            }
-        }
-    }
+    mbridge_unregister_bundle(ofproto->mbridge, bundle->aux);
+
+    xlate_bundle_remove(bundle);
 
     LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &bundle->ports) {
         bundle_del_port(port);
@@ -2293,10 +2441,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         bundle->bond = NULL;
 
         bundle->floodable = true;
-
-        bundle->src_mirrors = 0;
-        bundle->dst_mirrors = 0;
-        bundle->mirror_out = 0;
+        mbridge_register_bundle(ofproto->mbridge, bundle);
     }
 
     if (!bundle->name || strcmp(s->name, bundle->name)) {
@@ -2557,238 +2702,45 @@ bundle_wait(struct ofbundle *bundle)
 /* Mirrors. */
 
 static int
-mirror_scan(struct ofproto_dpif *ofproto)
-{
-    int idx;
-
-    for (idx = 0; idx < MAX_MIRRORS; idx++) {
-        if (!ofproto->mirrors[idx]) {
-            return idx;
-        }
-    }
-    return -1;
-}
-
-static struct ofmirror *
-mirror_lookup(struct ofproto_dpif *ofproto, void *aux)
-{
-    int i;
-
-    for (i = 0; i < MAX_MIRRORS; i++) {
-        struct ofmirror *mirror = ofproto->mirrors[i];
-        if (mirror && mirror->aux == aux) {
-            return mirror;
-        }
-    }
-
-    return NULL;
-}
-
-/* Update the 'dup_mirrors' member of each of the ofmirrors in 'ofproto'. */
-static void
-mirror_update_dups(struct ofproto_dpif *ofproto)
-{
-    int i;
-
-    for (i = 0; i < MAX_MIRRORS; i++) {
-        struct ofmirror *m = ofproto->mirrors[i];
-
-        if (m) {
-            m->dup_mirrors = MIRROR_MASK_C(1) << i;
-        }
-    }
-
-    for (i = 0; i < MAX_MIRRORS; i++) {
-        struct ofmirror *m1 = ofproto->mirrors[i];
-        int j;
-
-        if (!m1) {
-            continue;
-        }
-
-        for (j = i + 1; j < MAX_MIRRORS; j++) {
-            struct ofmirror *m2 = ofproto->mirrors[j];
-
-            if (m2 && m1->out == m2->out && m1->out_vlan == m2->out_vlan) {
-                m1->dup_mirrors |= MIRROR_MASK_C(1) << j;
-                m2->dup_mirrors |= m1->dup_mirrors;
-            }
-        }
-    }
-}
-
-static int
-mirror_set(struct ofproto *ofproto_, void *aux,
-           const struct ofproto_mirror_settings *s)
+mirror_set__(struct ofproto *ofproto_, void *aux,
+             const struct ofproto_mirror_settings *s)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
-    mirror_mask_t mirror_bit;
-    struct ofbundle *bundle;
-    struct ofmirror *mirror;
-    struct ofbundle *out;
-    struct hmapx srcs;          /* Contains "struct ofbundle *"s. */
-    struct hmapx dsts;          /* Contains "struct ofbundle *"s. */
-    int out_vlan;
+    struct ofbundle **srcs, **dsts;
+    int error;
+    size_t i;
 
-    mirror = mirror_lookup(ofproto, aux);
     if (!s) {
-        mirror_destroy(mirror);
-        return 0;
-    }
-    if (!mirror) {
-        int idx;
-
-        idx = mirror_scan(ofproto);
-        if (idx < 0) {
-            VLOG_WARN("bridge %s: maximum of %d port mirrors reached, "
-                      "cannot create %s",
-                      ofproto->up.name, MAX_MIRRORS, s->name);
-            return EFBIG;
-        }
-
-        mirror = ofproto->mirrors[idx] = xzalloc(sizeof *mirror);
-        mirror->ofproto = ofproto;
-        mirror->idx = idx;
-        mirror->aux = aux;
-        mirror->out_vlan = -1;
-        mirror->name = NULL;
-    }
-
-    if (!mirror->name || strcmp(s->name, mirror->name)) {
-        free(mirror->name);
-        mirror->name = xstrdup(s->name);
-    }
-
-    /* Get the new configuration. */
-    if (s->out_bundle) {
-        out = bundle_lookup(ofproto, s->out_bundle);
-        if (!out) {
-            mirror_destroy(mirror);
-            return EINVAL;
-        }
-        out_vlan = -1;
-    } else {
-        out = NULL;
-        out_vlan = s->out_vlan;
-    }
-    bundle_lookup_multiple(ofproto, s->srcs, s->n_srcs, &srcs);
-    bundle_lookup_multiple(ofproto, s->dsts, s->n_dsts, &dsts);
-
-    /* If the configuration has not changed, do nothing. */
-    if (hmapx_equals(&srcs, &mirror->srcs)
-        && hmapx_equals(&dsts, &mirror->dsts)
-        && vlan_bitmap_equal(mirror->vlans, s->src_vlans)
-        && mirror->out == out
-        && mirror->out_vlan == out_vlan)
-    {
-        hmapx_destroy(&srcs);
-        hmapx_destroy(&dsts);
+        mirror_destroy(ofproto->mbridge, aux);
         return 0;
     }
 
-    hmapx_swap(&srcs, &mirror->srcs);
-    hmapx_destroy(&srcs);
+    srcs = xmalloc(s->n_srcs * sizeof *srcs);
+    dsts = xmalloc(s->n_dsts * sizeof *dsts);
 
-    hmapx_swap(&dsts, &mirror->dsts);
-    hmapx_destroy(&dsts);
-
-    free(mirror->vlans);
-    mirror->vlans = vlan_bitmap_clone(s->src_vlans);
-
-    mirror->out = out;
-    mirror->out_vlan = out_vlan;
-
-    /* Update bundles. */
-    mirror_bit = MIRROR_MASK_C(1) << mirror->idx;
-    HMAP_FOR_EACH (bundle, hmap_node, &mirror->ofproto->bundles) {
-        if (hmapx_contains(&mirror->srcs, bundle)) {
-            bundle->src_mirrors |= mirror_bit;
-        } else {
-            bundle->src_mirrors &= ~mirror_bit;
-        }
-
-        if (hmapx_contains(&mirror->dsts, bundle)) {
-            bundle->dst_mirrors |= mirror_bit;
-        } else {
-            bundle->dst_mirrors &= ~mirror_bit;
-        }
-
-        if (mirror->out == bundle) {
-            bundle->mirror_out |= mirror_bit;
-        } else {
-            bundle->mirror_out &= ~mirror_bit;
-        }
+    for (i = 0; i < s->n_srcs; i++) {
+        srcs[i] = bundle_lookup(ofproto, s->srcs[i]);
     }
 
-    ofproto->backer->need_revalidate = REV_RECONFIGURE;
-    ofproto->has_mirrors = true;
-    mac_learning_flush(ofproto->ml,
-                       &ofproto->backer->revalidate_set);
-    mirror_update_dups(ofproto);
-
-    return 0;
-}
-
-static void
-mirror_destroy(struct ofmirror *mirror)
-{
-    struct ofproto_dpif *ofproto;
-    mirror_mask_t mirror_bit;
-    struct ofbundle *bundle;
-    int i;
-
-    if (!mirror) {
-        return;
+    for (i = 0; i < s->n_dsts; i++) {
+        dsts[i] = bundle_lookup(ofproto, s->dsts[i]);
     }
 
-    ofproto = mirror->ofproto;
-    ofproto->backer->need_revalidate = REV_RECONFIGURE;
-    mac_learning_flush(ofproto->ml, &ofproto->backer->revalidate_set);
-
-    mirror_bit = MIRROR_MASK_C(1) << mirror->idx;
-    HMAP_FOR_EACH (bundle, hmap_node, &ofproto->bundles) {
-        bundle->src_mirrors &= ~mirror_bit;
-        bundle->dst_mirrors &= ~mirror_bit;
-        bundle->mirror_out &= ~mirror_bit;
-    }
-
-    hmapx_destroy(&mirror->srcs);
-    hmapx_destroy(&mirror->dsts);
-    free(mirror->vlans);
-
-    ofproto->mirrors[mirror->idx] = NULL;
-    free(mirror->name);
-    free(mirror);
-
-    mirror_update_dups(ofproto);
-
-    ofproto->has_mirrors = false;
-    for (i = 0; i < MAX_MIRRORS; i++) {
-        if (ofproto->mirrors[i]) {
-            ofproto->has_mirrors = true;
-            break;
-        }
-    }
+    error = mirror_set(ofproto->mbridge, aux, s->name, srcs, s->n_srcs, dsts,
+                       s->n_dsts, s->src_vlans,
+                       bundle_lookup(ofproto, s->out_bundle), s->out_vlan);
+    free(srcs);
+    free(dsts);
+    return error;
 }
 
 static int
-mirror_get_stats(struct ofproto *ofproto_, void *aux,
-                 uint64_t *packets, uint64_t *bytes)
+mirror_get_stats__(struct ofproto *ofproto, void *aux,
+                   uint64_t *packets, uint64_t *bytes)
 {
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
-    struct ofmirror *mirror = mirror_lookup(ofproto, aux);
-
-    if (!mirror) {
-        *packets = *bytes = UINT64_MAX;
-        return 0;
-    }
-
     push_all_stats();
-
-    *packets = mirror->packet_count;
-    *bytes = mirror->byte_count;
-
-    return 0;
+    return mirror_get_stats(ofproto_dpif_cast(ofproto)->mbridge, aux, packets,
+                            bytes);
 }
 
 static int
@@ -2806,7 +2758,7 @@ is_mirror_output_bundle(const struct ofproto *ofproto_, void *aux)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
     struct ofbundle *bundle = bundle_lookup(ofproto, aux);
-    return bundle && bundle->mirror_out != 0;
+    return bundle && mirror_bundle_out(ofproto->mbridge, bundle) != 0;
 }
 
 static void
@@ -2827,14 +2779,14 @@ set_mac_table_config(struct ofproto *ofproto_, unsigned int idle_time,
 
 /* Ports. */
 
-struct ofport_dpif *
+static struct ofport_dpif *
 get_ofp_port(const struct ofproto_dpif *ofproto, ofp_port_t ofp_port)
 {
     struct ofport *ofport = ofproto_get_port(&ofproto->up, ofp_port);
     return ofport ? ofport_dpif_cast(ofport) : NULL;
 }
 
-struct ofport_dpif *
+static struct ofport_dpif *
 get_odp_port(const struct ofproto_dpif *ofproto, odp_port_t odp_port)
 {
     struct ofport_dpif *port = odp_port_to_ofport(ofproto->backer, odp_port);
@@ -3328,12 +3280,10 @@ init_flow_miss_execute_op(struct flow_miss *miss, struct ofpbuf *packet,
 /* Helper for handle_flow_miss_without_facet() and
  * handle_flow_miss_with_facet(). */
 static void
-handle_flow_miss_common(struct rule_dpif *rule,
-                        struct ofpbuf *packet, const struct flow *flow)
+handle_flow_miss_common(struct ofproto_dpif *ofproto, struct ofpbuf *packet,
+                        const struct flow *flow, bool fail_open)
 {
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(rule->up.ofproto);
-
-    if (rule->up.cr.priority == FAIL_OPEN_PRIORITY) {
+    if (fail_open) {
         /*
          * Extra-special case for fail-open mode.
          *
@@ -3400,7 +3350,8 @@ handle_flow_miss_without_facet(struct rule_dpif *rule, struct xlate_out *xout,
 
         COVERAGE_INC(facet_suppress);
 
-        handle_flow_miss_common(rule, packet, &miss->flow);
+        handle_flow_miss_common(miss->ofproto, packet, &miss->flow,
+                                rule->up.cr.priority == FAIL_OPEN_PRIORITY);
 
         if (xout->slow) {
             struct xlate_in xin;
@@ -3440,26 +3391,24 @@ handle_flow_miss_with_facet(struct flow_miss *miss, struct facet *facet,
                             long long int now, struct dpif_flow_stats *stats,
                             struct flow_miss_op *ops, size_t *n_ops)
 {
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(facet->rule->up.ofproto);
     enum subfacet_path want_path;
     struct subfacet *subfacet;
     struct ofpbuf *packet;
 
-    subfacet = subfacet_create(facet, miss, now);
     want_path = facet->xout.slow ? SF_SLOW_PATH : SF_FAST_PATH;
-    if (stats) {
-        subfacet_update_stats(subfacet, stats);
-    }
 
     LIST_FOR_EACH (packet, list_node, &miss->packets) {
         struct flow_miss_op *op = &ops[*n_ops];
 
-        handle_flow_miss_common(facet->rule, packet, &miss->flow);
+        handle_flow_miss_common(miss->ofproto, packet, &miss->flow,
+                                facet->fail_open);
 
         if (want_path != SF_FAST_PATH) {
+            struct rule_dpif *rule;
             struct xlate_in xin;
 
-            xlate_in_init(&xin, ofproto, &miss->flow, facet->rule, 0, packet);
+            rule = rule_dpif_lookup(facet->ofproto, &facet->flow, NULL);
+            xlate_in_init(&xin, facet->ofproto, &miss->flow, rule, 0, packet);
             xlate_actions_for_side_effects(&xin);
         }
 
@@ -3471,6 +3420,27 @@ handle_flow_miss_with_facet(struct flow_miss *miss, struct facet *facet,
             execute->actions_len = facet->xout.odp_actions.size;
             (*n_ops)++;
         }
+    }
+
+    /* Don't install the flow if it's the result of the "userspace"
+     * action for an already installed facet.  This can occur when a
+     * datapath flow with wildcards has a "userspace" action and flows
+     * sent to userspace result in a different subfacet, which will then
+     * be rejected as overlapping by the datapath. */
+    if (miss->upcall_type == DPIF_UC_ACTION
+        && !list_is_empty(&facet->subfacets)) {
+        if (stats) {
+            facet->used = MAX(facet->used, stats->used);
+            facet->packet_count += stats->n_packets;
+            facet->byte_count += stats->n_bytes;
+            facet->tcp_flags |= stats->tcp_flags;
+        }
+        return;
+    }
+
+    subfacet = subfacet_create(facet, miss, now);
+    if (stats) {
+        subfacet_update_stats(subfacet, stats);
     }
 
     if (miss->upcall_type == DPIF_UC_MISS || subfacet->path != want_path) {
@@ -3498,7 +3468,7 @@ handle_flow_miss_with_facet(struct flow_miss *miss, struct facet *facet,
             put->actions = facet->xout.odp_actions.data;
             put->actions_len = facet->xout.odp_actions.size;
         } else {
-            compose_slow_path(ofproto, &miss->flow, facet->xout.slow,
+            compose_slow_path(facet->ofproto, &miss->flow, facet->xout.slow,
                               op->slow_stub, sizeof op->slow_stub,
                               &put->actions, &put->actions_len);
         }
@@ -3807,6 +3777,18 @@ handle_miss_upcalls(struct dpif_backer *backer, struct dpif_upcall *upcalls,
 
             COVERAGE_INC(subfacet_install_fail);
 
+            /* Zero-out subfacet counters when installation failed, but
+             * datapath reported hits.  This should not happen and
+             * indicates a bug, since if the datapath flow exists, we
+             * should not be attempting to create a new subfacet.  A
+             * buggy datapath could trigger this, so just zero out the
+             * counters and log an error. */
+            if (subfacet->dp_packet_count || subfacet->dp_byte_count) {
+                VLOG_ERR_RL(&rl, "failed to install subfacet for which "
+                            "datapath reported hits");
+                subfacet->dp_packet_count = subfacet->dp_byte_count = 0;
+            }
+
             subfacet->path = SF_NOT_INSTALLED;
         }
 
@@ -4085,7 +4067,6 @@ update_subfacet_stats(struct subfacet *subfacet,
                       const struct dpif_flow_stats *stats)
 {
     struct facet *facet = subfacet->facet;
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(facet->rule->up.ofproto);
     struct dpif_flow_stats diff;
 
     diff.tcp_flags = stats->tcp_flags;
@@ -4105,7 +4086,7 @@ update_subfacet_stats(struct subfacet *subfacet,
         diff.n_bytes = 0;
     }
 
-    ofproto->n_hit += diff.n_packets;
+    facet->ofproto->n_hit += diff.n_packets;
     subfacet->dp_packet_count = stats->n_packets;
     subfacet->dp_byte_count = stats->n_bytes;
     subfacet_update_stats(subfacet, &diff);
@@ -4323,7 +4304,6 @@ expire_subfacets(struct dpif_backer *backer, int dp_max_idle)
 static void
 rule_expire(struct rule_dpif *rule)
 {
-    struct facet *facet, *next_facet;
     long long int now;
     uint8_t reason;
 
@@ -4345,12 +4325,6 @@ rule_expire(struct rule_dpif *rule)
     }
 
     COVERAGE_INC(ofproto_dpif_expired);
-
-    /* Update stats.  (This is a no-op if the rule expired due to an idle
-     * timeout, because that only happens when the rule has no facets left.) */
-    LIST_FOR_EACH_SAFE (facet, next_facet, list_node, &rule->facets) {
-        facet_remove(facet);
-    }
 
     /* Get rid of the rule. */
     ofproto_rule_expire(&rule->up, reason);
@@ -4378,15 +4352,14 @@ facet_create(const struct flow_miss *miss, struct rule_dpif *rule,
     struct match match;
 
     facet = xzalloc(sizeof *facet);
+    facet->ofproto = miss->ofproto;
     facet->packet_count = facet->prev_packet_count = stats->n_packets;
     facet->byte_count = facet->prev_byte_count = stats->n_bytes;
     facet->tcp_flags = stats->tcp_flags;
     facet->used = stats->used;
     facet->flow = miss->flow;
     facet->learn_rl = time_msec() + 500;
-    facet->rule = rule;
 
-    list_push_back(&facet->rule->facets, &facet->list_node);
     list_init(&facet->subfacets);
     netflow_flow_init(&facet->nf_flow);
     netflow_flow_update_time(ofproto->netflow, &facet->nf_flow, facet->used);
@@ -4398,6 +4371,7 @@ facet_create(const struct flow_miss *miss, struct rule_dpif *rule,
     classifier_insert(&ofproto->facets, &facet->cr);
 
     facet->nf_flow.output_iface = facet->xout.nf_output_iface;
+    facet->fail_open = rule->up.cr.priority == FAIL_OPEN_PRIORITY;
 
     return facet;
 }
@@ -4441,7 +4415,6 @@ execute_odp_actions(struct ofproto_dpif *ofproto, const struct flow *flow,
 static void
 facet_remove(struct facet *facet)
 {
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(facet->rule->up.ofproto);
     struct subfacet *subfacet, *next_subfacet;
 
     ovs_assert(!list_is_empty(&facet->subfacets));
@@ -4463,9 +4436,8 @@ facet_remove(struct facet *facet)
                         &facet->subfacets) {
         subfacet_destroy__(subfacet);
     }
-    classifier_remove(&ofproto->facets, &facet->cr);
+    classifier_remove(&facet->ofproto->facets, &facet->cr);
     cls_rule_destroy(&facet->cr);
-    list_remove(&facet->list_node);
     facet_free(facet);
 }
 
@@ -4495,13 +4467,12 @@ facet_learn(struct facet *facet)
 static void
 facet_account(struct facet *facet)
 {
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(facet->rule->up.ofproto);
     const struct nlattr *a;
     unsigned int left;
     ovs_be16 vlan_tci;
     uint64_t n_bytes;
 
-    if (!facet->xout.has_normal || !ofproto->has_bonded_bundles) {
+    if (!facet->xout.has_normal || !facet->ofproto->has_bonded_bundles) {
         return;
     }
     n_bytes = facet->byte_count - facet->accounted_bytes;
@@ -4522,7 +4493,7 @@ facet_account(struct facet *facet)
 
         switch (nl_attr_type(a)) {
         case OVS_ACTION_ATTR_OUTPUT:
-            port = get_odp_port(ofproto, nl_attr_get_odp_port(a));
+            port = get_odp_port(facet->ofproto, nl_attr_get_odp_port(a));
             if (port && port->bundle && port->bundle->bond) {
                 bond_account(port->bundle->bond, &facet->flow,
                              vlan_tci_to_vid(vlan_tci), n_bytes);
@@ -4548,9 +4519,11 @@ static bool
 facet_is_controller_flow(struct facet *facet)
 {
     if (facet) {
-        const struct rule *rule = &facet->rule->up;
-        const struct ofpact *ofpacts = rule->ofpacts;
-        size_t ofpacts_len = rule->ofpacts_len;
+        struct ofproto_dpif *ofproto = facet->ofproto;
+        const struct rule_dpif *rule = rule_dpif_lookup(ofproto, &facet->flow,
+                                                        NULL);
+        const struct ofpact *ofpacts = rule->up.ofpacts;
+        size_t ofpacts_len = rule->up.ofpacts_len;
 
         if (ofpacts_len > 0 &&
             ofpacts->type == OFPACT_CONTROLLER &&
@@ -4568,7 +4541,7 @@ facet_is_controller_flow(struct facet *facet)
 static void
 facet_flush_stats(struct facet *facet)
 {
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(facet->rule->up.ofproto);
+    struct ofproto_dpif *ofproto = facet->ofproto;
     struct subfacet *subfacet;
 
     LIST_FOR_EACH (subfacet, list_node, &facet->subfacets) {
@@ -4637,41 +4610,21 @@ facet_check_consistency(struct facet *facet)
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 15);
 
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(facet->rule->up.ofproto);
-
     struct xlate_out xout;
     struct xlate_in xin;
 
     struct rule_dpif *rule;
-    bool ok;
-
-    /* Check the rule for consistency. */
-    rule = rule_dpif_lookup(ofproto, &facet->flow, NULL);
-    if (rule != facet->rule) {
-        if (!VLOG_DROP_WARN(&rl)) {
-            struct ds s = DS_EMPTY_INITIALIZER;
-
-            flow_format(&s, &facet->flow);
-            ds_put_format(&s, ": facet associated with wrong rule (was "
-                          "table=%"PRIu8",", facet->rule->up.table_id);
-            cls_rule_format(&facet->rule->up.cr, &s);
-            ds_put_format(&s, ") (should have been table=%"PRIu8",",
-                          rule->up.table_id);
-            cls_rule_format(&rule->up.cr, &s);
-            ds_put_char(&s, ')');
-
-            VLOG_WARN("%s", ds_cstr(&s));
-            ds_destroy(&s);
-        }
-        return false;
-    }
+    bool ok, fail_open;
 
     /* Check the datapath actions for consistency. */
-    xlate_in_init(&xin, ofproto, &facet->flow, rule, 0, NULL);
+    rule = rule_dpif_lookup(facet->ofproto, &facet->flow, NULL);
+    xlate_in_init(&xin, facet->ofproto, &facet->flow, rule, 0, NULL);
     xlate_actions(&xin, &xout);
 
+    fail_open = rule->up.cr.priority == FAIL_OPEN_PRIORITY;
     ok = ofpbuf_equal(&facet->xout.odp_actions, &xout.odp_actions)
-        && facet->xout.slow == xout.slow;
+        && facet->xout.slow == xout.slow
+        && facet->fail_open == fail_open;
     if (!ok && !VLOG_DROP_WARN(&rl)) {
         struct ds s = DS_EMPTY_INITIALIZER;
 
@@ -4692,7 +4645,10 @@ facet_check_consistency(struct facet *facet)
             ds_put_format(&s, " slow path incorrect. should be %d", xout.slow);
         }
 
-        VLOG_WARN("%s", ds_cstr(&s));
+        if (facet->fail_open != fail_open) {
+            ds_put_format(&s, " fail open incorrect. should be %s",
+                          fail_open ? "true" : "false");
+        }
         ds_destroy(&s);
     }
     xlate_out_uninit(&xout);
@@ -4715,7 +4671,7 @@ facet_check_consistency(struct facet *facet)
 static bool
 facet_revalidate(struct facet *facet)
 {
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(facet->rule->up.ofproto);
+    struct ofproto_dpif *ofproto = facet->ofproto;
     struct rule_dpif *new_rule;
     struct subfacet *subfacet;
     struct flow_wildcards wc;
@@ -4796,15 +4752,8 @@ facet_revalidate(struct facet *facet)
     facet->xout.nf_output_iface = xout.nf_output_iface;
     facet->xout.mirrors = xout.mirrors;
     facet->nf_flow.output_iface = facet->xout.nf_output_iface;
-
-    if (facet->rule != new_rule) {
-        COVERAGE_INC(facet_changed_rule);
-        list_remove(&facet->list_node);
-        list_push_back(&new_rule->facets, &facet->list_node);
-        facet->rule = new_rule;
-        facet->used = new_rule->up.created;
-        facet->prev_used = facet->used;
-    }
+    facet->used = MAX(facet->used, new_rule->up.created);
+    facet->fail_open = new_rule->up.cr.priority == FAIL_OPEN_PRIORITY;
 
     xlate_out_uninit(&xout);
     return true;
@@ -4835,10 +4784,9 @@ facet_push_stats(struct facet *facet, bool may_learn)
     stats.tcp_flags = facet->tcp_flags;
 
     if (may_learn || stats.n_packets || facet->used > facet->prev_used) {
-        struct ofproto_dpif *ofproto =
-            ofproto_dpif_cast(facet->rule->up.ofproto);
-
+        struct ofproto_dpif *ofproto = facet->ofproto;
         struct ofport_dpif *in_port;
+        struct rule_dpif *rule;
         struct xlate_in xin;
 
         facet->prev_packet_count = facet->packet_count;
@@ -4850,15 +4798,16 @@ facet_push_stats(struct facet *facet, bool may_learn)
             netdev_vport_inc_rx(in_port->up.netdev, &stats);
         }
 
-        rule_credit_stats(facet->rule, &stats);
+        rule = rule_dpif_lookup(ofproto, &facet->flow, NULL);
+        rule_credit_stats(rule, &stats);
         netflow_flow_update_time(ofproto->netflow, &facet->nf_flow,
                                  facet->used);
         netflow_flow_update_flags(&facet->nf_flow, facet->tcp_flags);
-        update_mirror_stats(ofproto, facet->xout.mirrors, stats.n_packets,
-                            stats.n_bytes);
+        mirror_update_stats(ofproto->mbridge, facet->xout.mirrors,
+                            stats.n_packets, stats.n_bytes);
 
-        xlate_in_init(&xin, ofproto, &facet->flow, facet->rule,
-                      stats.tcp_flags, NULL);
+        xlate_in_init(&xin, ofproto, &facet->flow, rule, stats.tcp_flags,
+                      NULL);
         xin.resubmit_stats = &stats;
         xin.may_learn = may_learn;
         xlate_actions_for_side_effects(&xin);
@@ -4981,7 +4930,7 @@ static void
 subfacet_destroy__(struct subfacet *subfacet)
 {
     struct facet *facet = subfacet->facet;
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(facet->rule->up.ofproto);
+    struct ofproto_dpif *ofproto = facet->ofproto;
 
     /* Update ofproto stats before uninstall the subfacet. */
     ofproto->backer->subfacet_del_count++;
@@ -5047,7 +4996,6 @@ subfacet_install(struct subfacet *subfacet, const struct ofpbuf *odp_actions,
                  struct dpif_flow_stats *stats)
 {
     struct facet *facet = subfacet->facet;
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(facet->rule->up.ofproto);
     enum subfacet_path path = facet->xout.slow ? SF_SLOW_PATH : SF_FAST_PATH;
     const struct nlattr *actions = odp_actions->data;
     size_t actions_len = odp_actions->size;
@@ -5064,7 +5012,7 @@ subfacet_install(struct subfacet *subfacet, const struct ofpbuf *odp_actions,
     }
 
     if (path == SF_SLOW_PATH) {
-        compose_slow_path(ofproto, &facet->flow, facet->xout.slow,
+        compose_slow_path(facet->ofproto, &facet->flow, facet->xout.slow,
                           slow_path_stub, sizeof slow_path_stub,
                           &actions, &actions_len);
     }
@@ -5096,8 +5044,7 @@ static void
 subfacet_uninstall(struct subfacet *subfacet)
 {
     if (subfacet->path != SF_NOT_INSTALLED) {
-        struct rule_dpif *rule = subfacet->facet->rule;
-        struct ofproto_dpif *ofproto = ofproto_dpif_cast(rule->up.ofproto);
+        struct ofproto_dpif *ofproto = subfacet->facet->ofproto;
         struct dpif_flow_stats stats;
         int error;
 
@@ -5268,28 +5215,8 @@ rule_construct(struct rule *rule_)
     rule->packet_count = 0;
     rule->byte_count = 0;
 
-    victim = rule_dpif_cast(ofoperation_get_victim(rule->up.pending));
-    if (victim && !list_is_empty(&victim->facets)) {
-        struct facet *facet;
-
-        rule->facets = victim->facets;
-        list_moved(&rule->facets);
-        LIST_FOR_EACH (facet, list_node, &rule->facets) {
-            /* XXX: We're only clearing our local counters here.  It's possible
-             * that quite a few packets are unaccounted for in the datapath
-             * statistics.  These will be accounted to the new rule instead of
-             * cleared as required.  This could be fixed by clearing out the
-             * datapath statistics for this facet, but currently it doesn't
-             * seem worth it. */
-            facet_reset_counters(facet);
-            facet->rule = rule;
-        }
-    } else {
-        /* Must avoid list_moved() in this case. */
-        list_init(&rule->facets);
-    }
-
     table_id = rule->up.table_id;
+    victim = rule_dpif_cast(ofoperation_get_victim(rule->up.pending));
     if (victim) {
         rule->tag = victim->tag;
     } else if (table_id == 0) {
@@ -5307,16 +5234,9 @@ rule_construct(struct rule *rule_)
 }
 
 static void
-rule_destruct(struct rule *rule_)
+rule_destruct(struct rule *rule)
 {
-    struct rule_dpif *rule = rule_dpif_cast(rule_);
-    struct facet *facet, *next_facet;
-
-    LIST_FOR_EACH_SAFE (facet, next_facet, list_node, &rule->facets) {
-        facet_revalidate(facet);
-    }
-
-    complete_operation(rule);
+    complete_operation(rule_dpif_cast(rule));
 }
 
 static void
@@ -5480,35 +5400,6 @@ put_userspace_action(const struct ofproto_dpif *ofproto,
                                                  flow->in_port.ofp_port));
 
     return odp_put_userspace_action(pid, cookie, cookie_size, odp_actions);
-}
-
-
-static void
-update_mirror_stats(struct ofproto_dpif *ofproto, mirror_mask_t mirrors,
-                    uint64_t packets, uint64_t bytes)
-{
-    if (!mirrors) {
-        return;
-    }
-
-    for (; mirrors; mirrors = zero_rightmost_1bit(mirrors)) {
-        struct ofmirror *m;
-
-        m = ofproto->mirrors[mirror_mask_ffs(mirrors) - 1];
-
-        if (!m) {
-            /* In normal circumstances 'm' will not be NULL.  However,
-             * if mirrors are reconfigured, we can temporarily get out
-             * of sync in facet_revalidate().  We could "correct" the
-             * mirror list before reaching here, but doing that would
-             * not properly account the traffic stats we've currently
-             * accumulated for previous mirror configuration. */
-            continue;
-        }
-
-        m->packet_count += packets;
-        m->byte_count += bytes;
-    }
 }
 
 tag_type
@@ -5791,6 +5682,13 @@ ofproto_unixctl_fdb_flush(struct unixctl_conn *conn, int argc,
     }
 
     unixctl_command_reply(conn, "table successfully flushed");
+}
+
+static struct ofport_dpif *
+ofbundle_get_a_port(const struct ofbundle *bundle)
+{
+    return CONTAINER_OF(list_front(&bundle->ports), struct ofport_dpif,
+                        bundle_node);
 }
 
 static void
@@ -6457,12 +6355,21 @@ ofproto_unixctl_dpif_dump_flows(struct unixctl_conn *conn,
 
     HMAP_FOR_EACH (subfacet, hmap_node, &ofproto->backer->subfacets) {
         struct facet *facet = subfacet->facet;
+        struct odputil_keybuf maskbuf;
+        struct ofpbuf mask;
 
-        if (ofproto_dpif_cast(facet->rule->up.ofproto) != ofproto) {
+        if (facet->ofproto != ofproto) {
             continue;
         }
 
-        odp_flow_key_format(subfacet->key, subfacet->key_len, &ds);
+        ofpbuf_use_stack(&mask, &maskbuf, sizeof maskbuf);
+        if (enable_megaflows) {
+            odp_flow_key_from_mask(&mask, &facet->xout.wc.masks,
+                                   &facet->flow, UINT32_MAX);
+        }
+
+        odp_flow_format(subfacet->key, subfacet->key_len,
+                        mask.data, mask.size, &ds);
 
         ds_put_format(&ds, ", packets:%"PRIu64", bytes:%"PRIu64", used:",
                       subfacet->dp_packet_count, subfacet->dp_byte_count);
@@ -6602,6 +6509,12 @@ hash_realdev_vid(ofp_port_t realdev_ofp_port, int vid)
     return hash_2words(ofp_to_u16(realdev_ofp_port), vid);
 }
 
+bool
+ofproto_has_vlan_splinters(const struct ofproto_dpif *ofproto)
+{
+    return !hmap_is_empty(&ofproto->realdev_vid_map);
+}
+
 /* Returns the OFP port number of the Linux VLAN device that corresponds to
  * 'vlan_tci' on the network device with port number 'realdev_ofp_port' in
  * 'struct ofport_dpif'.  For example, given 'realdev_ofp_port' of eth0 and
@@ -6739,7 +6652,7 @@ vsp_add(struct ofport_dpif *port, ofp_port_t realdev_ofp_port, int vid)
     }
 }
 
-odp_port_t
+static odp_port_t
 ofp_port_to_odp_port(const struct ofproto_dpif *ofproto, ofp_port_t ofp_port)
 {
     const struct ofport_dpif *ofport = get_ofp_port(ofproto, ofp_port);
@@ -6880,8 +6793,8 @@ const struct ofproto_class ofproto_dpif_class = {
     set_queues,
     bundle_set,
     bundle_remove,
-    mirror_set,
-    mirror_get_stats,
+    mirror_set__,
+    mirror_get_stats__,
     set_flood_vlans,
     is_mirror_output_bundle,
     forward_bpdu_changed,

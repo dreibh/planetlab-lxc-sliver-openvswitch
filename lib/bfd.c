@@ -17,6 +17,7 @@
 
 #include <arpa/inet.h>
 
+#include "byte-order.h"
 #include "csum.h"
 #include "dpif.h"
 #include "dynamic-string.h"
@@ -57,10 +58,6 @@ VLOG_DEFINE_THIS_MODULE(bfd);
  * - BFD show into ovs-bugtool.
  *
  * - Set TOS/PCP on inner BFD frame, and outer tunnel header when encapped.
- *
- * - CFM "check_tnl_key" option equivalent.
- *
- * - CFM "fault override" equivalent.
  *
  * - Sending BFD messages should be in its own thread/process.
  *
@@ -181,6 +178,8 @@ struct bfd {
     long long int detect_time;    /* RFC 5880 6.8.4 Detection time. */
 
     int ref_cnt;
+    int forwarding_override;      /* Manual override of 'forwarding' status. */
+    bool check_tnl_key;           /* Verify tunnel key of inbound packets? */
 };
 
 static bool bfd_in_poll(const struct bfd *);
@@ -196,6 +195,9 @@ static uint32_t generate_discriminator(void);
 static void bfd_put_details(struct ds *, const struct bfd *);
 static void bfd_unixctl_show(struct unixctl_conn *, int argc,
                              const char *argv[], void *aux OVS_UNUSED);
+static void bfd_unixctl_set_forwarding_override(struct unixctl_conn *,
+                                                int argc, const char *argv[],
+                                                void *aux OVS_UNUSED);
 static void log_msg(enum vlog_level, const struct msg *, const char *message,
                     const struct bfd *);
 
@@ -207,6 +209,10 @@ static struct hmap all_bfds = HMAP_INITIALIZER(&all_bfds);
 bool
 bfd_forwarding(const struct bfd *bfd)
 {
+    if (bfd->forwarding_override != -1) {
+        return bfd->forwarding_override == 1;
+    }
+
     return bfd->state == STATE_UP
         && bfd->rmt_diag != DIAG_PATH_DOWN
         && bfd->rmt_diag != DIAG_CPATH_DOWN
@@ -246,6 +252,9 @@ bfd_configure(struct bfd *bfd, const char *name,
     if (!init) {
         unixctl_command_register("bfd/show", "[interface]", 0, 1,
                                  bfd_unixctl_show, NULL);
+        unixctl_command_register("bfd/set-forwarding",
+                                 "[interface] normal|false|true", 1, 2,
+                                 bfd_unixctl_set_forwarding_override, NULL);
         init = true;
     }
 
@@ -257,6 +266,7 @@ bfd_configure(struct bfd *bfd, const char *name,
     if (!bfd) {
         bfd = xzalloc(sizeof *bfd);
         bfd->name = xstrdup(name);
+        bfd->forwarding_override = -1;
         bfd->disc = generate_discriminator();
         hmap_insert(&all_bfds, &bfd->node, bfd->disc);
 
@@ -275,6 +285,7 @@ bfd_configure(struct bfd *bfd, const char *name,
         bfd_set_state(bfd, STATE_DOWN, DIAG_NONE);
     }
 
+    bfd->check_tnl_key = smap_get_bool(cfg, "check_tnl_key", false);
     min_tx = smap_get_int(cfg, "min_tx", 100);
     min_tx = MAX(min_tx, 100);
     if (bfd->cfg_min_tx != min_tx) {
@@ -437,13 +448,18 @@ bfd_put_packet(struct bfd *bfd, struct ofpbuf *p,
 }
 
 bool
-bfd_should_process_flow(const struct flow *flow, struct flow_wildcards *wc)
+bfd_should_process_flow(const struct bfd *bfd, const struct flow *flow,
+                        struct flow_wildcards *wc)
 {
     memset(&wc->masks.nw_proto, 0xff, sizeof wc->masks.nw_proto);
     memset(&wc->masks.tp_dst, 0xff, sizeof wc->masks.tp_dst);
+    if (bfd->check_tnl_key) {
+        memset(&wc->masks.tunnel.tun_id, 0xff, sizeof wc->masks.tunnel.tun_id);
+    }
     return (flow->dl_type == htons(ETH_TYPE_IP)
             && flow->nw_proto == IPPROTO_UDP
-            && flow->tp_dst == htons(3784));
+            && flow->tp_dst == htons(3784)
+            && (!bfd->check_tnl_key || flow->tunnel.tun_id == htonll(0)));
 }
 
 void
@@ -896,4 +912,40 @@ bfd_unixctl_show(struct unixctl_conn *conn, int argc, const char *argv[],
     }
     unixctl_command_reply(conn, ds_cstr(&ds));
     ds_destroy(&ds);
+}
+
+
+static void
+bfd_unixctl_set_forwarding_override(struct unixctl_conn *conn, int argc,
+                                    const char *argv[], void *aux OVS_UNUSED)
+{
+    const char *forward_str = argv[argc - 1];
+    int forwarding_override;
+    struct bfd *bfd;
+
+    if (!strcasecmp("true", forward_str)) {
+        forwarding_override = 1;
+    } else if (!strcasecmp("false", forward_str)) {
+        forwarding_override = 0;
+    } else if (!strcasecmp("normal", forward_str)) {
+        forwarding_override = -1;
+    } else {
+        unixctl_command_reply_error(conn, "unknown fault string");
+        return;
+    }
+
+    if (argc > 2) {
+        bfd = bfd_find_by_name(argv[1]);
+        if (!bfd) {
+            unixctl_command_reply_error(conn, "no such BFD object");
+            return;
+        }
+        bfd->forwarding_override = forwarding_override;
+    } else {
+        HMAP_FOR_EACH (bfd, node, &all_bfds) {
+            bfd->forwarding_override = forwarding_override;
+        }
+    }
+
+    unixctl_command_reply(conn, "OK");
 }

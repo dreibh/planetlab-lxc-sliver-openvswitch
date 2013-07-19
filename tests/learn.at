@@ -46,7 +46,7 @@ table=0 actions=learn(table=1,hard_timeout=10, NXM_OF_VLAN_TCI[0..11],output:NXM
 table=1 priority=0 actions=flood
 ]])
 AT_CHECK([ovs-ofctl parse-flows flows.txt], [0],
-[[usable protocols: OXM,OpenFlow10+table_id,NXM+table_id
+[[usable protocols: OXM,OpenFlow10+table_id,NXM+table_id,OpenFlow11
 chosen protocol: OpenFlow10+table_id
 OFPT_FLOW_MOD (xid=0x1): ADD table:255 actions=learn(table=1,in_port=99,NXM_OF_ETH_DST[]=NXM_OF_ETH_SRC[],load:NXM_OF_IN_PORT[]->NXM_NX_REG1[16..31])
 OFPT_FLOW_MOD (xid=0x2): ADD table:255 actions=learn(table=1,NXM_OF_VLAN_TCI[0..11],NXM_OF_ETH_DST[]=NXM_OF_ETH_SRC[],output:NXM_OF_IN_PORT[])
@@ -75,11 +75,13 @@ AT_CHECK([[ovs-ofctl parse-flow 'actions=learn(load:5->NXM_OF_IP_DST[])']],
   [1], [], [stderr])
 AT_CHECK([sed -e 's/.*|meta_flow|WARN|//' < stderr], [0],
   [[destination field ip_dst lacks correct prerequisites
+ovs-ofctl: actions are invalid with specified match (OFPBAC_BAD_ARGUMENT)
 ]], [[]])
 AT_CHECK([[ovs-ofctl parse-flow 'actions=learn(load:NXM_OF_IP_DST[]->NXM_NX_REG1[])']],
   [1], [], [stderr])
 AT_CHECK([sed -e 's/.*|meta_flow|WARN|//' < stderr], [0],
   [[source field ip_dst lacks correct prerequisites
+ovs-ofctl: actions are invalid with specified match (OFPBAC_BAD_ARGUMENT)
 ]])
 AT_CLEANUP
 

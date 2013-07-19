@@ -81,8 +81,10 @@ debugging.  The sources for the extensions are in
         Collect networking information relevant to Open vSwitch.  Runs
         the following scripts, which are described below:
 
+            * ovs-bugtool-bfd-show
             * ovs-bugtool-cfm-show
             * ovs-bugtool-lacp-show
+            * ovs-bugtool-list-dbs
             * ovs-bugtool-ovsdb-dump
             * ovs-bugtool-tc-class-show
             * ovs-bugtool-bond-show
@@ -111,6 +113,10 @@ A number of scripts are installed in /usr/share/openvswitch/scripts to
 assist Open vSwitch's xen-bugtool extensions.  The sources for the
 scripts are located in ../utilities/bugtool:
 
+    ovs-bugtool-bfd-show
+
+        Script to dump detailed BFD information for all enabled interfaces.
+
     ovs-bugtool-cfm-show
 
         Script to dump detailed CFM information for all enabled interfaces.
@@ -118,6 +124,10 @@ scripts are located in ../utilities/bugtool:
     ovs-bugtool-lacp-show
 
         Script to dump detailed LACP information for all enabled ports.
+
+    ovs-bugtool-list-dbs
+
+        Script to list the databases controlled by ovsdb-server.
 
     ovs-bugtool-ovsdb-dump
 

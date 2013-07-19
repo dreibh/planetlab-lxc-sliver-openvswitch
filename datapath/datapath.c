@@ -972,9 +972,10 @@ static struct genl_ops dp_packet_genl_ops[] = {
 
 static void get_dp_stats(struct datapath *dp, struct ovs_dp_stats *stats)
 {
+	struct flow_table *table;
 	int i;
-	struct flow_table *table = ovsl_dereference(dp->table);
 
+	table = rcu_dereference_check(dp->table, lockdep_ovsl_is_held());
 	stats->n_flows = ovs_flow_tbl_count(table);
 
 	stats->n_hit = stats->n_missed = stats->n_lost = 0;
@@ -1250,7 +1251,7 @@ static int ovs_flow_cmd_new_or_set(struct sk_buff *skb, struct genl_info *info)
 {
 	struct nlattr **a = info->attrs;
 	struct ovs_header *ovs_header = info->userhdr;
-	struct sw_flow_key key;
+	struct sw_flow_key key, masked_key;
 	struct sw_flow *flow = NULL;
 	struct sw_flow_mask mask;
 	struct sk_buff *reply;
@@ -1278,9 +1279,13 @@ static int ovs_flow_cmd_new_or_set(struct sk_buff *skb, struct genl_info *info)
 		if (IS_ERR(acts))
 			goto error;
 
-		error = validate_and_copy_actions(a[OVS_FLOW_ATTR_ACTIONS], &key,  0, &acts);
-		if (error)
+		ovs_flow_key_mask(&masked_key, &key, &mask);
+		error = validate_and_copy_actions(a[OVS_FLOW_ATTR_ACTIONS],
+						  &masked_key, 0, &acts);
+		if (error) {
+			OVS_NLERR("Flow actions may not be safe on all matching packets.\n");
 			goto err_kfree;
+		}
 	} else if (info->genlhdr->cmd == OVS_FLOW_CMD_NEW) {
 		error = -EINVAL;
 		goto error;
@@ -1323,6 +1328,9 @@ static int ovs_flow_cmd_new_or_set(struct sk_buff *skb, struct genl_info *info)
 		}
 		clear_stats(flow);
 
+		flow->key = masked_key;
+		flow->unmasked_key = key;
+
 		/* Make sure mask is unique in the system */
 		mask_p = ovs_sw_flow_mask_find(table, &mask);
 		if (!mask_p) {
@@ -1340,7 +1348,7 @@ static int ovs_flow_cmd_new_or_set(struct sk_buff *skb, struct genl_info *info)
 		rcu_assign_pointer(flow->sf_acts, acts);
 
 		/* Put flow in bucket. */
-		ovs_flow_insert(table, flow, &key, match.range.end);
+		ovs_flow_insert(table, flow);
 
 		reply = ovs_flow_cmd_build_info(flow, dp, info->snd_portid,
 						info->snd_seq, OVS_FLOW_CMD_NEW);
@@ -1747,7 +1755,7 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
 		goto err_destroy_local_port;
 
 	ovs_net = net_generic(ovs_dp_get_net(dp), ovs_net_id);
-	list_add_tail(&dp->list_node, &ovs_net->dps);
+	list_add_tail_rcu(&dp->list_node, &ovs_net->dps);
 
 	ovs_unlock();
 
@@ -1785,7 +1793,7 @@ static void __dp_destroy(struct datapath *dp)
 				ovs_dp_detach_port(vport);
 	}
 
-	list_del(&dp->list_node);
+	list_del_rcu(&dp->list_node);
 
 	/* OVSP_LOCAL is datapath internal port. We need to make sure that
  	 * all port in datapath are destroyed first before freeing datapath.
@@ -1902,8 +1910,8 @@ static int ovs_dp_cmd_dump(struct sk_buff *skb, struct netlink_callback *cb)
 	int skip = cb->args[0];
 	int i = 0;
 
-	ovs_lock();
-	list_for_each_entry(dp, &ovs_net->dps, list_node) {
+	rcu_read_lock();
+	list_for_each_entry_rcu(dp, &ovs_net->dps, list_node) {
 		if (i >= skip &&
 		    ovs_dp_cmd_fill_info(dp, skb, NETLINK_CB(cb->skb).portid,
 					 cb->nlh->nlmsg_seq, NLM_F_MULTI,
@@ -1911,7 +1919,7 @@ static int ovs_dp_cmd_dump(struct sk_buff *skb, struct netlink_callback *cb)
 			break;
 		i++;
 	}
-	ovs_unlock();
+	rcu_read_unlock();
 
 	cb->args[0] = i;
 

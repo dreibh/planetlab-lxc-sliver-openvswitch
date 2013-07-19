@@ -133,6 +133,10 @@ static bool ovs_match_validate(const struct sw_flow_match *match,
 			| (1ULL << OVS_KEY_ATTR_ARP)
 			| (1ULL << OVS_KEY_ATTR_ND));
 
+	if (match->key->phy.in_port == DP_MAX_PORTS &&
+	    match->mask && (match->mask->key.phy.in_port == 0xffff))
+		mask_allowed |= (1ULL << OVS_KEY_ATTR_IN_PORT);
+
 	if (match->key->eth.type == htons(ETH_P_802_2) &&
 	    match->mask && (match->mask->key.eth.type == htons(0xffff)))
 		mask_allowed |= (1ULL << OVS_KEY_ATTR_ETHERTYPE);
@@ -345,9 +349,8 @@ static bool icmp6hdr_ok(struct sk_buff *skb)
 				  sizeof(struct icmp6hdr));
 }
 
-static void flow_key_mask(struct sw_flow_key *dst,
-			  const struct sw_flow_key *src,
-			  const struct sw_flow_mask *mask)
+void ovs_flow_key_mask(struct sw_flow_key *dst, const struct sw_flow_key *src,
+		       const struct sw_flow_mask *mask)
 {
 	u8 *m = (u8 *)&mask->key + mask->range.start;
 	u8 *s = (u8 *)src + mask->range.start;
@@ -1041,7 +1044,7 @@ static struct sw_flow *ovs_masked_flow_lookup(struct flow_table *table,
 	u32 hash;
 	struct sw_flow_key masked_key;
 
-	flow_key_mask(&masked_key, flow_key, mask);
+	ovs_flow_key_mask(&masked_key, flow_key, mask);
 	hash = ovs_flow_hash(&masked_key, key_start, key_len);
 	head = find_bucket(table, hash);
 	hlist_for_each_entry_rcu(flow, head, hash_node[table->node_ver]) {
@@ -1067,11 +1070,8 @@ struct sw_flow *ovs_flow_lookup(struct flow_table *tbl,
 }
 
 
-void ovs_flow_insert(struct flow_table *table, struct sw_flow *flow,
-			 const struct sw_flow_key *key, int key_len)
+void ovs_flow_insert(struct flow_table *table, struct sw_flow *flow)
 {
-	flow->unmasked_key = *key;
-	flow_key_mask(&flow->key, &flow->unmasked_key, ovsl_dereference(flow->mask));
 	flow->hash = ovs_flow_hash(&flow->key,
 			ovsl_dereference(flow->mask)->range.start,
 			ovsl_dereference(flow->mask)->range.end);
@@ -1197,14 +1197,14 @@ int ipv4_tun_from_nlattr(const struct nlattr *attr,
 		};
 
 		if (type > OVS_TUNNEL_KEY_ATTR_MAX) {
-			OVS_NLERR("Unknown IPv4 tunnel attribute (type=%d, max=%d)\n",
+			OVS_NLERR("Unknown IPv4 tunnel attribute (type=%d, max=%d).\n",
 			type, OVS_TUNNEL_KEY_ATTR_MAX);
 			return -EINVAL;
 		}
 
 		if (ovs_tunnel_key_lens[type] != nla_len(a)) {
 			OVS_NLERR("IPv4 tunnel attribute type has unexpected "
-				  " legnth (type=%d, length=%d, expected=%d.)\n",
+				  " legnth (type=%d, length=%d, expected=%d).\n",
 				  type, nla_len(a), ovs_tunnel_key_lens[type]);
 			return -EINVAL;
 		}
@@ -1256,7 +1256,7 @@ int ipv4_tun_from_nlattr(const struct nlattr *attr,
 	}
 
 	if (!ttl) {
-		OVS_NLERR("IPv4 tunnel TTL is zero.\n");
+		OVS_NLERR("IPv4 tunnel TTL not specified.\n");
 		return -EINVAL;
 	}
 
@@ -1273,23 +1273,24 @@ int ipv4_tun_to_nlattr(struct sk_buff *skb,
 	if (!nla)
 		return -EMSGSIZE;
 
-	if (tun_key->tun_flags & TUNNEL_KEY &&
+	if (output->tun_flags & TUNNEL_KEY &&
 	    nla_put_be64(skb, OVS_TUNNEL_KEY_ATTR_ID, output->tun_id))
 		return -EMSGSIZE;
-	if (tun_key->ipv4_src &&
-	    nla_put_be32(skb, OVS_TUNNEL_KEY_ATTR_IPV4_SRC, output->ipv4_src))
+	if (output->ipv4_src &&
+		nla_put_be32(skb, OVS_TUNNEL_KEY_ATTR_IPV4_SRC, output->ipv4_src))
 		return -EMSGSIZE;
-	if (nla_put_be32(skb, OVS_TUNNEL_KEY_ATTR_IPV4_DST, output->ipv4_dst))
+	if (output->ipv4_dst &&
+		nla_put_be32(skb, OVS_TUNNEL_KEY_ATTR_IPV4_DST, output->ipv4_dst))
 		return -EMSGSIZE;
-	if (tun_key->ipv4_tos &&
-	    nla_put_u8(skb, OVS_TUNNEL_KEY_ATTR_TOS, output->ipv4_tos))
+	if (output->ipv4_tos &&
+		nla_put_u8(skb, OVS_TUNNEL_KEY_ATTR_TOS, output->ipv4_tos))
 		return -EMSGSIZE;
 	if (nla_put_u8(skb, OVS_TUNNEL_KEY_ATTR_TTL, output->ipv4_ttl))
 		return -EMSGSIZE;
-	if ((tun_key->tun_flags & TUNNEL_DONT_FRAGMENT) &&
+	if ((output->tun_flags & TUNNEL_DONT_FRAGMENT) &&
 		nla_put_flag(skb, OVS_TUNNEL_KEY_ATTR_DONT_FRAGMENT))
 		return -EMSGSIZE;
-	if ((tun_key->tun_flags & TUNNEL_CSUM) &&
+	if ((output->tun_flags & TUNNEL_CSUM) &&
 		nla_put_flag(skb, OVS_TUNNEL_KEY_ATTR_CSUM))
 		return -EMSGSIZE;
 
@@ -1314,6 +1315,8 @@ static int metadata_from_nlattrs(struct sw_flow_match *match,  u64 *attrs,
 			return -EINVAL;
 		SW_FLOW_KEY_PUT(match, phy.in_port, in_port, is_mask);
 		*attrs &= ~(1ULL << OVS_KEY_ATTR_IN_PORT);
+	} else if (!is_mask) {
+		SW_FLOW_KEY_PUT(match, phy.in_port, DP_MAX_PORTS, is_mask);
 	}
 
 	if (*attrs & (1ULL << OVS_KEY_ATTR_SKB_MARK)) {
@@ -1686,26 +1689,29 @@ int ovs_flow_to_nlattrs(const struct sw_flow_key *swkey,
 	struct ovs_key_ethernet *eth_key;
 	struct nlattr *nla, *encap;
 
-	if (swkey->phy.priority &&
-	    nla_put_u32(skb, OVS_KEY_ATTR_PRIORITY, output->phy.priority))
+	if (output->phy.priority &&
+		nla_put_u32(skb, OVS_KEY_ATTR_PRIORITY, output->phy.priority))
 		goto nla_put_failure;
 
 	if (swkey->tun_key.ipv4_dst &&
 	    ipv4_tun_to_nlattr(skb, &swkey->tun_key, &output->tun_key))
 		goto nla_put_failure;
 
-	if (swkey->phy.in_port != DP_MAX_PORTS) {
-		/* Exact match upper 16 bits. */
+	if (swkey->phy.in_port == DP_MAX_PORTS) {
+		if ((swkey != output) && (output->phy.in_port == 0xffff))
+			if (nla_put_u32(skb, OVS_KEY_ATTR_IN_PORT, 0xffffffff))
+				goto nla_put_failure;
+	} else {
 		u16 upper_u16;
 		upper_u16 = (swkey == output) ? 0 : 0xffff;
 
 		if (nla_put_u32(skb, OVS_KEY_ATTR_IN_PORT,
-					(upper_u16 << 16) | output->phy.in_port))
+				(upper_u16 << 16) | output->phy.in_port))
 			goto nla_put_failure;
 	}
 
-	if (swkey->phy.skb_mark &&
-	    nla_put_u32(skb, OVS_KEY_ATTR_SKB_MARK, output->phy.skb_mark))
+	if (output->phy.skb_mark &&
+		nla_put_u32(skb, OVS_KEY_ATTR_SKB_MARK, output->phy.skb_mark))
 		goto nla_put_failure;
 
 	nla = nla_reserve(skb, OVS_KEY_ATTR_ETHERNET, sizeof(*eth_key));
@@ -1728,12 +1734,22 @@ int ovs_flow_to_nlattrs(const struct sw_flow_key *swkey,
 	} else
 		encap = NULL;
 
-	if ((swkey == output) && (swkey->eth.type == htons(ETH_P_802_2)))
+	if (swkey->eth.type == htons(ETH_P_802_2)) {
+		/*
+		 * Ethertype 802.2 is represented in the netlink with omitted
+		 * OVS_KEY_ATTR_ETHERTYPE in the flow key attribute, and
+		 * 0xffff in the mask attribute.  Ethertype can also
+		 * be wildcarded.
+		 */
+		if (swkey != output && output->eth.type)
+			if (nla_put_be16(skb, OVS_KEY_ATTR_ETHERTYPE,
+						output->eth.type))
+				goto nla_put_failure;
 		goto unencap;
+	}
 
-	if (output->eth.type != 0)
-		if (nla_put_be16(skb, OVS_KEY_ATTR_ETHERTYPE, output->eth.type))
-			goto nla_put_failure;
+	if (nla_put_be16(skb, OVS_KEY_ATTR_ETHERTYPE, output->eth.type))
+		goto nla_put_failure;
 
 	if (swkey->eth.type == htons(ETH_P_IP)) {
 		struct ovs_key_ipv4 *ipv4_key;

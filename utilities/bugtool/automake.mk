@@ -14,9 +14,11 @@ bugtool_plugins = \
 	utilities/bugtool/plugins/system-configuration/openvswitch.xml
 
 bugtool_scripts = \
+	utilities/bugtool/ovs-bugtool-bfd-show \
 	utilities/bugtool/ovs-bugtool-cfm-show \
 	utilities/bugtool/ovs-bugtool-coverage-show \
 	utilities/bugtool/ovs-bugtool-lacp-show \
+	utilities/bugtool/ovs-bugtool-list-dbs \
 	utilities/bugtool/ovs-bugtool-memory-show \
 	utilities/bugtool/ovs-bugtool-tc-class-show \
 	utilities/bugtool/ovs-bugtool-vsctl-show \

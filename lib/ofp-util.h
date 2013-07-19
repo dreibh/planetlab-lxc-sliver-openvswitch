@@ -81,6 +81,15 @@ enum ofputil_protocol {
 #define OFPUTIL_P_OF10_STD_ANY (OFPUTIL_P_OF10_STD | OFPUTIL_P_OF10_STD_TID)
 #define OFPUTIL_P_OF10_NXM_ANY (OFPUTIL_P_OF10_NXM | OFPUTIL_P_OF10_NXM_TID)
 
+    /* OpenFlow 1.1 protocol.
+     *
+     * We only support the standard OpenFlow 1.1 flow format.
+     *
+     * OpenFlow 1.1 always operates with an equivalent of the
+     * nx_flow_mod_table_id Nicira extension enabled, so there is no "TID"
+     * variant. */
+    OFPUTIL_P_OF11_STD     = 1 << 4,
+
     /* OpenFlow 1.2+ protocols (only one variant each).
      *
      * These use the standard OpenFlow Extensible Match (OXM) flow format.
@@ -88,16 +97,17 @@ enum ofputil_protocol {
      * OpenFlow 1.2+ always operates with an equivalent of the
      * nx_flow_mod_table_id Nicira extension enabled, so there is no "TID"
      * variant. */
-    OFPUTIL_P_OF12_OXM      = 1 << 4,
-    OFPUTIL_P_OF13_OXM      = 1 << 5,
+    OFPUTIL_P_OF12_OXM      = 1 << 5,
+    OFPUTIL_P_OF13_OXM      = 1 << 6,
 #define OFPUTIL_P_ANY_OXM (OFPUTIL_P_OF12_OXM | OFPUTIL_P_OF13_OXM)
 
     /* All protocols. */
-#define OFPUTIL_P_ANY ((1 << 6) - 1)
+#define OFPUTIL_P_ANY ((1 << 7) - 1)
 
     /* Protocols in which a specific table may be specified in flow_mods. */
 #define OFPUTIL_P_TID (OFPUTIL_P_OF10_STD_TID | \
                        OFPUTIL_P_OF10_NXM_TID | \
+                       OFPUTIL_P_OF11_STD |     \
                        OFPUTIL_P_ANY_OXM)
 };
 
@@ -178,7 +188,10 @@ enum ofperr ofputil_pull_ofp11_match(struct ofpbuf *, struct match *,
                                      uint16_t *padded_match_len);
 enum ofperr ofputil_match_from_ofp11_match(const struct ofp11_match *,
                                            struct match *);
+int ofputil_put_ofp11_match(struct ofpbuf *, const struct match *,
+                            enum ofputil_protocol);
 void ofputil_match_to_ofp11_match(const struct match *, struct ofp11_match *);
+int ofputil_match_typical_len(enum ofputil_protocol);
 
 /* dl_type translation between OpenFlow and 'struct flow' format. */
 ovs_be16 ofputil_dl_type_to_openflow(ovs_be16 flow_dl_type);
@@ -197,27 +210,36 @@ struct ofpbuf *ofputil_make_flow_mod_table_id(bool flow_mod_table_id);
 /* Protocol-independent flow_mod.
  *
  * The handling of cookies across multiple versions of OpenFlow is a bit
- * confusing.  A full description of Open vSwitch's cookie handling is
- * in the DESIGN file.  The following table shows the expected values of
- * the cookie-related fields for the different flow_mod commands in
- * OpenFlow 1.0 ("OF10") and NXM.  "<used>" and "-" indicate a value
- * that may be populated and an ignored field, respectively.
- *
- *               cookie  cookie_mask  new_cookie
- *               ======  ===========  ==========
- * OF10 Add        -          0         <used>
- * OF10 Modify     -          0         <used>
- * OF10 Delete     -          0           -
- * NXM Add         -          0         <used>
- * NXM Modify    <used>     <used>      <used>
- * NXM Delete    <used>     <used>        -
- */
+ * confusing.  See DESIGN for the details. */
 struct ofputil_flow_mod {
     struct match match;
     unsigned int priority;
+
+    /* Cookie matching.  The flow_mod affects only flows that have cookies that
+     * bitwise match 'cookie' bits in positions where 'cookie_mask has 1-bits.
+     *
+     * 'cookie_mask' should be zero for OFPFC_ADD flow_mods. */
     ovs_be64 cookie;         /* Cookie bits to match. */
     ovs_be64 cookie_mask;    /* 1-bit in each 'cookie' bit to match. */
-    ovs_be64 new_cookie;     /* New cookie to install or -1. */
+
+    /* Cookie changes.
+     *
+     * OFPFC_ADD uses 'new_cookie' as the new flow's cookie.  'new_cookie'
+     * should not be UINT64_MAX.
+     *
+     * OFPFC_MODIFY and OFPFC_MODIFY_STRICT have two cases:
+     *
+     *   - If one or more matching flows exist and 'modify_cookie' is true,
+     *     then the flow_mod changes the existing flows' cookies to
+     *     'new_cookie'.  'new_cookie' should not be UINT64_MAX.
+     *
+     *   - If no matching flow exists, 'new_cookie' is not UINT64_MAX, and
+     *     'cookie_mask' is 0, then the flow_mod adds a new flow with
+     *     'new_cookie' as its cookie.
+     */
+    ovs_be64 new_cookie;     /* New cookie to install or UINT64_MAX. */
+    bool modify_cookie;      /* Set cookie of existing flow to 'new_cookie'? */
+
     uint8_t table_id;
     uint16_t command;
     uint16_t idle_timeout;

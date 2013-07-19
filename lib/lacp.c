@@ -47,6 +47,7 @@ VLOG_DEFINE_THIS_MODULE(lacp);
 #define LACP_RX_MULTIPLIER 3    /* Multiply by TX rate to get RX rate. */
 
 #define LACP_INFO_LEN 15
+OVS_PACKED(
 struct lacp_info {
     ovs_be16 sys_priority;            /* System priority. */
     uint8_t sys_id[ETH_ADDR_LEN];     /* System ID. */
@@ -54,10 +55,11 @@ struct lacp_info {
     ovs_be16 port_priority;           /* Port priority. */
     ovs_be16 port_id;                 /* Port ID. */
     uint8_t state;                    /* State mask.  See LACP_STATE macros. */
-} __attribute__((packed));
+});
 BUILD_ASSERT_DECL(LACP_INFO_LEN == sizeof(struct lacp_info));
 
 #define LACP_PDU_LEN 110
+OVS_PACKED(
 struct lacp_pdu {
     uint8_t subtype;          /* Always 1. */
     uint8_t version;          /* Always 1. */
@@ -76,7 +78,7 @@ struct lacp_pdu {
     uint8_t collector_len;    /* Always 16. */
     ovs_be16 collector_delay; /* Maximum collector delay. Set to UINT16_MAX. */
     uint8_t z3[64];           /* Combination of several fields.  Always 0. */
-} __attribute__((packed));
+});
 BUILD_ASSERT_DECL(LACP_PDU_LEN == sizeof(struct lacp_pdu));
 
 /* Implementation. */
@@ -279,6 +281,10 @@ lacp_process_packet(struct lacp *lacp, const void *slave_,
     const struct lacp_pdu *pdu;
     long long int tx_rate;
 
+    if (!slave) {
+        return;
+    }
+
     pdu = parse_lacp_packet(packet);
     if (!pdu) {
         VLOG_WARN_RL(&rl, "%s: received an unparsable LACP PDU.", lacp->name);
@@ -374,6 +380,10 @@ lacp_slave_carrier_changed(const struct lacp *lacp, const void *slave_)
     if (lacp) {
         struct slave *slave = slave_lookup(lacp, slave_);
 
+        if (!slave) {
+            return;
+        }
+
         if (slave->status == LACP_CURRENT || slave->lacp->active) {
             slave_set_expired(slave);
         }
@@ -395,7 +405,8 @@ bool
 lacp_slave_may_enable(const struct lacp *lacp, const void *slave_)
 {
     if (lacp) {
-        return slave_may_enable__(slave_lookup(lacp, slave_));
+        struct slave *slave = slave_lookup(lacp, slave_);
+        return slave ? slave_may_enable__(slave) : false;
     } else {
         return true;
     }
@@ -407,7 +418,8 @@ lacp_slave_may_enable(const struct lacp *lacp, const void *slave_)
 bool
 lacp_slave_is_current(const struct lacp *lacp, const void *slave_)
 {
-    return slave_lookup(lacp, slave_)->status != LACP_DEFAULTED;
+    struct slave *slave = slave_lookup(lacp, slave_);
+    return slave ? slave->status != LACP_DEFAULTED : false;
 }
 
 /* This function should be called periodically to update 'lacp'. */

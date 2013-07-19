@@ -17,11 +17,21 @@
 #ifndef VLOG_H
 #define VLOG_H 1
 
+/* Logging.
+ *
+ *
+ * Thread-safety
+ * =============
+ *
+ * Fully thread safe.
+ */
+
 #include <limits.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <time.h>
 #include "compiler.h"
+#include "ovs-thread.h"
 #include "sat-math.h"
 #include "token-bucket.h"
 #include "util.h"
@@ -94,6 +104,7 @@ struct vlog_rate_limit {
     time_t first_dropped;       /* Time first message was dropped. */
     time_t last_dropped;        /* Time of most recent message drop. */
     unsigned int n_dropped;     /* Number of messages dropped. */
+    pthread_mutex_t mutex;      /* Mutual exclusion for rate limit. */
 };
 
 /* Number of tokens to emit a message.  We add 'rate' tokens per millisecond,
@@ -108,6 +119,7 @@ struct vlog_rate_limit {
             0,                              /* first_dropped */         \
             0,                              /* last_dropped */          \
             0,                              /* n_dropped */             \
+            PTHREAD_ADAPTIVE_MUTEX_INITIALIZER /* mutex */              \
         }
 
 /* Configuring how each module logs messages. */
@@ -124,13 +136,11 @@ void vlog_set_verbosity(const char *arg);
 
 /* Configuring log facilities. */
 void vlog_set_pattern(enum vlog_facility, const char *pattern);
-const char *vlog_get_log_file(void);
 int vlog_set_log_file(const char *file_name);
 int vlog_reopen_log_file(void);
 
 /* Initialization. */
 void vlog_init(void);
-void vlog_exit(void);
 
 /* Functions for actual logging. */
 void vlog(const struct vlog_module *, enum vlog_level, const char *format, ...)
@@ -230,13 +240,13 @@ void vlog_usage(void);
             vlog_rate_limit(THIS_MODULE, level__, RL, __VA_ARGS__); \
         }                                                           \
     } while (0)
-#define VLOG_ONCE(LEVEL, ...)                       \
-    do {                                            \
-        static bool already_logged;                 \
-        if (!already_logged) {                      \
-            already_logged = true;                  \
-            vlog(THIS_MODULE, LEVEL, __VA_ARGS__);  \
-        }                                           \
+#define VLOG_ONCE(LEVEL, ...)                                           \
+    do {                                                                \
+        static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER; \
+        if (ovsthread_once_start(&once)) {                              \
+            vlog(THIS_MODULE, LEVEL, __VA_ARGS__);                      \
+            ovsthread_once_done(&once);                                 \
+        }                                                               \
     } while (0)
 
 #define VLOG_DEFINE_MODULE__(MODULE)                                    \

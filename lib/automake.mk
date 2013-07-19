@@ -10,6 +10,7 @@ noinst_LIBRARIES += lib/libopenvswitch.a
 lib_libopenvswitch_a_SOURCES = \
 	lib/aes128.c \
 	lib/aes128.h \
+	lib/async-append.h \
 	lib/backtrace.c \
 	lib/backtrace.h \
 	lib/bfd.c \
@@ -71,6 +72,8 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/jsonrpc.h \
 	lib/lacp.c \
 	lib/lacp.h \
+	lib/latch.c \
+	lib/latch.h \
 	lib/learn.c \
 	lib/learn.h \
 	lib/learning-switch.c \
@@ -184,8 +187,6 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/stream-unix.c \
 	lib/stream.c \
 	lib/stream.h \
-	lib/stress.c \
-	lib/stress.h \
 	lib/string.c \
 	lib/string.h \
 	lib/svec.c \
@@ -224,9 +225,7 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/vlog.c \
 	lib/vlog.h \
 	lib/vswitch-idl.c \
-	lib/vswitch-idl.h \
-	lib/worker.c \
-	lib/worker.h
+	lib/vswitch-idl.h
 
 nodist_lib_libopenvswitch_a_SOURCES = \
 	lib/dirs.c
@@ -263,6 +262,12 @@ lib_libopenvswitch_a_SOURCES += \
 	lib/rtnetlink-link.h \
 	lib/route-table.c \
 	lib/route-table.h
+endif
+
+if HAVE_POSIX_AIO
+lib_libopenvswitch_a_SOURCES += lib/async-append-aio.c
+else
+lib_libopenvswitch_a_SOURCES += lib/async-append-sync.c
 endif
 
 if ESX
@@ -312,7 +317,6 @@ MAN_FRAGMENTS += \
 	lib/ssl-peer-ca-cert.man \
 	lib/ssl.man \
 	lib/ssl-syn.man \
-	lib/stress-unixctl.man \
 	lib/table.man \
 	lib/unixctl.man \
 	lib/unixctl-syn.man \
@@ -388,11 +392,6 @@ lib/coverage.$(OBJEXT): lib/coverage.def
 lib/coverage.def: $(DIST_SOURCES)
 	sed -n 's|^COVERAGE_DEFINE(\([_a-zA-Z0-9]\{1,\}\)).*$$|COVERAGE_COUNTER(\1)|p' $(all_sources) | LC_ALL=C sort -u > $@
 CLEANFILES += lib/coverage.def
-
-lib/stress.$(OBJEXT): lib/stress.def
-lib/stress.def: $(DIST_SOURCES)
-	sed -n '/^STRESS_OPTION(/,/);$$/{s/);$$/)/;p}' $(all_sources) > $@
-CLEANFILES += lib/stress.def
 
 lib/vlog.$(OBJEXT): lib/vlog-modules.def
 lib/vlog-modules.def: $(DIST_SOURCES)

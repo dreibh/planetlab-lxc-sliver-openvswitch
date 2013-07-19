@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <stdlib.h>
+#include "async-append.h"
 #include "bfd.h"
 #include "bitmap.h"
 #include "bond.h"
@@ -367,6 +368,7 @@ bridge_init(const char *remote)
     ovsdb_idl_omit_alert(idl, &ovsrec_interface_col_link_state);
     ovsdb_idl_omit_alert(idl, &ovsrec_interface_col_link_resets);
     ovsdb_idl_omit_alert(idl, &ovsrec_interface_col_mac_in_use);
+    ovsdb_idl_omit_alert(idl, &ovsrec_interface_col_ifindex);
     ovsdb_idl_omit_alert(idl, &ovsrec_interface_col_mtu);
     ovsdb_idl_omit_alert(idl, &ovsrec_interface_col_ofport);
     ovsdb_idl_omit_alert(idl, &ovsrec_interface_col_statistics);
@@ -1810,6 +1812,7 @@ iface_refresh_status(struct iface *iface)
     int mtu;
     int64_t mtu_64;
     uint8_t mac[ETH_ADDR_LEN];
+    int64_t ifindex64;
     int error;
 
     if (iface_is_synthetic(iface)) {
@@ -1855,6 +1858,14 @@ iface_refresh_status(struct iface *iface)
     } else {
         ovsrec_interface_set_mac_in_use(iface->cfg, NULL);
     }
+
+    /* The netdev may return a negative number (such as -EOPNOTSUPP)
+     * if there is no valid ifindex number. */
+    ifindex64 = netdev_get_ifindex(iface->netdev);
+    if (ifindex64 < 0) {
+        ifindex64 = 0;
+    }
+    ovsrec_interface_set_ifindex(iface->cfg, &ifindex64, 1);
 }
 
 /* Writes 'iface''s CFM statistics to the database. 'iface' must not be
@@ -2433,6 +2444,8 @@ bridge_run(void)
             /* ovs-vswitchd has completed initialization, so allow the
              * process that forked us to exit successfully. */
             daemonize_complete();
+
+            async_append_enable();
 
             VLOG_INFO_ONCE("%s (Open vSwitch) %s", program_name, VERSION);
         }
@@ -3573,6 +3586,7 @@ iface_clear_db_record(const struct ovsrec_interface *if_cfg)
         ovsrec_interface_set_cfm_remote_mpids(if_cfg, NULL, 0);
         ovsrec_interface_set_lacp_current(if_cfg, NULL, 0);
         ovsrec_interface_set_statistics(if_cfg, NULL, NULL, 0);
+        ovsrec_interface_set_ifindex(if_cfg, NULL, 0);
     }
 }
 

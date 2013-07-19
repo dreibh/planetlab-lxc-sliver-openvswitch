@@ -28,16 +28,17 @@
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
+#include "async-append.h"
 #include "coverage.h"
 #include "dirs.h"
 #include "dynamic-string.h"
 #include "ofpbuf.h"
+#include "ovs-thread.h"
 #include "sat-math.h"
 #include "svec.h"
 #include "timeval.h"
 #include "unixctl.h"
 #include "util.h"
-#include "worker.h"
 
 VLOG_DEFINE_THIS_MODULE(vlog);
 
@@ -84,7 +85,7 @@ struct vlog_module *vlog_modules[] = {
 /* Information about each facility. */
 struct facility {
     const char *name;           /* Name. */
-    char *pattern;              /* Current pattern. */
+    char *pattern;              /* Current pattern (see 'pattern_rwlock'). */
     bool default_pattern;       /* Whether current pattern is the default. */
 };
 static struct facility facilities[VLF_N_FACILITIES] = {
@@ -93,19 +94,27 @@ static struct facility facilities[VLF_N_FACILITIES] = {
 #undef VLOG_FACILITY
 };
 
-/* VLF_FILE configuration. */
+/* Protects the 'pattern' in all "struct facility"s, so that a race between
+ * changing and reading the pattern does not cause an access to freed
+ * memory. */
+static pthread_rwlock_t pattern_rwlock = PTHREAD_RWLOCK_INITIALIZER;
+
+/* Sequence number for the message currently being composed. */
+DEFINE_PER_THREAD_DATA(unsigned int, msg_num, 0);
+
+/* VLF_FILE configuration.
+ *
+ * All of the following is protected by 'log_file_mutex', which nests inside
+ * pattern_rwlock. */
+static pthread_mutex_t log_file_mutex = PTHREAD_ADAPTIVE_MUTEX_INITIALIZER;
 static char *log_file_name;
 static int log_fd = -1;
-
-/* vlog initialized? */
-static bool vlog_inited;
+static struct async_append *log_writer;
 
 static void format_log_message(const struct vlog_module *, enum vlog_level,
-                               enum vlog_facility, unsigned int msg_num,
+                               enum vlog_facility,
                                const char *message, va_list, struct ds *)
-    PRINTF_FORMAT(5, 0);
-static void vlog_write_file(struct ds *);
-static void vlog_update_async_log_fd(void);
+    PRINTF_FORMAT(4, 0);
 
 /* Searches the 'n_names' in 'names'.  Returns the index of a match for
  * 'target', or 'n_names' if no name matches. */
@@ -192,7 +201,7 @@ vlog_get_level(const struct vlog_module *module, enum vlog_facility facility)
     return module->levels[facility];
 }
 
-static void
+static void OVS_MUST_HOLD(log_file_mutex)
 update_min_level(struct vlog_module *module)
 {
     enum vlog_facility facility;
@@ -215,6 +224,7 @@ set_facility_level(enum vlog_facility facility, struct vlog_module *module,
     assert(facility >= 0 && facility < VLF_N_FACILITIES);
     assert(level < VLL_N_LEVELS);
 
+    xpthread_mutex_lock(&log_file_mutex);
     if (!module) {
         struct vlog_module **mp;
 
@@ -226,6 +236,7 @@ set_facility_level(enum vlog_facility facility, struct vlog_module *module,
         module->levels[facility] = level;
         update_min_level(module);
     }
+    xpthread_mutex_unlock(&log_file_mutex);
 }
 
 /* Sets the logging level for the given 'module' and 'facility' to 'level'.  A
@@ -249,12 +260,15 @@ static void
 do_set_pattern(enum vlog_facility facility, const char *pattern)
 {
     struct facility *f = &facilities[facility];
+
+    xpthread_rwlock_wrlock(&pattern_rwlock);
     if (!f->default_pattern) {
         free(f->pattern);
     } else {
         f->default_pattern = false;
     }
     f->pattern = xstrdup(pattern);
+    xpthread_rwlock_unlock(&pattern_rwlock);
 }
 
 /* Sets the pattern for the given 'facility' to 'pattern'. */
@@ -271,63 +285,73 @@ vlog_set_pattern(enum vlog_facility facility, const char *pattern)
     }
 }
 
-/* Returns the name of the log file used by VLF_FILE, or a null pointer if no
- * log file has been set.  (A non-null return value does not assert that the
- * named log file is in use: if vlog_set_log_file() or vlog_reopen_log_file()
- * fails, it still sets the log file name.) */
-const char *
-vlog_get_log_file(void)
-{
-    return log_file_name;
-}
-
 /* Sets the name of the log file used by VLF_FILE to 'file_name', or to the
  * default file name if 'file_name' is null.  Returns 0 if successful,
  * otherwise a positive errno value. */
 int
 vlog_set_log_file(const char *file_name)
 {
-    char *old_log_file_name;
+    char *new_log_file_name;
     struct vlog_module **mp;
-    int error;
+    struct stat old_stat;
+    struct stat new_stat;
+    int new_log_fd;
+    bool same_file;
 
-    /* Close old log file. */
+    /* Open new log file. */
+    new_log_file_name = (file_name
+                         ? xstrdup(file_name)
+                         : xasprintf("%s/%s.log", ovs_logdir(), program_name));
+    new_log_fd = open(new_log_file_name, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (new_log_fd < 0) {
+        VLOG_WARN("failed to open %s for logging: %s",
+                  new_log_file_name, ovs_strerror(errno));
+        free(new_log_file_name);
+        return errno;
+    }
+
+    /* If the new log file is the same one we already have open, bail out. */
+    xpthread_mutex_lock(&log_file_mutex);
+    same_file = (log_fd >= 0
+                 && new_log_fd >= 0
+                 && !fstat(log_fd, &old_stat)
+                 && !fstat(new_log_fd, &new_stat)
+                 && old_stat.st_dev == new_stat.st_dev
+                 && old_stat.st_ino == new_stat.st_ino);
+    xpthread_mutex_unlock(&log_file_mutex);
+    if (same_file) {
+        close(new_log_fd);
+        free(new_log_file_name);
+        return 0;
+    }
+
+    /* Log closing old log file (we can't log while holding log_file_mutex). */
     if (log_fd >= 0) {
         VLOG_INFO("closing log file");
-        close(log_fd);
-        log_fd = -1;
     }
 
-    /* Update log file name and free old name.  The ordering is important
-     * because 'file_name' might be 'log_file_name' or some suffix of it. */
-    old_log_file_name = log_file_name;
-    log_file_name = (file_name
-                     ? xstrdup(file_name)
-                     : xasprintf("%s/%s.log", ovs_logdir(), program_name));
-    free(old_log_file_name);
-    file_name = NULL;           /* Might have been freed. */
-
-    /* Open new log file and update min_levels[] to reflect whether we actually
-     * have a log_file. */
-    log_fd = open(log_file_name, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    /* Close old log file, if any, and install new one. */
+    xpthread_mutex_lock(&log_file_mutex);
     if (log_fd >= 0) {
-        vlog_update_async_log_fd();
+        free(log_file_name);
+        close(log_fd);
+        async_append_destroy(log_writer);
     }
+
+    log_file_name = xstrdup(new_log_file_name);
+    log_fd = new_log_fd;
+    log_writer = async_append_create(new_log_fd);
+
     for (mp = vlog_modules; mp < &vlog_modules[n_vlog_modules]; mp++) {
         update_min_level(*mp);
     }
+    xpthread_mutex_unlock(&log_file_mutex);
 
-    /* Log success or failure. */
-    if (log_fd < 0) {
-        VLOG_WARN("failed to open %s for logging: %s",
-                  log_file_name, ovs_strerror(errno));
-        error = errno;
-    } else {
-        VLOG_INFO("opened log file %s", log_file_name);
-        error = 0;
-    }
+    /* Log opening new log file (we can't log while holding log_file_mutex). */
+    VLOG_INFO("opened log file %s", new_log_file_name);
+    free(new_log_file_name);
 
-    return error;
+    return 0;
 }
 
 /* Closes and then attempts to re-open the current log file.  (This is useful
@@ -336,25 +360,19 @@ vlog_set_log_file(const char *file_name)
 int
 vlog_reopen_log_file(void)
 {
-    struct stat old, new;
+    char *fn;
 
-    /* Skip re-opening if there's nothing to reopen. */
-    if (!log_file_name) {
+    xpthread_mutex_lock(&log_file_mutex);
+    fn = log_file_name ? xstrdup(log_file_name) : NULL;
+    xpthread_mutex_unlock(&log_file_mutex);
+
+    if (fn) {
+        int error = vlog_set_log_file(fn);
+        free(fn);
+        return error;
+    } else {
         return 0;
     }
-
-    /* Skip re-opening if it would be a no-op because the old and new files are
-     * the same.  (This avoids writing "closing log file" followed immediately
-     * by "opened log file".) */
-    if (log_fd >= 0
-        && !fstat(log_fd, &old)
-        && !stat(log_file_name, &new)
-        && old.st_dev == new.st_dev
-        && old.st_ino == new.st_ino) {
-        return 0;
-    }
-
-    return vlog_set_log_file(log_file_name);
 }
 
 /* Set debugging levels.  Returns null if successful, otherwise an error
@@ -547,18 +565,11 @@ vlog_disable_rate_limit(struct unixctl_conn *conn, int argc,
     set_rate_limits(conn, argc, argv, false);
 }
 
-/* Initializes the logging subsystem and registers its unixctl server
- * commands. */
-void
-vlog_init(void)
+static void
+vlog_init__(void)
 {
     static char *program_name_copy;
     time_t now;
-
-    if (vlog_inited) {
-        return;
-    }
-    vlog_inited = true;
 
     /* openlog() is allowed to keep the pointer passed in, without making a
      * copy.  The daemonize code sometimes frees and replaces 'program_name',
@@ -587,14 +598,13 @@ vlog_init(void)
                              vlog_unixctl_reopen, NULL);
 }
 
-/* Closes the logging subsystem. */
+/* Initializes the logging subsystem and registers its unixctl server
+ * commands. */
 void
-vlog_exit(void)
+vlog_init(void)
 {
-    if (vlog_inited) {
-        closelog();
-        vlog_inited = false;
-    }
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, vlog_init__);
 }
 
 /* Print the current logging level for each module. */
@@ -662,7 +672,7 @@ fetch_braces(const char *p, const char *def, char *out, size_t out_size)
 
 static void
 format_log_message(const struct vlog_module *module, enum vlog_level level,
-                   enum vlog_facility facility, unsigned int msg_num,
+                   enum vlog_facility facility,
                    const char *message, va_list args_, struct ds *s)
 {
     char tmp[128];
@@ -671,6 +681,7 @@ format_log_message(const struct vlog_module *module, enum vlog_level level,
 
     ds_clear(s);
     for (p = facilities[facility].pattern; *p != '\0'; ) {
+        const char *subprogram_name;
         enum { LEFT, RIGHT } justify = RIGHT;
         int pad = '0';
         size_t length, field, used;
@@ -723,7 +734,7 @@ format_log_message(const struct vlog_module *module, enum vlog_level level,
             }
             break;
         case 'N':
-            ds_put_format(s, "%u", msg_num);
+            ds_put_format(s, "%u", *msg_num_get_unsafe());
             break;
         case 'n':
             ds_put_char(s, '\n');
@@ -738,9 +749,11 @@ format_log_message(const struct vlog_module *module, enum vlog_level level,
             ds_put_format(s, "%lld", time_msec() - time_boot_msec());
             break;
         case 't':
+            subprogram_name = get_subprogram_name();
             ds_put_cstr(s, subprogram_name[0] ? subprogram_name : "main");
             break;
         case 'T':
+            subprogram_name = get_subprogram_name();
             if (subprogram_name[0]) {
                 ds_put_format(s, "(%s)", subprogram_name);
             }
@@ -776,18 +789,17 @@ vlog_valist(const struct vlog_module *module, enum vlog_level level,
     bool log_to_file = module->levels[VLF_FILE] >= level && log_fd >= 0;
     if (log_to_console || log_to_syslog || log_to_file) {
         int save_errno = errno;
-        static unsigned int msg_num;
         struct ds s;
 
         vlog_init();
 
         ds_init(&s);
         ds_reserve(&s, 1024);
-        msg_num++;
+        ++*msg_num_get();
 
+        xpthread_rwlock_rdlock(&pattern_rwlock);
         if (log_to_console) {
-            format_log_message(module, level, VLF_CONSOLE, msg_num,
-                               message, args, &s);
+            format_log_message(module, level, VLF_CONSOLE, message, args, &s);
             ds_put_char(&s, '\n');
             fputs(ds_cstr(&s), stderr);
         }
@@ -797,8 +809,7 @@ vlog_valist(const struct vlog_module *module, enum vlog_level level,
             char *save_ptr = NULL;
             char *line;
 
-            format_log_message(module, level, VLF_SYSLOG, msg_num,
-                               message, args, &s);
+            format_log_message(module, level, VLF_SYSLOG, message, args, &s);
             for (line = strtok_r(s.string, "\n", &save_ptr); line;
                  line = strtok_r(NULL, "\n", &save_ptr)) {
                 syslog(syslog_level, "%s", line);
@@ -806,11 +817,19 @@ vlog_valist(const struct vlog_module *module, enum vlog_level level,
         }
 
         if (log_to_file) {
-            format_log_message(module, level, VLF_FILE, msg_num,
-                               message, args, &s);
+            format_log_message(module, level, VLF_FILE, message, args, &s);
             ds_put_char(&s, '\n');
-            vlog_write_file(&s);
+
+            xpthread_mutex_lock(&log_file_mutex);
+            if (log_fd >= 0) {
+                async_append_write(log_writer, s.string, s.length);
+                if (level == VLL_EMER) {
+                    async_append_flush(log_writer);
+                }
+            }
+            xpthread_mutex_unlock(&log_file_mutex);
         }
+        xpthread_rwlock_unlock(&pattern_rwlock);
 
         ds_destroy(&s);
         errno = save_errno;
@@ -910,6 +929,7 @@ vlog_should_drop(const struct vlog_module *module, enum vlog_level level,
         return true;
     }
 
+    xpthread_mutex_lock(&rl->mutex);
     if (!token_bucket_withdraw(&rl->token_bucket, VLOG_MSG_TOKENS)) {
         time_t now = time_now();
         if (!rl->n_dropped) {
@@ -917,21 +937,26 @@ vlog_should_drop(const struct vlog_module *module, enum vlog_level level,
         }
         rl->last_dropped = now;
         rl->n_dropped++;
+        xpthread_mutex_unlock(&rl->mutex);
         return true;
     }
 
-    if (rl->n_dropped) {
+    if (!rl->n_dropped) {
+        xpthread_mutex_unlock(&rl->mutex);
+    } else {
         time_t now = time_now();
+        unsigned int n_dropped = rl->n_dropped;
         unsigned int first_dropped_elapsed = now - rl->first_dropped;
         unsigned int last_dropped_elapsed = now - rl->last_dropped;
+        rl->n_dropped = 0;
+        xpthread_mutex_unlock(&rl->mutex);
 
         vlog(module, level,
              "Dropped %u log messages in last %u seconds (most recently, "
              "%u seconds ago) due to excessive rate",
-             rl->n_dropped, first_dropped_elapsed, last_dropped_elapsed);
-
-        rl->n_dropped = 0;
+             n_dropped, first_dropped_elapsed, last_dropped_elapsed);
     }
+
     return false;
 }
 
@@ -957,60 +982,4 @@ vlog_usage(void)
            "  --log-file[=FILE]       enable logging to specified FILE\n"
            "                          (default: %s/%s.log)\n",
            ovs_logdir(), program_name);
-}
-
-static bool vlog_async_inited = false;
-
-static worker_request_func vlog_async_write_request_cb;
-
-static void
-vlog_write_file(struct ds *s)
-{
-    if (worker_is_running()) {
-        static bool in_worker_request = false;
-        if (!in_worker_request) {
-            in_worker_request = true;
-
-            worker_request(s->string, s->length,
-                           &log_fd, vlog_async_inited ? 0 : 1,
-                           vlog_async_write_request_cb, NULL, NULL);
-            vlog_async_inited = true;
-
-            in_worker_request = false;
-            return;
-        } else {
-            /* We've been entered recursively.  This can happen if
-             * worker_request(), or a function that it calls, tries to log
-             * something.  We can't call worker_request() recursively, so fall
-             * back to writing the log file directly. */
-            COVERAGE_INC(vlog_recursive);
-        }
-    }
-    ignore(write(log_fd, s->string, s->length));
-}
-
-static void
-vlog_update_async_log_fd(void)
-{
-    if (worker_is_running()) {
-        worker_request(NULL, 0, &log_fd, 1, vlog_async_write_request_cb,
-                       NULL, NULL);
-        vlog_async_inited = true;
-    }
-}
-
-static void
-vlog_async_write_request_cb(struct ofpbuf *request,
-                            const int *fd, size_t n_fds)
-{
-    if (n_fds > 0) {
-        if (log_fd >= 0) {
-            close(log_fd);
-        }
-        log_fd = *fd;
-    }
-
-    if (request->size > 0) {
-        ignore(write(log_fd, request->data, request->size));
-    }
 }

@@ -35,13 +35,14 @@
 #include "dirs.h"
 #include "dynamic-string.h"
 #include "json.h"
+#include "latch.h"
 #include "ofpbuf.h"
+#include "ovs-thread.h"
 #include "poll-loop.h"
 #include "shash.h"
 #include "smap.h"
 #include "timeval.h"
 #include "vlog.h"
-#include "worker.h"
 
 VLOG_DEFINE_THIS_MODULE(system_stats);
 
@@ -505,46 +506,33 @@ get_filesys_stats(struct smap *stats OVS_UNUSED)
 
 #define SYSTEM_STATS_INTERVAL (5 * 1000) /* In milliseconds. */
 
-/* Whether the client wants us to report system stats. */
+static pthread_mutex_t mutex = PTHREAD_ADAPTIVE_MUTEX_INITIALIZER;
+static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+static struct latch latch;
 static bool enabled;
+static bool started;
+static struct smap *system_stats;
 
-static enum {
-    S_DISABLED,                 /* Not enabled, nothing going on. */
-    S_WAITING,                  /* Sleeping for SYSTEM_STATS_INTERVAL ms. */
-    S_REQUEST_SENT,             /* Sent a request to worker. */
-    S_REPLY_RECEIVED            /* Received a reply from worker. */
-} state;
+static void *system_stats_thread_func(void *);
+static void discard_stats(void);
 
-/* In S_WAITING state: the next time to wake up.
- * In other states: not meaningful. */
-static long long int next_refresh;
-
-/* In S_REPLY_RECEIVED: the stats that have just been received.
- * In other states: not meaningful. */
-static struct smap *received_stats;
-
-static worker_request_func system_stats_request_cb;
-static worker_reply_func system_stats_reply_cb;
-
-/* Enables or disables system stats collection, according to 'new_enable'.
- *
- * Even if system stats are disabled, the caller should still periodically call
- * system_stats_run(). */
+/* Enables or disables system stats collection, according to 'enable'. */
 void
-system_stats_enable(bool new_enable)
+system_stats_enable(bool enable)
 {
-    if (new_enable != enabled) {
-        if (new_enable) {
-            if (state == S_DISABLED) {
-                state = S_WAITING;
-                next_refresh = time_msec();
+    if (enabled != enable) {
+        xpthread_mutex_lock(&mutex);
+        if (enable) {
+            if (!started) {
+                xpthread_create(NULL, NULL, system_stats_thread_func, NULL);
+                latch_init(&latch);
+                started = true;
             }
-        } else {
-            if (state == S_WAITING) {
-                state = S_DISABLED;
-            }
+            discard_stats();
+            xpthread_cond_signal(&cond);
         }
-        enabled = new_enable;
+        enabled = enable;
+        xpthread_mutex_unlock(&mutex);
     }
 }
 
@@ -553,41 +541,28 @@ system_stats_enable(bool new_enable)
  *
  * When a new snapshot is available (which only occurs if system stats are
  * enabled), returns it as an smap owned by the caller.  The caller must use
- * both smap_destroy() and free() to complete free the returned data.
+ * both smap_destroy() and free() to completely free the returned data.
  *
  * When no new snapshot is available, returns NULL. */
 struct smap *
 system_stats_run(void)
 {
-    switch (state) {
-    case S_DISABLED:
-        break;
+    struct smap *stats = NULL;
 
-    case S_WAITING:
-        if (time_msec() >= next_refresh) {
-            worker_request(NULL, 0, NULL, 0, system_stats_request_cb,
-                           system_stats_reply_cb, NULL);
-            state = S_REQUEST_SENT;
-        }
-        break;
+    xpthread_mutex_lock(&mutex);
+    if (system_stats) {
+        latch_poll(&latch);
 
-    case S_REQUEST_SENT:
-        break;
-
-    case S_REPLY_RECEIVED:
         if (enabled) {
-            state = S_WAITING;
-            next_refresh = time_msec() + SYSTEM_STATS_INTERVAL;
-            return received_stats;
+            stats = system_stats;
+            system_stats = NULL;
         } else {
-            smap_destroy(received_stats);
-            free(received_stats);
-            state = S_DISABLED;
+            discard_stats();
         }
-        break;
     }
+    xpthread_mutex_unlock(&mutex);
 
-    return NULL;
+    return stats;
 }
 
 /* Causes poll_block() to wake up when system_stats_run() needs to be
@@ -595,62 +570,54 @@ system_stats_run(void)
 void
 system_stats_wait(void)
 {
-    switch (state) {
-    case S_DISABLED:
-        break;
-
-    case S_WAITING:
-        poll_timer_wait_until(next_refresh);
-        break;
-
-    case S_REQUEST_SENT:
-        /* Someone else should be calling worker_wait() to wake up when the
-         * reply arrives, otherwise there's a bug. */
-        break;
-
-    case S_REPLY_RECEIVED:
-        poll_immediate_wake();
-        break;
+    if (enabled) {
+        latch_wait(&latch);
     }
 }
 
 static void
-system_stats_request_cb(struct ofpbuf *request OVS_UNUSED,
-                        const int fds[] OVS_UNUSED, size_t n_fds OVS_UNUSED)
+discard_stats(void)
 {
-    struct smap stats;
-    struct json *json;
-    char *s;
-
-    smap_init(&stats);
-    get_cpu_cores(&stats);
-    get_load_average(&stats);
-    get_memory_stats(&stats);
-    get_process_stats(&stats);
-    get_filesys_stats(&stats);
-
-    json = smap_to_json(&stats);
-    s = json_to_string(json, 0);
-    worker_reply(s, strlen(s) + 1, NULL, 0);
-
-    free(s);
-    json_destroy(json);
-    smap_destroy(&stats);
+    if (system_stats) {
+        smap_destroy(system_stats);
+        free(system_stats);
+        system_stats = NULL;
+    }
 }
 
-static void
-system_stats_reply_cb(struct ofpbuf *reply,
-                      const int fds[] OVS_UNUSED, size_t n_fds OVS_UNUSED,
-                      void *aux OVS_UNUSED)
+static void * NO_RETURN
+system_stats_thread_func(void *arg OVS_UNUSED)
 {
-    struct json *json = json_from_string(reply->data);
+    pthread_detach(pthread_self());
 
-    received_stats = xmalloc(sizeof *received_stats);
-    smap_init(received_stats);
-    smap_from_json(received_stats, json);
+    for (;;) {
+        long long int next_refresh;
+        struct smap *stats;
 
-    ovs_assert(state == S_REQUEST_SENT);
-    state = S_REPLY_RECEIVED;
+        xpthread_mutex_lock(&mutex);
+        while (!enabled) {
+            xpthread_cond_wait(&cond, &mutex);
+        }
+        xpthread_mutex_unlock(&mutex);
 
-    json_destroy(json);
+        stats = xmalloc(sizeof *stats);
+        smap_init(stats);
+        get_cpu_cores(stats);
+        get_load_average(stats);
+        get_memory_stats(stats);
+        get_process_stats(stats);
+        get_filesys_stats(stats);
+
+        xpthread_mutex_lock(&mutex);
+        discard_stats();
+        system_stats = stats;
+        latch_set(&latch);
+        xpthread_mutex_unlock(&mutex);
+
+        next_refresh = time_msec() + SYSTEM_STATS_INTERVAL;
+        do {
+            poll_timer_wait_until(next_refresh);
+            poll_block();
+        } while (time_msec() < next_refresh);
+    }
 }
