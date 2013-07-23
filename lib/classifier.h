@@ -124,15 +124,15 @@ struct cls_rule *cls_cursor_next(struct cls_cursor *, struct cls_rule *);
 
 #define CLS_CURSOR_FOR_EACH(RULE, MEMBER, CURSOR)                       \
     for (ASSIGN_CONTAINER(RULE, cls_cursor_first(CURSOR), MEMBER);      \
-         &(RULE)->MEMBER != NULL;                                       \
+         RULE != OBJECT_CONTAINING(NULL, RULE, MEMBER);                 \
          ASSIGN_CONTAINER(RULE, cls_cursor_next(CURSOR, &(RULE)->MEMBER), \
                           MEMBER))
 
 #define CLS_CURSOR_FOR_EACH_SAFE(RULE, NEXT, MEMBER, CURSOR)            \
     for (ASSIGN_CONTAINER(RULE, cls_cursor_first(CURSOR), MEMBER);      \
-         (&(RULE)->MEMBER != NULL                                       \
+         (RULE != OBJECT_CONTAINING(NULL, RULE, MEMBER)                 \
           ? ASSIGN_CONTAINER(NEXT, cls_cursor_next(CURSOR, &(RULE)->MEMBER), \
-                             MEMBER)                                    \
+                             MEMBER), 1                                 \
           : 0);                                                         \
          (RULE) = (NEXT))
 
