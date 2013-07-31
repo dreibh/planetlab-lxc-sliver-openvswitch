@@ -241,9 +241,11 @@ static int
 netdev_dummy_create(const struct netdev_class *class, const char *name,
                     struct netdev **netdevp)
 {
-    static unsigned int n = 0xaa550000;
+    static atomic_uint next_n = ATOMIC_VAR_INIT(0xaa550000);
     struct netdev_dummy *netdev;
+    unsigned int n;
 
+    atomic_add(&next_n, 1, &n);
     netdev = xzalloc(sizeof *netdev);
     netdev_init(&netdev->up, name, class);
     netdev->hwaddr[0] = 0xaa;
@@ -264,8 +266,6 @@ netdev_dummy_create(const struct netdev_class *class, const char *name,
     list_init(&netdev->rxes);
 
     shash_add(&dummy_netdevs, name, netdev);
-
-    n++;
 
     *netdevp = &netdev->up;
 

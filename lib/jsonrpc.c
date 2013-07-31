@@ -352,7 +352,7 @@ void
 jsonrpc_recv_wait(struct jsonrpc *rpc)
 {
     if (rpc->status || rpc->received || !byteq_is_empty(&rpc->input)) {
-        (poll_immediate_wake)(rpc->name);
+        poll_immediate_wake_at(rpc->name);
     } else {
         stream_recv_wait(rpc->stream);
     }
@@ -515,14 +515,10 @@ jsonrpc_create(enum jsonrpc_msg_type type, const char *method,
 static struct json *
 jsonrpc_create_id(void)
 {
-    static pthread_mutex_t mutex = PTHREAD_ADAPTIVE_MUTEX_INITIALIZER;
-    static unsigned int next_id;
+    static atomic_uint next_id = ATOMIC_VAR_INIT(0);
     unsigned int id;
 
-    xpthread_mutex_lock(&mutex);
-    id = next_id++;
-    xpthread_mutex_unlock(&mutex);
-
+    atomic_add(&next_id, 1, &id);
     return json_integer_create(id);
 }
 

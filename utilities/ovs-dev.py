@@ -26,7 +26,7 @@ OVS_SRC = HOME + "/ovs"
 ROOT = HOME + "/root"
 PATH = "%(ovs)s/utilities:%(ovs)s/ovsdb:%(ovs)s/vswitchd" % {"ovs": OVS_SRC}
 
-ENV["CFLAGS"] = "-g -O0 -Wall -Wextra -Wno-deprecated-declarations"
+ENV["CFLAGS"] = "-g -O0"
 ENV["PATH"] = PATH + ":" + ENV["PATH"]
 
 options = None
@@ -52,6 +52,9 @@ def uname():
 
 def conf():
     tag()
+    if options.clang:
+        ENV["CC"] = "clang"
+
     configure = ["./configure", "--prefix=" + ROOT, "--localstatedir=" + ROOT,
                  "--with-logdir=%s/log" % ROOT, "--with-rundir=%s/run" % ROOT,
                  "--with-linux=/lib/modules/%s/build" % uname(),
@@ -75,7 +78,11 @@ def make(args=""):
     make = "make -s -j 8 " + args
     try:
         _sh("cgcc", "--version", capture=True)
-        make += " C=1"
+        # XXX: For some reason the clang build doesn't place nicely with
+        # sparse.  At some point this needs to be figured out and this check
+        # removed.
+        if not options.clang:
+            make += " C=1"
     except OSError:
         pass
     _sh(make)
@@ -166,7 +173,9 @@ def run():
     if options.gdb:
         cmd = ["gdb", "--args"] + cmd
     elif options.valgrind:
-        cmd = ["valgrind", "--track-origins=yes"] + cmd
+        cmd = ["valgrind", "--track-origins=yes",
+               "--suppressions=%s/tests/glibc.supp" % OVS_SRC,
+               "--suppressions=%s/tests/openssl.supp" % OVS_SRC] + cmd
     else:
         cmd = ["sudo"] + cmd
         opts = opts + ["-vconsole:off", "--detach"]
@@ -275,6 +284,8 @@ def main():
                      help="run ovs-vswitchd under gdb")
     group.add_option("--valgrind", dest="valgrind", action="store_true",
                      help="run ovs-vswitchd under valgrind")
+    group.add_option("--clang", dest="clang", action="store_true",
+                     help="build ovs-vswitchd with clang")
     parser.add_option_group(group)
 
     options, args = parser.parse_args()

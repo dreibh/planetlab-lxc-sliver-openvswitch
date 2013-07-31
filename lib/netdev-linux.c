@@ -148,6 +148,7 @@ struct tc {
 struct tc_queue {
     struct hmap_node hmap_node; /* In struct tc's "queues" hmap. */
     unsigned int queue_id;      /* OpenFlow queue ID. */
+    long long int created;      /* Time queue was created, in msecs. */
 };
 
 /* A particular kind of traffic control.  Each implementation generally maps to
@@ -1340,11 +1341,13 @@ static int
 netdev_linux_sys_get_stats(const struct netdev *netdev_,
                          struct netdev_stats *stats)
 {
-    static int use_netlink_stats = -1;
+    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
+    static int use_netlink_stats;
     int error;
 
-    if (use_netlink_stats < 0) {
+    if (ovsthread_once_start(&once)) {
         use_netlink_stats = check_for_working_netlink_stats();
+        ovsthread_once_done(&once);
     }
 
     if (use_netlink_stats) {
@@ -1996,9 +1999,11 @@ netdev_linux_get_queue_stats(const struct netdev *netdev_,
         return EOPNOTSUPP;
     } else {
         const struct tc_queue *queue = tc_find_queue(netdev_, queue_id);
-        return (queue
-                ? netdev->tc->ops->class_get_stats(netdev_, queue, stats)
-                : ENOENT);
+        if (!queue) {
+            return ENOENT;
+        }
+        stats->created = queue->created;
+        return netdev->tc->ops->class_get_stats(netdev_, queue, stats);
     }
 }
 
@@ -2805,6 +2810,7 @@ htb_update_queue__(struct netdev *netdev, unsigned int queue_id,
         hcp = xmalloc(sizeof *hcp);
         queue = &hcp->tc_queue;
         queue->queue_id = queue_id;
+        queue->created = time_msec();
         hmap_insert(&htb->tc.queues, &queue->hmap_node, hash);
     }
 
@@ -3038,6 +3044,7 @@ hfsc_update_queue__(struct netdev *netdev, unsigned int queue_id,
         hcp             = xmalloc(sizeof *hcp);
         queue           = &hcp->tc_queue;
         queue->queue_id = queue_id;
+        queue->created  = time_msec();
         hmap_insert(&hfsc->tc.queues, &queue->hmap_node, hash);
     }
 
@@ -3777,9 +3784,14 @@ read_psched(void)
      * [5] 2.6.32.21.22 (approx.) from Ubuntu 10.04 on VMware Fusion
      * [6] 2.6.34 from kernel.org on KVM
      */
+    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
     static const char fn[] = "/proc/net/psched";
     unsigned int a, b, c, d;
     FILE *stream;
+
+    if (!ovsthread_once_start(&once)) {
+        return;
+    }
 
     ticks_per_s = 1.0;
     buffer_hz = 100;
@@ -3787,20 +3799,20 @@ read_psched(void)
     stream = fopen(fn, "r");
     if (!stream) {
         VLOG_WARN("%s: open failed: %s", fn, ovs_strerror(errno));
-        return;
+        goto exit;
     }
 
     if (fscanf(stream, "%x %x %x %x", &a, &b, &c, &d) != 4) {
         VLOG_WARN("%s: read failed", fn);
         fclose(stream);
-        return;
+        goto exit;
     }
     VLOG_DBG("%s: psched parameters are: %u %u %u %u", fn, a, b, c, d);
     fclose(stream);
 
     if (!a || !c) {
         VLOG_WARN("%s: invalid scheduler parameters", fn);
-        return;
+        goto exit;
     }
 
     ticks_per_s = (double) a * c / b;
@@ -3811,6 +3823,9 @@ read_psched(void)
                   fn, a, b, c, d);
     }
     VLOG_DBG("%s: ticks_per_s=%f buffer_hz=%u", fn, ticks_per_s, buffer_hz);
+
+exit:
+    ovsthread_once_done(&once);
 }
 
 /* Returns the number of bytes that can be transmitted in 'ticks' ticks at a
@@ -3818,9 +3833,7 @@ read_psched(void)
 static unsigned int
 tc_ticks_to_bytes(unsigned int rate, unsigned int ticks)
 {
-    if (!buffer_hz) {
-        read_psched();
-    }
+    read_psched();
     return (rate * ticks) / ticks_per_s;
 }
 
@@ -3829,9 +3842,7 @@ tc_ticks_to_bytes(unsigned int rate, unsigned int ticks)
 static unsigned int
 tc_bytes_to_ticks(unsigned int rate, unsigned int size)
 {
-    if (!buffer_hz) {
-        read_psched();
-    }
+    read_psched();
     return rate ? ((unsigned long long int) ticks_per_s * size) / rate : 0;
 }
 
@@ -3840,9 +3851,7 @@ tc_bytes_to_ticks(unsigned int rate, unsigned int size)
 static unsigned int
 tc_buffer_per_jiffy(unsigned int rate)
 {
-    if (!buffer_hz) {
-        read_psched();
-    }
+    read_psched();
     return rate / buffer_hz;
 }
 
@@ -4546,7 +4555,8 @@ netdev_linux_get_ipv4(const struct netdev *netdev, struct in_addr *ip,
     ifr.ifr_addr.sa_family = AF_INET;
     error = netdev_linux_do_ioctl(netdev_get_name(netdev), &ifr, cmd, cmd_name);
     if (!error) {
-        const struct sockaddr_in *sin = (struct sockaddr_in *) &ifr.ifr_addr;
+        const struct sockaddr_in *sin = ALIGNED_CAST(struct sockaddr_in *,
+                                                     &ifr.ifr_addr);
         *ip = sin->sin_addr;
     }
     return error;
@@ -4556,9 +4566,10 @@ netdev_linux_get_ipv4(const struct netdev *netdev, struct in_addr *ip,
 static int
 af_packet_sock(void)
 {
-    static int sock = INT_MIN;
+    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
+    static int sock;
 
-    if (sock == INT_MIN) {
+    if (ovsthread_once_start(&once)) {
         sock = socket(AF_PACKET, SOCK_RAW, 0);
         if (sock >= 0) {
             int error = set_nonblocking(sock);
@@ -4571,6 +4582,7 @@ af_packet_sock(void)
             VLOG_ERR("failed to create packet socket: %s",
                      ovs_strerror(errno));
         }
+        ovsthread_once_done(&once);
     }
 
     return sock;

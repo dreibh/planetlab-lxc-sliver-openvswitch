@@ -27,6 +27,7 @@
 #include "hmap.h"
 #include "dynamic-string.h"
 #include "ofpbuf.h"
+#include "ovs-thread.h"
 
 const struct in6_addr in6addr_exact = IN6ADDR_EXACT_INIT;
 
@@ -54,7 +55,7 @@ eth_addr_is_reserved(const uint8_t ea[ETH_ADDR_LEN])
 {
     struct eth_addr_node {
         struct hmap_node hmap_node;
-        uint64_t ea64;
+        const uint64_t ea64;
     };
 
     static struct eth_addr_node nodes[] = {
@@ -100,15 +101,18 @@ eth_addr_is_reserved(const uint8_t ea[ETH_ADDR_LEN])
         { HMAP_NODE_NULL_INITIALIZER, 0x01000cccccc7ULL },
     };
 
-    static struct hmap addrs = HMAP_INITIALIZER(&addrs);
+    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
     struct eth_addr_node *node;
+    static struct hmap addrs;
     uint64_t ea64;
 
-    if (hmap_is_empty(&addrs)) {
+    if (ovsthread_once_start(&once)) {
+        hmap_init(&addrs);
         for (node = nodes; node < &nodes[ARRAY_SIZE(nodes)]; node++) {
             hmap_insert(&addrs, &node->hmap_node,
                         hash_2words(node->ea64, node->ea64 >> 32));
         }
+        ovsthread_once_done(&once);
     }
 
     ea64 = eth_addr_to_uint64(ea);
@@ -246,7 +250,8 @@ set_ethertype(struct ofpbuf *packet, ovs_be16 eth_type)
 
     if (eh->eth_type == htons(ETH_TYPE_VLAN)) {
         ovs_be16 *p;
-        p = (ovs_be16 *)((char *)(packet->l2_5 ? packet->l2_5 : packet->l3) - 2);
+        p = ALIGNED_CAST(ovs_be16 *,
+                (char *)(packet->l2_5 ? packet->l2_5 : packet->l3) - 2);
         *p = eth_type;
     } else {
         eh->eth_type = eth_type;
@@ -666,7 +671,7 @@ packet_rh_present(struct ofpbuf *packet)
     if (remaining < sizeof *nh) {
         return false;
     }
-    nh = (struct ip6_hdr *)data;
+    nh = ALIGNED_CAST(struct ip6_hdr *, data);
     data += sizeof *nh;
     remaining -= sizeof *nh;
     nexthdr = nh->ip6_nxt;
@@ -702,7 +707,8 @@ packet_rh_present(struct ofpbuf *packet)
             nexthdr = ext_hdr->ip6e_nxt;
             len = (ext_hdr->ip6e_len + 2) * 4;
         } else if (nexthdr == IPPROTO_FRAGMENT) {
-            const struct ip6_frag *frag_hdr = (struct ip6_frag *)data;
+            const struct ip6_frag *frag_hdr = ALIGNED_CAST(struct ip6_frag *,
+                                                           data);
 
             nexthdr = frag_hdr->ip6f_nxt;
             len = sizeof *frag_hdr;

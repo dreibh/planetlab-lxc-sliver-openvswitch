@@ -1293,7 +1293,7 @@ ofputil_decode_hello_bitmap(const struct ofp_hello_elem_header *oheh,
                             uint32_t *allowed_versionsp)
 {
     uint16_t bitmap_len = ntohs(oheh->length) - sizeof *oheh;
-    const ovs_be32 *bitmap = (const ovs_be32 *) (oheh + 1);
+    const ovs_be32 *bitmap = ALIGNED_CAST(const ovs_be32 *, oheh + 1);
     uint32_t allowed_versions;
 
     if (!bitmap_len || bitmap_len % sizeof *bitmap) {
@@ -1397,7 +1397,7 @@ ofputil_encode_hello(uint32_t allowed_versions)
         oheh = ofpbuf_put_zeros(msg, ROUND_UP(map_len + sizeof *oheh, 8));
         oheh->type = htons(OFPHET_VERSIONBITMAP);
         oheh->length = htons(map_len + sizeof *oheh);
-        *(ovs_be32 *)(oheh + 1) = htonl(allowed_versions);
+        *ALIGNED_CAST(ovs_be32 *, oheh + 1) = htonl(allowed_versions);
 
         ofpmsg_update_length(msg);
     }
@@ -1750,7 +1750,8 @@ ofputil_pull_bands(struct ofpbuf *msg, size_t len, uint16_t *n_bands,
             ((struct ofp13_meter_band_dscp_remark *)ombh)->prec_level : 0;
         n++;
         len -= ombh_len;
-        ombh = (struct ofp13_meter_band_header *)(((char *)ombh) + ombh_len);
+        ombh = ALIGNED_CAST(struct ofp13_meter_band_header *,
+                            (char *) ombh + ombh_len);
     }
     if (len) {
         return OFPERR_OFPBRC_BAD_LEN;
@@ -5183,6 +5184,21 @@ ofputil_port_stats_from_ofp13(struct ofputil_port_stats *ops,
     return error;
 }
 
+static size_t
+ofputil_get_port_stats_size(enum ofp_version ofp_version)
+{
+    switch (ofp_version) {
+    case OFP10_VERSION:
+        return sizeof(struct ofp10_port_stats);
+    case OFP11_VERSION:
+    case OFP12_VERSION:
+        return sizeof(struct ofp11_port_stats);
+    case OFP13_VERSION:
+        return sizeof(struct ofp13_port_stats);
+    default:
+        NOT_REACHED();
+    }
+}
 
 /* Returns the number of port stats elements in OFPTYPE_PORT_STATS_REPLY
  * message 'oh'. */
@@ -5194,9 +5210,7 @@ ofputil_count_port_stats(const struct ofp_header *oh)
     ofpbuf_use_const(&b, oh, ntohs(oh->length));
     ofpraw_pull_assert(&b);
 
-    BUILD_ASSERT(sizeof(struct ofp10_port_stats) ==
-                 sizeof(struct ofp11_port_stats));
-    return b.size / sizeof(struct ofp10_port_stats);
+    return b.size / ofputil_get_port_stats_size(oh->version);
 }
 
 /* Converts an OFPST_PORT_STATS reply in 'msg' into an abstract
@@ -5352,6 +5366,22 @@ ofputil_encode_queue_stats_request(enum ofp_version ofp_version,
     return request;
 }
 
+static size_t
+ofputil_get_queue_stats_size(enum ofp_version ofp_version)
+{
+    switch (ofp_version) {
+    case OFP10_VERSION:
+        return sizeof(struct ofp10_queue_stats);
+    case OFP11_VERSION:
+    case OFP12_VERSION:
+        return sizeof(struct ofp11_queue_stats);
+    case OFP13_VERSION:
+        return sizeof(struct ofp13_queue_stats);
+    default:
+        NOT_REACHED();
+    }
+}
+
 /* Returns the number of queue stats elements in OFPTYPE_QUEUE_STATS_REPLY
  * message 'oh'. */
 size_t
@@ -5362,9 +5392,7 @@ ofputil_count_queue_stats(const struct ofp_header *oh)
     ofpbuf_use_const(&b, oh, ntohs(oh->length));
     ofpraw_pull_assert(&b);
 
-    BUILD_ASSERT(sizeof(struct ofp10_queue_stats) ==
-                 sizeof(struct ofp11_queue_stats));
-    return b.size / sizeof(struct ofp10_queue_stats);
+    return b.size / ofputil_get_queue_stats_size(oh->version);
 }
 
 static enum ofperr
@@ -5373,9 +5401,10 @@ ofputil_queue_stats_from_ofp10(struct ofputil_queue_stats *oqs,
 {
     oqs->port_no = u16_to_ofp(ntohs(qs10->port_no));
     oqs->queue_id = ntohl(qs10->queue_id);
-    oqs->stats.tx_bytes = ntohll(get_32aligned_be64(&qs10->tx_bytes));
-    oqs->stats.tx_packets = ntohll(get_32aligned_be64(&qs10->tx_packets));
-    oqs->stats.tx_errors = ntohll(get_32aligned_be64(&qs10->tx_errors));
+    oqs->tx_bytes = ntohll(get_32aligned_be64(&qs10->tx_bytes));
+    oqs->tx_packets = ntohll(get_32aligned_be64(&qs10->tx_packets));
+    oqs->tx_errors = ntohll(get_32aligned_be64(&qs10->tx_errors));
+    oqs->duration_sec = oqs->duration_nsec = UINT32_MAX;
 
     return 0;
 }
@@ -5392,9 +5421,10 @@ ofputil_queue_stats_from_ofp11(struct ofputil_queue_stats *oqs,
     }
 
     oqs->queue_id = ntohl(qs11->queue_id);
-    oqs->stats.tx_bytes = ntohll(qs11->tx_bytes);
-    oqs->stats.tx_packets = ntohll(qs11->tx_packets);
-    oqs->stats.tx_errors = ntohll(qs11->tx_errors);
+    oqs->tx_bytes = ntohll(qs11->tx_bytes);
+    oqs->tx_packets = ntohll(qs11->tx_packets);
+    oqs->tx_errors = ntohll(qs11->tx_errors);
+    oqs->duration_sec = oqs->duration_nsec = UINT32_MAX;
 
     return 0;
 }
@@ -5403,11 +5433,10 @@ static enum ofperr
 ofputil_queue_stats_from_ofp13(struct ofputil_queue_stats *oqs,
                                const struct ofp13_queue_stats *qs13)
 {
-    enum ofperr error
-        = ofputil_queue_stats_from_ofp11(oqs, &qs13->qs);
+    enum ofperr error = ofputil_queue_stats_from_ofp11(oqs, &qs13->qs);
     if (!error) {
-        /* FIXME: Get qs13->duration_sec and qs13->duration_nsec,
-         * Add to netdev_queue_stats? */
+        oqs->duration_sec = ntohl(qs13->duration_sec);
+        oqs->duration_nsec = ntohl(qs13->duration_nsec);
     }
 
     return error;
@@ -5479,9 +5508,9 @@ ofputil_queue_stats_to_ofp10(const struct ofputil_queue_stats *oqs,
     qs10->port_no = htons(ofp_to_u16(oqs->port_no));
     memset(qs10->pad, 0, sizeof qs10->pad);
     qs10->queue_id = htonl(oqs->queue_id);
-    put_32aligned_be64(&qs10->tx_bytes, htonll(oqs->stats.tx_bytes));
-    put_32aligned_be64(&qs10->tx_packets, htonll(oqs->stats.tx_packets));
-    put_32aligned_be64(&qs10->tx_errors, htonll(oqs->stats.tx_errors));
+    put_32aligned_be64(&qs10->tx_bytes, htonll(oqs->tx_bytes));
+    put_32aligned_be64(&qs10->tx_packets, htonll(oqs->tx_packets));
+    put_32aligned_be64(&qs10->tx_errors, htonll(oqs->tx_errors));
 }
 
 static void
@@ -5490,9 +5519,9 @@ ofputil_queue_stats_to_ofp11(const struct ofputil_queue_stats *oqs,
 {
     qs11->port_no = ofputil_port_to_ofp11(oqs->port_no);
     qs11->queue_id = htonl(oqs->queue_id);
-    qs11->tx_bytes = htonll(oqs->stats.tx_bytes);
-    qs11->tx_packets = htonll(oqs->stats.tx_packets);
-    qs11->tx_errors = htonll(oqs->stats.tx_errors);
+    qs11->tx_bytes = htonll(oqs->tx_bytes);
+    qs11->tx_packets = htonll(oqs->tx_packets);
+    qs11->tx_errors = htonll(oqs->tx_errors);
 }
 
 static void
@@ -5500,10 +5529,13 @@ ofputil_queue_stats_to_ofp13(const struct ofputil_queue_stats *oqs,
                              struct ofp13_queue_stats *qs13)
 {
     ofputil_queue_stats_to_ofp11(oqs, &qs13->qs);
-    /* OF 1.3 adds duration fields */
-    /* FIXME: Need to implement queue alive duration (sec + nsec) */
-    qs13->duration_sec = htonl(~0);
-    qs13->duration_nsec = htonl(~0);
+    if (oqs->duration_sec != UINT32_MAX) {
+        qs13->duration_sec = htonl(oqs->duration_sec);
+        qs13->duration_nsec = htonl(oqs->duration_nsec);
+    } else {
+        qs13->duration_sec = htonl(UINT32_MAX);
+        qs13->duration_nsec = htonl(UINT32_MAX);
+    }
 }
 
 /* Encode a queue stat for 'oqs' and append it to 'replies'. */

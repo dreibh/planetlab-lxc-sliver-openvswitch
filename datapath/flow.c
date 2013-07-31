@@ -82,8 +82,9 @@ static void update_range__(struct sw_flow_match *match,
 	do { \
 		update_range__(match, offsetof(struct sw_flow_key, field),  \
 				     sizeof((match)->key->field), is_mask); \
-		if (is_mask && match->mask != NULL) {                       \
-			(match)->mask->key.field = value;		    \
+		if (is_mask) {						    \
+			if ((match)->mask)				    \
+				(match)->mask->key.field = value;	    \
 		} else {                                                    \
 			(match)->key->field = value;		            \
 		}                                                           \
@@ -93,8 +94,9 @@ static void update_range__(struct sw_flow_match *match,
 	do { \
 		update_range__(match, offsetof(struct sw_flow_key, field),  \
 				len, is_mask);                              \
-		if (is_mask && match->mask != NULL) {                       \
-			memcpy(&(match)->mask->key.field, value_p, len);    \
+		if (is_mask) {						    \
+			if ((match)->mask)				    \
+				memcpy(&(match)->mask->key.field, value_p, len);\
 		} else {                                                    \
 			memcpy(&(match)->key->field, value_p, len);         \
 		}                                                           \
@@ -429,7 +431,7 @@ static struct flex_array *alloc_buckets(unsigned int n_buckets)
 	struct flex_array *buckets;
 	int i, err;
 
-	buckets = flex_array_alloc(sizeof(struct hlist_head *),
+	buckets = flex_array_alloc(sizeof(struct hlist_head),
 				   n_buckets, GFP_KERNEL);
 	if (!buckets)
 		return NULL;
@@ -489,7 +491,7 @@ static void __flow_tbl_destroy(struct flow_table *table)
 		int ver = table->node_ver;
 
 		hlist_for_each_entry_safe(flow, n, head, hash_node[ver]) {
-			hlist_del_rcu(&flow->hash_node[ver]);
+			hlist_del(&flow->hash_node[ver]);
 			ovs_flow_free(flow, false);
 		}
 	}
@@ -1363,15 +1365,19 @@ static int ovs_key_from_nlattrs(struct sw_flow_match *match,  u64 attrs,
 		__be16 tci;
 
 		tci = nla_get_be16(a[OVS_KEY_ATTR_VLAN]);
-		if (!is_mask)
-			if (!(tci & htons(VLAN_TAG_PRESENT))) {
+		if (!(tci & htons(VLAN_TAG_PRESENT))) {
+			if (is_mask)
+				OVS_NLERR("VLAN TCI mask does not have exact match for VLAN_TAG_PRESENT bit.\n");
+			else
 				OVS_NLERR("VLAN TCI does not have VLAN_TAG_PRESENT bit set.\n");
-				return -EINVAL;
-			}
+
+			return -EINVAL;
+		}
 
 		SW_FLOW_KEY_PUT(match, eth.tci, tci, is_mask);
 		attrs &= ~(1ULL << OVS_KEY_ATTR_VLAN);
-	}
+	} else if (!is_mask)
+		SW_FLOW_KEY_PUT(match, eth.tci, htons(0xffff), true);
 
 	if (attrs & (1ULL << OVS_KEY_ATTR_ETHERTYPE)) {
 		__be16 eth_type;
@@ -1688,8 +1694,7 @@ int ovs_flow_to_nlattrs(const struct sw_flow_key *swkey,
 	struct ovs_key_ethernet *eth_key;
 	struct nlattr *nla, *encap;
 
-	if (output->phy.priority &&
-		nla_put_u32(skb, OVS_KEY_ATTR_PRIORITY, output->phy.priority))
+	if (nla_put_u32(skb, OVS_KEY_ATTR_PRIORITY, output->phy.priority))
 		goto nla_put_failure;
 
 	if (swkey->tun_key.ipv4_dst &&
@@ -1709,8 +1714,7 @@ int ovs_flow_to_nlattrs(const struct sw_flow_key *swkey,
 			goto nla_put_failure;
 	}
 
-	if (output->phy.skb_mark &&
-		nla_put_u32(skb, OVS_KEY_ATTR_SKB_MARK, output->phy.skb_mark))
+	if (nla_put_u32(skb, OVS_KEY_ATTR_SKB_MARK, output->phy.skb_mark))
 		goto nla_put_failure;
 
 	nla = nla_reserve(skb, OVS_KEY_ATTR_ETHERNET, sizeof(*eth_key));

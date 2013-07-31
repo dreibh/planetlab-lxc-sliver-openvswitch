@@ -149,7 +149,6 @@ NETSTAT = 'netstat'
 OVS_DPCTL = 'ovs-dpctl'
 OVS_OFCTL = 'ovs-ofctl'
 OVS_VSCTL = 'ovs-vsctl'
-OVS_APPCTL = 'ovs-appctl'
 PS = 'ps'
 ROUTE = 'route'
 RPM = 'rpm'
@@ -205,6 +204,7 @@ CAP_KERNEL_INFO          = 'kernel-info'
 CAP_LOSETUP_A            = 'loopback-devices'
 CAP_MULTIPATH            = 'multipath'
 CAP_NETWORK_CONFIG       = 'network-config'
+CAP_NETWORK_INFO         = 'network-info'
 CAP_NETWORK_STATUS       = 'network-status'
 CAP_OPENVSWITCH_LOGS	 = 'ovs-system-logs'
 CAP_PROCESS_LIST         = 'process-list'
@@ -233,7 +233,7 @@ cap(CAP_BOOT_LOADER,         PII_NO,                    max_size=3*KB,
     max_time=5)
 cap(CAP_DISK_INFO,           PII_MAYBE,                 max_size=50*KB,
     max_time=20)
-cap(CAP_HARDWARE_INFO,       PII_MAYBE,                 max_size=30*KB,
+cap(CAP_HARDWARE_INFO,       PII_MAYBE,                 max_size=2*MB,
     max_time=20)
 cap(CAP_KERNEL_INFO,         PII_MAYBE,                 max_size=120*KB,
     max_time=5)
@@ -242,7 +242,9 @@ cap(CAP_MULTIPATH,           PII_MAYBE,                 max_size=20*KB,
     max_time=10)
 cap(CAP_NETWORK_CONFIG,      PII_IF_CUSTOMIZED,
                                         min_size=0,     max_size=40*KB)
-cap(CAP_NETWORK_STATUS,      PII_YES,                   max_size=50*MB,
+cap(CAP_NETWORK_INFO,        PII_YES,                   max_size=50*MB,
+    max_time=30)
+cap(CAP_NETWORK_STATUS,      PII_YES,                   max_size=-1,
     max_time=30)
 cap(CAP_OPENVSWITCH_LOGS,    PII_MAYBE,                 max_size=-1,
     max_time=5)
@@ -543,14 +545,14 @@ exclude those logs from the archive.
     file_output(CAP_NETWORK_CONFIG, [NTP_CONF, IPTABLES_CONFIG, HOSTS_ALLOW, HOSTS_DENY])
     file_output(CAP_NETWORK_CONFIG, [OPENVSWITCH_CONF_DB])
 
-    cmd_output(CAP_NETWORK_STATUS, [IFCONFIG, '-a'])
-    cmd_output(CAP_NETWORK_STATUS, [ROUTE, '-n'])
-    cmd_output(CAP_NETWORK_STATUS, [ARP, '-n'])
-    cmd_output(CAP_NETWORK_STATUS, [NETSTAT, '-an'])
+    cmd_output(CAP_NETWORK_INFO, [IFCONFIG, '-a'])
+    cmd_output(CAP_NETWORK_INFO, [ROUTE, '-n'])
+    cmd_output(CAP_NETWORK_INFO, [ARP, '-n'])
+    cmd_output(CAP_NETWORK_INFO, [NETSTAT, '-an'])
     for dir in DHCP_LEASE_DIR:
-        tree_output(CAP_NETWORK_STATUS, dir)
+        tree_output(CAP_NETWORK_INFO, dir)
     for table in ['filter', 'nat', 'mangle', 'raw', 'security']:
-        cmd_output(CAP_NETWORK_STATUS, [IPTABLES, '-t', table, '-nL'])
+        cmd_output(CAP_NETWORK_INFO, [IPTABLES, '-t', table, '-nL'])
     for p in os.listdir('/sys/class/net/'):
         try:
             f = open('/sys/class/net/%s/type' % p, 'r')
@@ -558,35 +560,25 @@ exclude those logs from the archive.
             f.close()
             if os.path.islink('/sys/class/net/%s/device' % p) and int(t) == 1:
                 # ARPHRD_ETHER
-                cmd_output(CAP_NETWORK_STATUS, [ETHTOOL, '-S', p])
+                cmd_output(CAP_NETWORK_INFO, [ETHTOOL, '-S', p])
                 if not p.startswith('vif') and not p.startswith('tap'):
-                    cmd_output(CAP_NETWORK_STATUS, [ETHTOOL, p])
-                    cmd_output(CAP_NETWORK_STATUS, [ETHTOOL, '-k', p])
-                    cmd_output(CAP_NETWORK_STATUS, [ETHTOOL, '-i', p])
-                    cmd_output(CAP_NETWORK_STATUS, [ETHTOOL, '-c', p])
+                    cmd_output(CAP_NETWORK_INFO, [ETHTOOL, p])
+                    cmd_output(CAP_NETWORK_INFO, [ETHTOOL, '-k', p])
+                    cmd_output(CAP_NETWORK_INFO, [ETHTOOL, '-i', p])
+                    cmd_output(CAP_NETWORK_INFO, [ETHTOOL, '-c', p])
             if int(t) == 1:
-                cmd_output(CAP_NETWORK_STATUS,
+                cmd_output(CAP_NETWORK_INFO,
                            [TC, '-s', '-d', 'class', 'show', 'dev', p])
         except:
             pass
-    tree_output(CAP_NETWORK_STATUS, PROC_NET_BONDING_DIR)
-    tree_output(CAP_NETWORK_STATUS, PROC_NET_VLAN_DIR)
-    cmd_output(CAP_NETWORK_STATUS, [TC, '-s', 'qdisc'])
-    file_output(CAP_NETWORK_STATUS, [PROC_NET_SOFTNET_STAT])
+    tree_output(CAP_NETWORK_INFO, PROC_NET_BONDING_DIR)
+    tree_output(CAP_NETWORK_INFO, PROC_NET_VLAN_DIR)
+    cmd_output(CAP_NETWORK_INFO, [TC, '-s', 'qdisc'])
+    file_output(CAP_NETWORK_INFO, [PROC_NET_SOFTNET_STAT])
     if os.path.exists(OPENVSWITCH_VSWITCHD_PID):
         cmd_output(CAP_NETWORK_STATUS, [OVS_DPCTL, 'show', '-s'])
         for d in dp_list():
             cmd_output(CAP_NETWORK_STATUS, [OVS_DPCTL, 'dump-flows', d])
-        try:
-            vspidfile = open(OPENVSWITCH_VSWITCHD_PID)
-            vspid = int(vspidfile.readline().strip())
-            vspidfile.close()
-            for b in bond_list(vspid):
-                cmd_output(CAP_NETWORK_STATUS,
-                           [OVS_APPCTL, '-t', '@RUNDIR@/ovs-vswitchd.%s.ctl' % vspid, '-e' 'bond/show %s' % b],
-                           'ovs-appctl-bond-show-%s.out' % b)
-        except e:
-            pass
 
     cmd_output(CAP_PROCESS_LIST, [PS, 'wwwaxf', '-eo', 'pid,tty,stat,time,nice,psr,pcpu,pmem,nwchan,wchan:25,args'], label='process-tree')
     func_output(CAP_PROCESS_LIST, 'fd_usage', fd_usage)
@@ -745,17 +737,6 @@ def dp_list():
 
     if not procs[0].timed_out:
         return output.getvalue().splitlines()
-    return []
-
-def bond_list(pid):
-    output = StringIO.StringIO()
-    procs = [ProcOutput([OVS_APPCTL, '-t', '@RUNDIR@/ovs-vswitchd.%s.ctl' % pid, '-e' 'bond/list'], caps[CAP_NETWORK_STATUS][MAX_TIME], output)]
-
-    run_procs([procs])
-
-    if not procs[0].timed_out:
-        bonds = output.getvalue().splitlines()[1:]
-        return [x.split('\t')[1] for x in bonds]
     return []
 
 def fd_usage(cap):

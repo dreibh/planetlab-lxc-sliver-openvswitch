@@ -13,7 +13,7 @@
 # limitations under the License.
 
 AC_PREREQ(2.64)
-AC_INIT(openvswitch, 1.11.90, ovs-bugs@openvswitch.org)
+AC_INIT(openvswitch, 1.12.90, ovs-bugs@openvswitch.org)
 AC_CONFIG_SRCDIR([datapath/datapath.c])
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_AUX_DIR([build-aux])
@@ -64,7 +64,8 @@ AC_CHECK_DECLS([sys_siglist], [], [], [[#include <signal.h>]])
 AC_CHECK_MEMBERS([struct stat.st_mtim.tv_nsec, struct stat.st_mtimensec],
   [], [], [[#include <sys/stat.h>]])
 AC_CHECK_MEMBERS([struct ifreq.ifr_flagshigh], [], [], [[#include <net/if.h>]])
-AC_CHECK_FUNCS([mlockall strnlen getloadavg statvfs getmntent_r])
+AC_CHECK_FUNCS([mlockall strnlen getloadavg statvfs getmntent_r \
+  pthread_setname_np pthread_set_name_np])
 AC_CHECK_HEADERS([mntent.h sys/statvfs.h linux/types.h linux/if_ether.h stdatomic.h])
 AC_CHECK_HEADERS([net/if_mib.h], [], [], [[#include <sys/types.h>
 #include <net/if.h>]])
@@ -82,6 +83,7 @@ OVS_CHECK_GROFF
 OVS_CHECK_GNU_MAKE
 OVS_CHECK_CACHE_TIME
 OVS_CHECK_TLS
+OVS_CHECK_GCC4_ATOMICS
 OVS_CHECK_ATOMIC_ALWAYS_LOCK_FREE(1)
 OVS_CHECK_ATOMIC_ALWAYS_LOCK_FREE(2)
 OVS_CHECK_ATOMIC_ALWAYS_LOCK_FREE(4)
@@ -103,6 +105,7 @@ OVS_ENABLE_OPTION([-Wstrict-prototypes])
 OVS_ENABLE_OPTION([-Wold-style-definition])
 OVS_ENABLE_OPTION([-Wmissing-prototypes])
 OVS_ENABLE_OPTION([-Wmissing-field-initializers])
+OVS_ENABLE_OPTION([-Wthread-safety])
 OVS_CONDITIONAL_CC_OPTION([-Wno-unused], [HAVE_WNO_UNUSED])
 OVS_CONDITIONAL_CC_OPTION([-Wno-unused-parameter], [HAVE_WNO_UNUSED_PARAMETER])
 OVS_ENABLE_WERROR
