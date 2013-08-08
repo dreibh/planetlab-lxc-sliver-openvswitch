@@ -35,7 +35,6 @@
 #include "packets.h"
 #include "poll-loop.h"
 #include "shash.h"
-#include "tag.h"
 #include "timeval.h"
 #include "unixctl.h"
 #include "vlog.h"
@@ -51,7 +50,6 @@ VLOG_DEFINE_THIS_MODULE(bond);
 struct bond_entry {
     struct bond_slave *slave;   /* Assigned slave, NULL if unassigned. */
     uint64_t tx_bytes;          /* Count of bytes recently transmitted. */
-    tag_type tag;               /* Tag for entry<->facet association. */
     struct list list_node;      /* In bond_slave's 'entries' list. */
 };
 
@@ -69,7 +67,6 @@ struct bond_slave {
     long long delay_expires;    /* Time after which 'enabled' may change. */
     bool enabled;               /* May be chosen for flows? */
     bool may_enable;            /* Client considers this slave bondable. */
-    tag_type tag;               /* Tag associated with this slave. */
 
     /* Rebalancing info.  Used only by bond_rebalance(). */
     struct list bal_node;       /* In bond_rebalance()'s 'bals' list. */
@@ -89,7 +86,6 @@ struct bond {
     /* Bonding info. */
     enum bond_mode balance;     /* Balancing mode, one of BM_*. */
     struct bond_slave *active_slave;
-    tag_type no_slaves_tag;     /* Tag for flows when all slaves disabled. */
     int updelay, downdelay;     /* Delay before slave goes up/down, in ms. */
     enum lacp_status lacp_status; /* Status of LACP negotiations. */
     bool bond_revalidate;       /* True if flows need revalidation. */
@@ -104,35 +100,37 @@ struct bond {
     /* Legacy compatibility. */
     long long int next_fake_iface_update; /* LLONG_MAX if disabled. */
 
-    /* Tag set saved for next bond_run().  This tag set is a kluge for cases
-     * where we can't otherwise provide revalidation feedback to the client.
-     * That's only unixctl commands now; I hope no other cases will arise. */
-    struct tag_set unixctl_tags;
-
-    int ref_cnt;
+    atomic_int ref_cnt;
 };
 
-static struct hmap all_bonds = HMAP_INITIALIZER(&all_bonds);
+static struct ovs_rwlock rwlock = OVS_RWLOCK_INITIALIZER;
+static struct hmap all_bonds__ = HMAP_INITIALIZER(&all_bonds__);
+static struct hmap *const all_bonds OVS_GUARDED_BY(rwlock) = &all_bonds__;
 
-static void bond_entry_reset(struct bond *);
-static struct bond_slave *bond_slave_lookup(struct bond *, const void *slave_);
-static void bond_enable_slave(struct bond_slave *, bool enable,
-                              struct tag_set *);
-static void bond_link_status_update(struct bond_slave *, struct tag_set *);
-static void bond_choose_active_slave(struct bond *, struct tag_set *);
+static void bond_entry_reset(struct bond *) OVS_REQ_WRLOCK(rwlock);
+static struct bond_slave *bond_slave_lookup(struct bond *, const void *slave_)
+    OVS_REQ_RDLOCK(rwlock);
+static void bond_enable_slave(struct bond_slave *, bool enable)
+    OVS_REQ_WRLOCK(rwlock);
+static void bond_link_status_update(struct bond_slave *)
+    OVS_REQ_WRLOCK(rwlock);
+static void bond_choose_active_slave(struct bond *)
+    OVS_REQ_WRLOCK(rwlock);;
 static unsigned int bond_hash_src(const uint8_t mac[ETH_ADDR_LEN],
                                   uint16_t vlan, uint32_t basis);
 static unsigned int bond_hash_tcp(const struct flow *, uint16_t vlan,
                                   uint32_t basis);
 static struct bond_entry *lookup_bond_entry(const struct bond *,
                                             const struct flow *,
-                                            uint16_t vlan);
-static tag_type bond_get_active_slave_tag(const struct bond *);
+                                            uint16_t vlan)
+    OVS_REQ_RDLOCK(rwlock);
 static struct bond_slave *choose_output_slave(const struct bond *,
                                               const struct flow *,
                                               struct flow_wildcards *,
-                                              uint16_t vlan, tag_type *tags);
-static void bond_update_fake_slave_stats(struct bond *);
+                                              uint16_t vlan)
+    OVS_REQ_RDLOCK(rwlock);
+static void bond_update_fake_slave_stats(struct bond *)
+    OVS_REQ_RDLOCK(rwlock);
 
 /* Attempts to parse 's' as the name of a bond balancing mode.  If successful,
  * stores the mode in '*balance' and returns true.  Otherwise returns false
@@ -179,14 +177,10 @@ bond_create(const struct bond_settings *s)
 
     bond = xzalloc(sizeof *bond);
     hmap_init(&bond->slaves);
-    bond->no_slaves_tag = tag_create_random();
     bond->next_fake_iface_update = LLONG_MAX;
-    bond->ref_cnt = 1;
+    atomic_init(&bond->ref_cnt, 1);
 
     bond_reconfigure(bond, s);
-
-    tag_set_init(&bond->unixctl_tags);
-
     return bond;
 }
 
@@ -196,8 +190,9 @@ bond_ref(const struct bond *bond_)
     struct bond *bond = CONST_CAST(struct bond *, bond_);
 
     if (bond) {
-        ovs_assert(bond->ref_cnt > 0);
-        bond->ref_cnt++;
+        int orig;
+        atomic_add(&bond->ref_cnt, 1, &orig);
+        ovs_assert(orig > 0);
     }
     return bond;
 }
@@ -207,17 +202,21 @@ void
 bond_unref(struct bond *bond)
 {
     struct bond_slave *slave, *next_slave;
+    int orig;
 
     if (!bond) {
         return;
     }
 
-    ovs_assert(bond->ref_cnt > 0);
-    if (--bond->ref_cnt) {
+    atomic_sub(&bond->ref_cnt, 1, &orig);
+    ovs_assert(orig > 0);
+    if (orig != 1) {
         return;
     }
 
-    hmap_remove(&all_bonds, &bond->hmap_node);
+    ovs_rwlock_wrlock(&rwlock);
+    hmap_remove(all_bonds, &bond->hmap_node);
+    ovs_rwlock_unlock(&rwlock);
 
     HMAP_FOR_EACH_SAFE (slave, next_slave, hmap_node, &bond->slaves) {
         hmap_remove(&bond->slaves, &slave->hmap_node);
@@ -246,13 +245,14 @@ bond_reconfigure(struct bond *bond, const struct bond_settings *s)
 {
     bool revalidate = false;
 
+    ovs_rwlock_wrlock(&rwlock);
     if (!bond->name || strcmp(bond->name, s->name)) {
         if (bond->name) {
-            hmap_remove(&all_bonds, &bond->hmap_node);
+            hmap_remove(all_bonds, &bond->hmap_node);
             free(bond->name);
         }
         bond->name = xstrdup(s->name);
-        hmap_insert(&all_bonds, &bond->hmap_node, hash_string(bond->name, 0));
+        hmap_insert(all_bonds, &bond->hmap_node, hash_string(bond->name, 0));
     }
 
     bond->updelay = s->up_delay;
@@ -290,11 +290,13 @@ bond_reconfigure(struct bond *bond, const struct bond_settings *s)
         bond_entry_reset(bond);
     }
 
+    ovs_rwlock_unlock(&rwlock);
     return revalidate;
 }
 
 static void
 bond_slave_set_netdev__(struct bond_slave *slave, struct netdev *netdev)
+    OVS_REQ_WRLOCK(rwlock)
 {
     if (slave->netdev != netdev) {
         slave->netdev = netdev;
@@ -314,8 +316,10 @@ bond_slave_set_netdev__(struct bond_slave *slave, struct netdev *netdev)
 void
 bond_slave_register(struct bond *bond, void *slave_, struct netdev *netdev)
 {
-    struct bond_slave *slave = bond_slave_lookup(bond, slave_);
+    struct bond_slave *slave;
 
+    ovs_rwlock_wrlock(&rwlock);
+    slave = bond_slave_lookup(bond, slave_);
     if (!slave) {
         slave = xzalloc(sizeof *slave);
 
@@ -327,13 +331,14 @@ bond_slave_register(struct bond *bond, void *slave_, struct netdev *netdev)
         bond->bond_revalidate = true;
 
         slave->enabled = false;
-        bond_enable_slave(slave, netdev_get_carrier(netdev), NULL);
+        bond_enable_slave(slave, netdev_get_carrier(netdev));
     }
 
     bond_slave_set_netdev__(slave, netdev);
 
     free(slave->name);
     slave->name = xstrdup(netdev_get_name(netdev));
+    ovs_rwlock_unlock(&rwlock);
 }
 
 /* Updates the network device to be used with 'slave_' to 'netdev'.
@@ -344,10 +349,14 @@ bond_slave_register(struct bond *bond, void *slave_, struct netdev *netdev)
 void
 bond_slave_set_netdev(struct bond *bond, void *slave_, struct netdev *netdev)
 {
-    struct bond_slave *slave = bond_slave_lookup(bond, slave_);
+    struct bond_slave *slave;
+
+    ovs_rwlock_wrlock(&rwlock);
+    slave = bond_slave_lookup(bond, slave_);
     if (slave) {
         bond_slave_set_netdev__(slave, netdev);
     }
+    ovs_rwlock_unlock(&rwlock);
 }
 
 /* Unregisters 'slave_' from 'bond'.  If 'bond' does not contain such a slave
@@ -357,14 +366,17 @@ bond_slave_set_netdev(struct bond *bond, void *slave_, struct netdev *netdev)
 void
 bond_slave_unregister(struct bond *bond, const void *slave_)
 {
-    struct bond_slave *slave = bond_slave_lookup(bond, slave_);
+    struct bond_slave *slave;
     bool del_active;
 
+    ovs_rwlock_wrlock(&rwlock);
+    slave = bond_slave_lookup(bond, slave_);
     if (!slave) {
-        return;
+        goto out;
     }
 
-    bond_enable_slave(slave, false, NULL);
+    bond->bond_revalidate = true;
+    bond_enable_slave(slave, false);
 
     del_active = bond->active_slave == slave;
     if (bond->hash) {
@@ -383,12 +395,11 @@ bond_slave_unregister(struct bond *bond, const void *slave_)
     free(slave);
 
     if (del_active) {
-        struct tag_set tags;
-
-        tag_set_init(&tags);
-        bond_choose_active_slave(bond, &tags);
+        bond_choose_active_slave(bond);
         bond->send_learning_packets = true;
     }
+out:
+    ovs_rwlock_unlock(&rwlock);
 }
 
 /* Should be called on each slave in 'bond' before bond_run() to indicate
@@ -399,18 +410,23 @@ bond_slave_unregister(struct bond *bond, const void *slave_)
 void
 bond_slave_set_may_enable(struct bond *bond, void *slave_, bool may_enable)
 {
+    ovs_rwlock_wrlock(&rwlock);
     bond_slave_lookup(bond, slave_)->may_enable = may_enable;
+    ovs_rwlock_unlock(&rwlock);
 }
 
-/* Performs periodic maintenance on 'bond'.  The caller must provide 'tags' to
- * allow tagged flows to be invalidated.
+/* Performs periodic maintenance on 'bond'.
+ *
+ * Returns true if the caller should revalidate its flows.
  *
  * The caller should check bond_should_send_learning_packets() afterward. */
-void
-bond_run(struct bond *bond, struct tag_set *tags, enum lacp_status lacp_status)
+bool
+bond_run(struct bond *bond, enum lacp_status lacp_status)
 {
     struct bond_slave *slave;
+    bool revalidate;
 
+    ovs_rwlock_wrlock(&rwlock);
     if (bond->lacp_status != lacp_status) {
         bond->lacp_status = lacp_status;
         bond->bond_revalidate = true;
@@ -418,11 +434,11 @@ bond_run(struct bond *bond, struct tag_set *tags, enum lacp_status lacp_status)
 
     /* Enable slaves based on link status and LACP feedback. */
     HMAP_FOR_EACH (slave, hmap_node, &bond->slaves) {
-        bond_link_status_update(slave, tags);
+        bond_link_status_update(slave);
         slave->change_seq = netdev_change_seq(slave->netdev);
     }
     if (!bond->active_slave || !bond->active_slave->enabled) {
-        bond_choose_active_slave(bond, tags);
+        bond_choose_active_slave(bond);
     }
 
     /* Update fake bond interface stats. */
@@ -431,20 +447,11 @@ bond_run(struct bond *bond, struct tag_set *tags, enum lacp_status lacp_status)
         bond->next_fake_iface_update = time_msec() + 1000;
     }
 
-    if (bond->bond_revalidate) {
-        struct bond_slave *slave;
+    revalidate = bond->bond_revalidate;
+    bond->bond_revalidate = false;
+    ovs_rwlock_unlock(&rwlock);
 
-        bond->bond_revalidate = false;
-        bond_entry_reset(bond);
-        HMAP_FOR_EACH (slave, hmap_node, &bond->slaves) {
-            tag_set_add(tags, slave->tag);
-        }
-        tag_set_add(tags, bond->no_slaves_tag);
-    }
-
-    /* Invalidate any tags required by  */
-    tag_set_union(tags, &bond->unixctl_tags);
-    tag_set_init(&bond->unixctl_tags);
+    return revalidate;
 }
 
 /* Causes poll_block() to wake up when 'bond' needs something to be done. */
@@ -453,6 +460,7 @@ bond_wait(struct bond *bond)
 {
     struct bond_slave *slave;
 
+    ovs_rwlock_rdlock(&rwlock);
     HMAP_FOR_EACH (slave, hmap_node, &bond->slaves) {
         if (slave->delay_expires != LLONG_MAX) {
             poll_timer_wait_until(slave->delay_expires);
@@ -467,10 +475,10 @@ bond_wait(struct bond *bond)
         poll_timer_wait_until(bond->next_fake_iface_update);
     }
 
-    /* Ensure that any saved tags get revalidated right away. */
-    if (!tag_set_is_empty(&bond->unixctl_tags)) {
+    if (!bond->bond_revalidate) {
         poll_immediate_wake();
     }
+    ovs_rwlock_unlock(&rwlock);
 
     /* We don't wait for bond->next_rebalance because rebalancing can only run
      * at a flow account checkpoint.  ofproto does checkpointing on its own
@@ -502,8 +510,12 @@ may_send_learning_packets(const struct bond *bond)
 bool
 bond_should_send_learning_packets(struct bond *bond)
 {
-    bool send = bond->send_learning_packets && may_send_learning_packets(bond);
+    bool send;
+
+    ovs_rwlock_wrlock(&rwlock);
+    send = bond->send_learning_packets && may_send_learning_packets(bond);
     bond->send_learning_packets = false;
+    ovs_rwlock_unlock(&rwlock);
     return send;
 }
 
@@ -519,14 +531,13 @@ bond_compose_learning_packet(struct bond *bond,
 {
     struct bond_slave *slave;
     struct ofpbuf *packet;
-    tag_type tags = 0;
     struct flow flow;
 
+    ovs_rwlock_rdlock(&rwlock);
     ovs_assert(may_send_learning_packets(bond));
-
     memset(&flow, 0, sizeof flow);
     memcpy(flow.dl_src, eth_src, ETH_ADDR_LEN);
-    slave = choose_output_slave(bond, &flow, NULL, vlan, &tags);
+    slave = choose_output_slave(bond, &flow, NULL, vlan);
 
     packet = ofpbuf_new(0);
     compose_rarp(packet, eth_src);
@@ -535,6 +546,7 @@ bond_compose_learning_packet(struct bond *bond,
     }
 
     *port_aux = slave->aux;
+    ovs_rwlock_unlock(&rwlock);
     return packet;
 }
 
@@ -555,12 +567,15 @@ bond_compose_learning_packet(struct bond *bond,
  */
 enum bond_verdict
 bond_check_admissibility(struct bond *bond, const void *slave_,
-                         const uint8_t eth_dst[ETH_ADDR_LEN], tag_type *tags)
+                         const uint8_t eth_dst[ETH_ADDR_LEN])
 {
-    struct bond_slave *slave = bond_slave_lookup(bond, slave_);
+    enum bond_verdict verdict = BV_DROP;
+    struct bond_slave *slave;
 
+    ovs_rwlock_rdlock(&rwlock);
+    slave = bond_slave_lookup(bond, slave_);
     if (!slave) {
-        return BV_DROP;
+        goto out;
     }
 
     /* LACP bonds have very loose admissibility restrictions because we can
@@ -572,16 +587,19 @@ bond_check_admissibility(struct bond *bond, const void *slave_,
      * If LACP is configured, but LACP negotiations have been unsuccessful, we
      * drop all incoming traffic. */
     switch (bond->lacp_status) {
-    case LACP_NEGOTIATED: return slave->enabled ? BV_ACCEPT : BV_DROP;
-    case LACP_CONFIGURED: return BV_DROP;
-    case LACP_DISABLED: break;
+    case LACP_NEGOTIATED:
+        verdict = slave->enabled ? BV_ACCEPT : BV_DROP;
+        goto out;
+    case LACP_CONFIGURED:
+        goto out;
+    case LACP_DISABLED:
+        break;
     }
 
     /* Drop all multicast packets on inactive slaves. */
     if (eth_addr_is_multicast(eth_dst)) {
-        *tags |= bond_get_active_slave_tag(bond);
         if (bond->active_slave != slave) {
-            return BV_DROP;
+            goto out;
         }
     }
 
@@ -589,22 +607,22 @@ bond_check_admissibility(struct bond *bond, const void *slave_,
     case BM_AB:
         /* Drop all packets which arrive on backup slaves.  This is similar to
          * how Linux bonding handles active-backup bonds. */
-        *tags |= bond_get_active_slave_tag(bond);
         if (bond->active_slave != slave) {
             static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
 
             VLOG_DBG_RL(&rl, "active-backup bond received packet on backup"
                         " slave (%s) destined for " ETH_ADDR_FMT,
                         slave->name, ETH_ADDR_ARGS(eth_dst));
-            return BV_DROP;
+            goto out;
         }
-        return BV_ACCEPT;
+        verdict = BV_ACCEPT;
+        goto out;
 
     case BM_TCP:
         /* TCP balanced bonds require successful LACP negotiated. Based on the
          * above check, LACP is off on this bond.  Therfore, we drop all
          * incoming traffic. */
-        return BV_DROP;
+        goto out;
 
     case BM_SLB:
         /* Drop all packets for which we have learned a different input port,
@@ -613,10 +631,15 @@ bond_check_admissibility(struct bond *bond, const void *slave_,
          * the host has moved to another switch.  The exception to the
          * exception is if we locked the learning table to avoid reflections on
          * bond slaves. */
-        return BV_DROP_IF_MOVED;
+        verdict = BV_DROP_IF_MOVED;
+        goto out;
     }
 
     NOT_REACHED();
+out:
+    ovs_rwlock_unlock(&rwlock);
+    return verdict;
+
 }
 
 /* Returns the slave (registered on 'bond' by bond_slave_register()) to which
@@ -629,31 +652,26 @@ bond_check_admissibility(struct bond *bond, const void *slave_,
  * nonzero only for trunk ports), whereas 'vlan' is the logical VLAN that the
  * packet belongs to (so for an access port it will be the access port's VLAN).
  *
- * Adds a tag to '*tags' that associates the flow with the returned slave.
- *
  * If 'wc' is non-NULL, bitwise-OR's 'wc' with the set of bits that were
  * significant in the selection.  At some point earlier, 'wc' should
  * have been initialized (e.g., by flow_wildcards_init_catchall()).
  */
 void *
 bond_choose_output_slave(struct bond *bond, const struct flow *flow,
-                         struct flow_wildcards *wc, uint16_t vlan,
-                         tag_type *tags)
+                         struct flow_wildcards *wc, uint16_t vlan)
 {
-    struct bond_slave *slave = choose_output_slave(bond, flow, wc, vlan, tags);
-    if (slave) {
-        *tags |= slave->tag;
-        return slave->aux;
-    } else {
-        *tags |= bond->no_slaves_tag;
-        return NULL;
-    }
+    struct bond_slave *slave;
+
+    ovs_rwlock_rdlock(&rwlock);
+    slave = choose_output_slave(bond, flow, wc, vlan);
+    ovs_rwlock_unlock(&rwlock);
+    return slave;
 }
 
 /* Rebalancing. */
 
 static bool
-bond_is_balanced(const struct bond *bond)
+bond_is_balanced(const struct bond *bond) OVS_REQ_RDLOCK(rwlock)
 {
     return bond->rebalance_interval
         && (bond->balance == BM_SLB || bond->balance == BM_TCP);
@@ -664,13 +682,15 @@ void
 bond_account(struct bond *bond, const struct flow *flow, uint16_t vlan,
              uint64_t n_bytes)
 {
+    ovs_rwlock_wrlock(&rwlock);
     if (bond_is_balanced(bond)) {
         lookup_bond_entry(bond, flow, vlan)->tx_bytes += n_bytes;
     }
+    ovs_rwlock_unlock(&rwlock);
 }
 
 static struct bond_slave *
-bond_slave_from_bal_node(struct list *bal)
+bond_slave_from_bal_node(struct list *bal) OVS_REQ_RDLOCK(rwlock)
 {
     return CONTAINER_OF(bal, struct bond_slave, bal_node);
 }
@@ -713,8 +733,7 @@ log_bals(struct bond *bond, const struct list *bals)
 
 /* Shifts 'hash' from its current slave to 'to'. */
 static void
-bond_shift_load(struct bond_entry *hash, struct bond_slave *to,
-                struct tag_set *set)
+bond_shift_load(struct bond_entry *hash, struct bond_slave *to)
 {
     struct bond_slave *from = hash->slave;
     struct bond *bond = from->bond;
@@ -733,9 +752,7 @@ bond_shift_load(struct bond_entry *hash, struct bond_slave *to,
     to->tx_bytes += delta;
 
     /* Arrange for flows to be revalidated. */
-    tag_set_add(set, hash->tag);
-    hash->slave = to;
-    hash->tag = tag_create_random();
+    bond->bond_revalidate = true;
 }
 
 /* Picks and returns a bond_entry to migrate from 'from' (the most heavily
@@ -810,13 +827,15 @@ reinsert_bal(struct list *bals, struct bond_slave *slave)
  * The caller should have called bond_account() for each active flow, to ensure
  * that flow data is consistently accounted at this point. */
 void
-bond_rebalance(struct bond *bond, struct tag_set *tags)
+bond_rebalance(struct bond *bond)
 {
     struct bond_slave *slave;
     struct bond_entry *e;
     struct list bals;
 
+    ovs_rwlock_wrlock(&rwlock);
     if (!bond_is_balanced(bond) || time_msec() < bond->next_rebalance) {
+        ovs_rwlock_unlock(&rwlock);
         return;
     }
     bond->next_rebalance = time_msec() + bond->rebalance_interval;
@@ -864,7 +883,7 @@ bond_rebalance(struct bond *bond, struct tag_set *tags)
          * to move from 'from' to 'to'. */
         e = choose_entry_to_migrate(from, to->tx_bytes);
         if (e) {
-            bond_shift_load(e, to, tags);
+            bond_shift_load(e, to);
 
             /* Delete element from from->entries.
              *
@@ -892,17 +911,18 @@ bond_rebalance(struct bond *bond, struct tag_set *tags)
             e->slave = NULL;
         }
     }
+    ovs_rwlock_unlock(&rwlock);
 }
 
 /* Bonding unixctl user interface functions. */
 
 static struct bond *
-bond_find(const char *name)
+bond_find(const char *name) OVS_REQ_RDLOCK(rwlock)
 {
     struct bond *bond;
 
     HMAP_FOR_EACH_WITH_HASH (bond, hmap_node, hash_string(name, 0),
-                             &all_bonds) {
+                             all_bonds) {
         if (!strcmp(bond->name, name)) {
             return bond;
         }
@@ -933,7 +953,8 @@ bond_unixctl_list(struct unixctl_conn *conn,
 
     ds_put_cstr(&ds, "bond\ttype\tslaves\n");
 
-    HMAP_FOR_EACH (bond, hmap_node, &all_bonds) {
+    ovs_rwlock_rdlock(&rwlock);
+    HMAP_FOR_EACH (bond, hmap_node, all_bonds) {
         const struct bond_slave *slave;
         size_t i;
 
@@ -949,12 +970,14 @@ bond_unixctl_list(struct unixctl_conn *conn,
         }
         ds_put_char(&ds, '\n');
     }
+    ovs_rwlock_unlock(&rwlock);
     unixctl_command_reply(conn, ds_cstr(&ds));
     ds_destroy(&ds);
 }
 
 static void
 bond_print_details(struct ds *ds, const struct bond *bond)
+    OVS_REQ_RDLOCK(rwlock)
 {
     struct shash slave_shash = SHASH_INITIALIZER(&slave_shash);
     const struct shash_node **sorted_slaves = NULL;
@@ -1046,24 +1069,28 @@ bond_unixctl_show(struct unixctl_conn *conn,
 {
     struct ds ds = DS_EMPTY_INITIALIZER;
 
+    ovs_rwlock_rdlock(&rwlock);
     if (argc > 1) {
         const struct bond *bond = bond_find(argv[1]);
 
         if (!bond) {
             unixctl_command_reply_error(conn, "no such bond");
-            return;
+            goto out;
         }
         bond_print_details(&ds, bond);
     } else {
         const struct bond *bond;
 
-        HMAP_FOR_EACH (bond, hmap_node, &all_bonds) {
+        HMAP_FOR_EACH (bond, hmap_node, all_bonds) {
             bond_print_details(&ds, bond);
         }
     }
 
     unixctl_command_reply(conn, ds_cstr(&ds));
     ds_destroy(&ds);
+
+out:
+    ovs_rwlock_unlock(&rwlock);
 }
 
 static void
@@ -1079,40 +1106,43 @@ bond_unixctl_migrate(struct unixctl_conn *conn,
     struct bond_entry *entry;
     int hash;
 
+    ovs_rwlock_wrlock(&rwlock);
     bond = bond_find(bond_s);
     if (!bond) {
         unixctl_command_reply_error(conn, "no such bond");
-        return;
+        goto out;
     }
 
     if (bond->balance != BM_SLB) {
         unixctl_command_reply_error(conn, "not an SLB bond");
-        return;
+        goto out;
     }
 
     if (strspn(hash_s, "0123456789") == strlen(hash_s)) {
         hash = atoi(hash_s) & BOND_MASK;
     } else {
         unixctl_command_reply_error(conn, "bad hash");
-        return;
+        goto out;
     }
 
     slave = bond_lookup_slave(bond, slave_s);
     if (!slave) {
         unixctl_command_reply_error(conn, "no such slave");
-        return;
+        goto out;
     }
 
     if (!slave->enabled) {
         unixctl_command_reply_error(conn, "cannot migrate to disabled slave");
-        return;
+        goto out;
     }
 
     entry = &bond->hash[hash];
-    tag_set_add(&bond->unixctl_tags, entry->tag);
+    bond->bond_revalidate = true;
     entry->slave = slave;
-    entry->tag = tag_create_random();
     unixctl_command_reply(conn, "migrated");
+
+out:
+    ovs_rwlock_unlock(&rwlock);
 }
 
 static void
@@ -1125,27 +1155,27 @@ bond_unixctl_set_active_slave(struct unixctl_conn *conn,
     struct bond *bond;
     struct bond_slave *slave;
 
+    ovs_rwlock_wrlock(&rwlock);
     bond = bond_find(bond_s);
     if (!bond) {
         unixctl_command_reply_error(conn, "no such bond");
-        return;
+        goto out;
     }
 
     slave = bond_lookup_slave(bond, slave_s);
     if (!slave) {
         unixctl_command_reply_error(conn, "no such slave");
-        return;
+        goto out;
     }
 
     if (!slave->enabled) {
         unixctl_command_reply_error(conn, "cannot make disabled slave active");
-        return;
+        goto out;
     }
 
     if (bond->active_slave != slave) {
-        tag_set_add(&bond->unixctl_tags, bond_get_active_slave_tag(bond));
+        bond->bond_revalidate = true;
         bond->active_slave = slave;
-        bond->active_slave->tag = tag_create_random();
         VLOG_INFO("bond %s: active interface is now %s",
                   bond->name, slave->name);
         bond->send_learning_packets = true;
@@ -1153,6 +1183,8 @@ bond_unixctl_set_active_slave(struct unixctl_conn *conn,
     } else {
         unixctl_command_reply(conn, "no change");
     }
+out:
+    ovs_rwlock_unlock(&rwlock);
 }
 
 static void
@@ -1163,20 +1195,24 @@ enable_slave(struct unixctl_conn *conn, const char *argv[], bool enable)
     struct bond *bond;
     struct bond_slave *slave;
 
+    ovs_rwlock_wrlock(&rwlock);
     bond = bond_find(bond_s);
     if (!bond) {
         unixctl_command_reply_error(conn, "no such bond");
-        return;
+        goto out;
     }
 
     slave = bond_lookup_slave(bond, slave_s);
     if (!slave) {
         unixctl_command_reply_error(conn, "no such slave");
-        return;
+        goto out;
     }
 
-    bond_enable_slave(slave, enable, &bond->unixctl_tags);
+    bond_enable_slave(slave, enable);
     unixctl_command_reply(conn, enable ? "enabled" : "disabled");
+
+out:
+    ovs_rwlock_unlock(&rwlock);
 }
 
 static void
@@ -1290,25 +1326,19 @@ bond_slave_lookup(struct bond *bond, const void *slave_)
 }
 
 static void
-bond_enable_slave(struct bond_slave *slave, bool enable, struct tag_set *tags)
+bond_enable_slave(struct bond_slave *slave, bool enable)
 {
     slave->delay_expires = LLONG_MAX;
     if (enable != slave->enabled) {
+        slave->bond->bond_revalidate = true;
         slave->enabled = enable;
-        if (!slave->enabled) {
-            VLOG_INFO("interface %s: disabled", slave->name);
-            if (tags) {
-                tag_set_add(tags, slave->tag);
-            }
-        } else {
-            VLOG_INFO("interface %s: enabled", slave->name);
-            slave->tag = tag_create_random();
-        }
+        VLOG_INFO("interface %s: %s", slave->name,
+                  slave->enabled ? "enabled" : "disabled");
     }
 }
 
 static void
-bond_link_status_update(struct bond_slave *slave, struct tag_set *tags)
+bond_link_status_update(struct bond_slave *slave)
 {
     struct bond *bond = slave->bond;
     bool up;
@@ -1338,7 +1368,7 @@ bond_link_status_update(struct bond_slave *slave, struct tag_set *tags)
     }
 
     if (time_msec() >= slave->delay_expires) {
-        bond_enable_slave(slave, up, tags);
+        bond_enable_slave(slave, up);
     }
 }
 
@@ -1379,7 +1409,7 @@ lookup_bond_entry(const struct bond *bond, const struct flow *flow,
 
 static struct bond_slave *
 choose_output_slave(const struct bond *bond, const struct flow *flow,
-                    struct flow_wildcards *wc, uint16_t vlan, tag_type *tags)
+                    struct flow_wildcards *wc, uint16_t vlan)
 {
     struct bond_entry *e;
 
@@ -1413,9 +1443,7 @@ choose_output_slave(const struct bond *bond, const struct flow *flow,
             if (!e->slave->enabled) {
                 e->slave = bond->active_slave;
             }
-            e->tag = tag_create_random();
         }
-        *tags |= e->tag;
         return e->slave;
 
     default:
@@ -1449,7 +1477,7 @@ bond_choose_slave(const struct bond *bond)
 }
 
 static void
-bond_choose_active_slave(struct bond *bond, struct tag_set *tags)
+bond_choose_active_slave(struct bond *bond)
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
     struct bond_slave *old_active_slave = bond->active_slave;
@@ -1464,27 +1492,13 @@ bond_choose_active_slave(struct bond *bond, struct tag_set *tags)
                          "remaining %lld ms updelay (since no interface was "
                          "enabled)", bond->name, bond->active_slave->name,
                          bond->active_slave->delay_expires - time_msec());
-            bond_enable_slave(bond->active_slave, true, tags);
-        }
-
-        if (!old_active_slave) {
-            tag_set_add(tags, bond->no_slaves_tag);
+            bond_enable_slave(bond->active_slave, true);
         }
 
         bond->send_learning_packets = true;
     } else if (old_active_slave) {
         VLOG_INFO_RL(&rl, "bond %s: all interfaces disabled", bond->name);
     }
-}
-
-/* Returns the tag for 'bond''s active slave, or 'bond''s no_slaves_tag if
- * there is no active slave. */
-static tag_type
-bond_get_active_slave_tag(const struct bond *bond)
-{
-    return (bond->active_slave
-            ? bond->active_slave->tag
-            : bond->no_slaves_tag);
 }
 
 /* Attempts to make the sum of the bond slaves' statistics appear on the fake

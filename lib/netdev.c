@@ -928,8 +928,7 @@ netdev_arp_lookup(const struct netdev *netdev,
                   ovs_be32 ip, uint8_t mac[ETH_ADDR_LEN])
 {
     int error = (netdev->netdev_class->arp_lookup
-                 ? netdev->netdev_class->arp_lookup(netdev,
-                        ip, mac)
+                 ? netdev->netdev_class->arp_lookup(netdev, ip, mac)
                  : EOPNOTSUPP);
     if (error) {
         memset(mac, 0, ETH_ADDR_LEN);
@@ -954,8 +953,7 @@ netdev_get_carrier(const struct netdev *netdev)
         return true;
     }
 
-    error = netdev->netdev_class->get_carrier(netdev,
-                                                              &carrier);
+    error = netdev->netdev_class->get_carrier(netdev, &carrier);
     if (error) {
         VLOG_DBG("%s: failed to get network device carrier status, assuming "
                  "down: %s", netdev_get_name(netdev), ovs_strerror(error));
@@ -1390,17 +1388,24 @@ netdev_get_class(const struct netdev *netdev)
 
 /* Returns the netdev with 'name' or NULL if there is none.
  *
- * The caller must not free the returned value. */
+ * The caller must free the returned netdev with netdev_close(). */
 struct netdev *
 netdev_from_name(const char *name)
 {
-    return shash_find_data(&netdev_shash, name);
+    struct netdev *netdev;
+
+    netdev = shash_find_data(&netdev_shash, name);
+    if (netdev) {
+        netdev_ref(netdev);
+    }
+
+    return netdev;
 }
 
 /* Fills 'device_list' with devices that match 'netdev_class'.
  *
- * The caller is responsible for initializing and destroying 'device_list'
- * but the contained netdevs must not be freed. */
+ * The caller is responsible for initializing and destroying 'device_list' and
+ * must close each device on the list. */
 void
 netdev_get_devices(const struct netdev_class *netdev_class,
                    struct shash *device_list)
@@ -1410,6 +1415,7 @@ netdev_get_devices(const struct netdev_class *netdev_class,
         struct netdev *dev = node->data;
 
         if (dev->netdev_class == netdev_class) {
+            dev->ref_cnt++;
             shash_add(device_list, node->name, node->data);
         }
     }
@@ -1418,8 +1424,10 @@ netdev_get_devices(const struct netdev_class *netdev_class,
 const char *
 netdev_get_type_from_name(const char *name)
 {
-    const struct netdev *dev = netdev_from_name(name);
-    return dev ? netdev_get_type(dev) : NULL;
+    struct netdev *dev = netdev_from_name(name);
+    const char *type = dev ? netdev_get_type(dev) : NULL;
+    netdev_close(dev);
+    return type;
 }
 
 void

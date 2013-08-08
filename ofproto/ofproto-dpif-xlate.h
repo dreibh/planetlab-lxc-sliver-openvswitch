@@ -21,10 +21,10 @@
 #include "ofpbuf.h"
 #include "ofproto-dpif-mirror.h"
 #include "ofproto-dpif.h"
-#include "tag.h"
 
 struct bfd;
 struct bond;
+struct dpif;
 struct lacp;
 struct dpif_ipfix;
 struct dpif_sflow;
@@ -40,7 +40,6 @@ struct xlate_out {
      * set. */
     struct flow_wildcards wc;
 
-    tag_type tags;              /* Tags associated with actions. */
     enum slow_path_reason slow; /* 0 if fast path may be used. */
     bool has_learn;             /* Actions include NXAST_LEARN? */
     bool has_normal;            /* Actions output to OFPP_NORMAL? */
@@ -112,10 +111,11 @@ struct xlate_in {
 };
 
 void xlate_ofproto_set(struct ofproto_dpif *, const char *name,
-                       const struct mac_learning *, const struct mbridge *,
+                       struct dpif *, const struct mac_learning *,
+                       struct stp *, const struct mbridge *,
                        const struct dpif_sflow *, const struct dpif_ipfix *,
                        enum ofp_config_flags, bool forward_bpdu,
-                       bool has_in_band, bool has_netflow, bool has_stp);
+                       bool has_in_band, bool has_netflow);
 void xlate_remove_ofproto(struct ofproto_dpif *);
 
 void xlate_bundle_set(struct ofproto_dpif *, struct ofbundle *,
@@ -129,9 +129,15 @@ void xlate_ofport_set(struct ofproto_dpif *, struct ofbundle *,
                       struct ofport_dpif *, ofp_port_t, odp_port_t,
                       const struct netdev *, const struct cfm *,
                       const struct bfd *, struct ofport_dpif *peer,
-                      enum ofputil_port_config, enum stp_state, bool is_tunnel,
+                      int stp_port_no, const struct ofproto_port_queue *qdscp,
+                      size_t n_qdscp, enum ofputil_port_config, bool is_tunnel,
                       bool may_enable);
 void xlate_ofport_remove(struct ofport_dpif *);
+
+int xlate_receive(const struct dpif_backer *, struct ofpbuf *packet,
+                  const struct nlattr *key, size_t key_len,
+                  struct flow *, enum odp_key_fitness *,
+                  struct ofproto_dpif **, odp_port_t *odp_in_port);
 
 void xlate_actions(struct xlate_in *, struct xlate_out *);
 void xlate_in_init(struct xlate_in *, struct ofproto_dpif *,
@@ -140,5 +146,4 @@ void xlate_in_init(struct xlate_in *, struct ofproto_dpif *,
 void xlate_out_uninit(struct xlate_out *);
 void xlate_actions_for_side_effects(struct xlate_in *);
 void xlate_out_copy(struct xlate_out *dst, const struct xlate_out *src);
-
 #endif /* ofproto-dpif-xlate.h */

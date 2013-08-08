@@ -120,10 +120,6 @@ enum {
     VALID_DRVINFO           = 1 << 7,
     VALID_FEATURES          = 1 << 8,
 };
-
-struct tap_state {
-    int fd;
-};
 
 /* Traffic control. */
 
@@ -359,7 +355,6 @@ static int tc_calc_buffer(unsigned int Bps, int mtu, uint64_t burst_bytes);
 struct netdev_linux {
     struct netdev up;
 
-    struct shash_node *shash_node;
     unsigned int cache_valid;
     unsigned int change_seq;
 
@@ -389,14 +384,12 @@ struct netdev_linux {
     enum netdev_features current;    /* Cached from ETHTOOL_GSET. */
     enum netdev_features advertised; /* Cached from ETHTOOL_GSET. */
     enum netdev_features supported;  /* Cached from ETHTOOL_GSET. */
-    enum netdev_features peer;       /* Cached from ETHTOOL_GSET. */
 
     struct ethtool_drvinfo drvinfo;  /* Cached from ETHTOOL_GDRVINFO. */
     struct tc *tc;
 
-    union {
-        struct tap_state tap;
-    } state;
+    /* For devices of class netdev_tap_class only. */
+    int tap_fd;
 };
 
 struct netdev_rx_linux {
@@ -544,11 +537,11 @@ static void
 netdev_linux_cache_cb(const struct rtnetlink_link_change *change,
                       void *aux OVS_UNUSED)
 {
-    struct netdev_linux *dev;
     if (change) {
         struct netdev *base_dev = netdev_from_name(change->ifname);
         if (base_dev && is_netdev_linux_class(netdev_get_class(base_dev))) {
             netdev_linux_update(netdev_linux_cast(base_dev), change);
+            netdev_close(base_dev);
         }
     } else {
         struct shash device_shash;
@@ -557,12 +550,13 @@ netdev_linux_cache_cb(const struct rtnetlink_link_change *change,
         shash_init(&device_shash);
         netdev_get_devices(&netdev_linux_class, &device_shash);
         SHASH_FOR_EACH (node, &device_shash) {
+            struct netdev *netdev = node->data;
+            struct netdev_linux *dev = netdev_linux_cast(netdev);
             unsigned int flags;
-
-            dev = node->data;
 
             get_flags(&dev->up, &flags);
             netdev_linux_changed(dev, flags, 0);
+            netdev_close(netdev);
         }
         shash_destroy(&device_shash);
     }
@@ -644,13 +638,12 @@ netdev_linux_create_tap(const struct netdev_class *class OVS_UNUSED,
                         const char *name, struct netdev **netdevp)
 {
     struct netdev_linux *netdev;
-    struct tap_state *state;
     static const char tap_dev[] = "/dev/net/tun";
     struct ifreq ifr;
     int error;
 
     netdev = xzalloc(sizeof *netdev);
-    state = &netdev->state.tap;
+    netdev->change_seq = 1;
 
     error = cache_notifier_ref();
     if (error) {
@@ -658,8 +651,8 @@ netdev_linux_create_tap(const struct netdev_class *class OVS_UNUSED,
     }
 
     /* Open tap device. */
-    state->fd = open(tap_dev, O_RDWR);
-    if (state->fd < 0) {
+    netdev->tap_fd = open(tap_dev, O_RDWR);
+    if (netdev->tap_fd < 0) {
         error = errno;
         VLOG_WARN("opening \"%s\" failed: %s", tap_dev, ovs_strerror(error));
         goto error_unref_notifier;
@@ -668,23 +661,25 @@ netdev_linux_create_tap(const struct netdev_class *class OVS_UNUSED,
     /* Create tap device. */
     ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
     ovs_strzcpy(ifr.ifr_name, name, sizeof ifr.ifr_name);
-    if (ioctl(state->fd, TUNSETIFF, &ifr) == -1) {
+    if (ioctl(netdev->tap_fd, TUNSETIFF, &ifr) == -1) {
         VLOG_WARN("%s: creating tap device failed: %s", name,
                   ovs_strerror(errno));
         error = errno;
-        goto error_unref_notifier;
+        goto error_close;
     }
 
     /* Make non-blocking. */
-    error = set_nonblocking(state->fd);
+    error = set_nonblocking(netdev->tap_fd);
     if (error) {
-        goto error_unref_notifier;
+        goto error_close;
     }
 
     netdev_init(&netdev->up, name, &netdev_tap_class);
     *netdevp = &netdev->up;
     return 0;
 
+error_close:
+    close(netdev->tap_fd);
 error_unref_notifier:
     cache_notifier_unref();
 error:
@@ -692,17 +687,6 @@ error:
     return error;
 }
 
-static void
-destroy_tap(struct netdev_linux *netdev)
-{
-    struct tap_state *state = &netdev->state.tap;
-
-    if (state->fd >= 0) {
-        close(state->fd);
-    }
-}
-
-/* Destroys the netdev device 'netdev_'. */
 static void
 netdev_linux_destroy(struct netdev *netdev_)
 {
@@ -712,8 +696,10 @@ netdev_linux_destroy(struct netdev *netdev_)
         netdev->tc->ops->tc_destroy(netdev->tc);
     }
 
-    if (netdev_get_class(netdev_) == &netdev_tap_class) {
-        destroy_tap(netdev);
+    if (netdev_get_class(netdev_) == &netdev_tap_class
+        && netdev->tap_fd >= 0)
+    {
+        close(netdev->tap_fd);
     }
     free(netdev);
 
@@ -730,7 +716,7 @@ netdev_linux_rx_open(struct netdev *netdev_, struct netdev_rx **rxp)
     int fd;
 
     if (is_tap) {
-        fd = netdev->state.tap.fd;
+        fd = netdev->tap_fd;
     } else {
         struct sockaddr_ll sll;
         int ifindex;
@@ -920,7 +906,7 @@ netdev_linux_send(struct netdev *netdev_, const void *data, size_t size)
              * because we attach a socket filter to the rx socket. */
             struct netdev_linux *netdev = netdev_linux_cast(netdev_);
 
-            retval = write(netdev->state.tap.fd, data, size);
+            retval = write(netdev->tap_fd, data, size);
         }
 
         if (retval < 0) {
@@ -1191,10 +1177,12 @@ netdev_linux_miimon_run(void)
     shash_init(&device_shash);
     netdev_get_devices(&netdev_linux_class, &device_shash);
     SHASH_FOR_EACH (node, &device_shash) {
-        struct netdev_linux *dev = node->data;
+        struct netdev *netdev = node->data;
+        struct netdev_linux *dev = netdev_linux_cast(netdev);
         bool miimon;
 
         if (dev->miimon_interval <= 0 || !timer_expired(&dev->miimon_timer)) {
+            netdev_close(netdev);
             continue;
         }
 
@@ -1205,6 +1193,7 @@ netdev_linux_miimon_run(void)
         }
 
         timer_set_duration(&dev->miimon_timer, dev->miimon_interval);
+        netdev_close(netdev);
     }
 
     shash_destroy(&device_shash);
@@ -1219,11 +1208,13 @@ netdev_linux_miimon_wait(void)
     shash_init(&device_shash);
     netdev_get_devices(&netdev_linux_class, &device_shash);
     SHASH_FOR_EACH (node, &device_shash) {
-        struct netdev_linux *dev = node->data;
+        struct netdev *netdev = node->data;
+        struct netdev_linux *dev = netdev_linux_cast(netdev);
 
         if (dev->miimon_interval > 0) {
             timer_wait(&dev->miimon_timer);
         }
+        netdev_close(netdev);
     }
     shash_destroy(&device_shash);
 }
@@ -1418,8 +1409,7 @@ netdev_linux_get_stats(const struct netdev *netdev_,
 /* Retrieves current device stats for 'netdev-tap' netdev or
  * netdev-internal. */
 static int
-netdev_tap_get_stats(const struct netdev *netdev_,
-                        struct netdev_stats *stats)
+netdev_tap_get_stats(const struct netdev *netdev_, struct netdev_stats *stats)
 {
     struct netdev_linux *netdev = netdev_linux_cast(netdev_);
     struct netdev_stats dev_stats;
@@ -1644,18 +1634,14 @@ netdev_linux_read_features(struct netdev_linux *netdev)
         netdev->current |= NETDEV_F_AUTONEG;
     }
 
-    /* Peer advertisements. */
-    netdev->peer = 0;                  /* XXX */
-
 out:
     netdev->cache_valid |= VALID_FEATURES;
     netdev->get_features_error = error;
 }
 
-/* Stores the features supported by 'netdev' into each of '*current',
- * '*advertised', '*supported', and '*peer' that are non-null.  Each value is a
- * bitmap of NETDEV_* bits.  Returns 0 if successful, otherwise a positive
- * errno value. */
+/* Stores the features supported by 'netdev' into of '*current', '*advertised',
+ * '*supported', and '*peer'.  Each value is a bitmap of NETDEV_* bits.
+ * Returns 0 if successful, otherwise a positive errno value. */
 static int
 netdev_linux_get_features(const struct netdev *netdev_,
                           enum netdev_features *current,
@@ -1671,7 +1657,7 @@ netdev_linux_get_features(const struct netdev *netdev_,
         *current = netdev->current;
         *advertised = netdev->advertised;
         *supported = netdev->supported;
-        *peer = netdev->peer;
+        *peer = 0;              /* XXX */
     }
     return netdev->get_features_error;
 }

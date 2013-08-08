@@ -19,13 +19,14 @@
 
 #include "hmapx.h"
 #include "ofproto/ofproto-provider.h"
-#include "tag.h"
+#include "ovs-thread.h"
 #include "timer.h"
 #include "util.h"
 
 union user_action_cookie;
 struct ofproto_dpif;
 struct ofport_dpif;
+struct dpif_backer;
 
 struct rule_dpif {
     struct rule up;
@@ -43,10 +44,9 @@ struct rule_dpif {
      *     packet_count or byte_count member or that can be obtained from the
      *     datapath by, e.g., dpif_flow_get() for any subfacet.
      */
-    uint64_t packet_count;       /* Number of packets received. */
-    uint64_t byte_count;         /* Number of bytes received. */
-
-    tag_type tag;                /* Caches rule_calculate_tag() result. */
+    struct ovs_mutex stats_mutex;
+    uint64_t packet_count OVS_GUARDED;  /* Number of packets received. */
+    uint64_t byte_count OVS_GUARDED;    /* Number of bytes received. */
 };
 
 static inline struct rule_dpif *rule_dpif_cast(const struct rule *rule)
@@ -59,40 +59,21 @@ struct rule_dpif *rule_dpif_lookup_in_table(struct ofproto_dpif *,
                                             struct flow_wildcards *,
                                             uint8_t table_id);
 
-tag_type rule_calculate_tag(const struct flow *flow, const struct minimask *,
-                            uint32_t secret);
-
 struct rule_dpif *rule_dpif_miss_rule(struct ofproto_dpif *ofproto,
                                       const struct flow *);
 
 void rule_credit_stats(struct rule_dpif *, const struct dpif_flow_stats *);
 
-void ofproto_trace(struct ofproto_dpif *, const struct flow *,
-                   const struct ofpbuf *packet, struct ds *);
-
-size_t put_userspace_action(const struct ofproto_dpif *,
-                            struct ofpbuf *odp_actions, const struct flow *,
-                            const union user_action_cookie *,
-                            const size_t cookie_size);
-
-bool stp_should_process_flow(const struct flow *, struct flow_wildcards *);
-void stp_process_packet(const struct ofport_dpif *,
-                        const struct ofpbuf *packet);
-
 bool ofproto_has_vlan_splinters(const struct ofproto_dpif *);
 ofp_port_t vsp_realdev_to_vlandev(const struct ofproto_dpif *,
                                   ofp_port_t realdev_ofp_port,
                                   ovs_be16 vlan_tci);
-
-bool ofproto_dpif_dscp_from_priority(const struct ofport_dpif *,
-                                     uint32_t priority, uint8_t *dscp);
-int ofproto_dpif_queue_to_priority(const struct ofproto_dpif *,
-                                   uint32_t queue_id, uint32_t *priority);
-tag_type calculate_flow_tag(struct ofproto_dpif *, const struct flow *,
-                            uint8_t table_id, struct rule_dpif *);
+bool vsp_adjust_flow(const struct ofproto_dpif *, struct flow *);
 
 void ofproto_dpif_send_packet_in(struct ofproto_dpif *,
                                  struct ofputil_packet_in *pin);
-int ofproto_dpif_flow_mod(struct ofproto_dpif *, struct ofputil_flow_mod *);
+void ofproto_dpif_flow_mod(struct ofproto_dpif *, struct ofputil_flow_mod *);
+
+struct ofport_dpif *odp_port_to_ofport(const struct dpif_backer *, odp_port_t);
 
 #endif /* ofproto-dpif.h */

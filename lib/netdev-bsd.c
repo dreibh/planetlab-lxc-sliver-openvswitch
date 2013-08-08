@@ -83,6 +83,7 @@ struct netdev_bsd {
     int ifindex;
     uint8_t etheraddr[ETH_ADDR_LEN];
     struct in_addr in4;
+    struct in_addr netmask;
     struct in6_addr in6;
     int mtu;
     int carrier;
@@ -254,6 +255,7 @@ netdev_bsd_cache_cb(const struct rtbsd_change *change,
                 dev->cache_valid = 0;
                 netdev_bsd_changed(dev);
             }
+            netdev_close(base_dev);
         }
     } else {
         /*
@@ -266,9 +268,11 @@ netdev_bsd_cache_cb(const struct rtbsd_change *change,
         shash_init(&device_shash);
         netdev_get_devices(&netdev_bsd_class, &device_shash);
         SHASH_FOR_EACH (node, &device_shash) {
-            dev = node->data;
+            struct netdev *netdev = node->data;
+            dev = netdev_bsd_cast(netdev);
             dev->cache_valid = 0;
             netdev_bsd_changed(dev);
+            netdev_close(netdev);
         }
         shash_destroy(&device_shash);
     }
@@ -323,6 +327,7 @@ netdev_bsd_create_system(const struct netdev_class *class, const char *name,
     /* Verify that the netdev really exists by attempting to read its flags */
     error = netdev_get_flags(&netdev->up, &flags);
     if (error == ENXIO) {
+        free(netdev->kernel_name);
         netdev_uninit(&netdev->up, false);
         free(netdev);
         cache_notifier_unref();
@@ -362,14 +367,15 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
     if (netdev->tap_fd < 0) {
         error = errno;
         VLOG_WARN("opening \"/dev/tap\" failed: %s", ovs_strerror(error));
-        goto error_undef_notifier;
+        goto error_unref_notifier;
     }
 
     /* Retrieve tap name (e.g. tap0) */
     if (ioctl(netdev->tap_fd, TAPGIFNAME, &ifr) == -1) {
         /* XXX Need to destroy the device? */
         error = errno;
-        goto error_undef_notifier;
+        close(netdev->tap_fd);
+        goto error_unref_notifier;
     }
 
     /* Change the name of the tap device */
@@ -378,7 +384,7 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
     if (ioctl(af_inet_sock, SIOCSIFNAME, &ifr) == -1) {
         error = errno;
         destroy_tap(netdev->tap_fd, ifr.ifr_name);
-        goto error_undef_notifier;
+        goto error_unref_notifier;
     }
     kernel_name = xstrdup(name);
 #else
@@ -393,7 +399,7 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
     error = set_nonblocking(netdev->tap_fd);
     if (error) {
         destroy_tap(netdev->tap_fd, kernel_name);
-        goto error_undef_notifier;
+        goto error_unref_notifier;
     }
 
     /* Turn device UP */
@@ -402,7 +408,7 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
     if (ioctl(af_inet_sock, SIOCSIFFLAGS, &ifr) == -1) {
         error = errno;
         destroy_tap(netdev->tap_fd, kernel_name);
-        goto error_undef_notifier;
+        goto error_unref_notifier;
     }
 
     /* initialize the device structure and
@@ -413,7 +419,7 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
 
     return 0;
 
-error_undef_notifier:
+error_unref_notifier:
     cache_notifier_unref();
 error:
     free(netdev);
@@ -1096,8 +1102,8 @@ cleanup:
 }
 
 /*
- * If 'netdev' has an assigned IPv4 address, sets '*in4' to that address (if
- * 'in4' is non-null) and returns true.  Otherwise, returns false.
+ * If 'netdev' has an assigned IPv4 address, sets '*in4' to that address and
+ * '*netmask' to its netmask and returns true.  Otherwise, returns false.
  */
 static int
 netdev_bsd_get_in4(const struct netdev *netdev_, struct in_addr *in4,
@@ -1119,15 +1125,16 @@ netdev_bsd_get_in4(const struct netdev *netdev_, struct in_addr *in4,
 
         sin = (struct sockaddr_in *) &ifr.ifr_addr;
         netdev->in4 = sin->sin_addr;
-        netdev->cache_valid |= VALID_IN4;
         error = netdev_bsd_do_ioctl(netdev_get_kernel_name(netdev_), &ifr,
                                     SIOCGIFNETMASK, "SIOCGIFNETMASK");
         if (error) {
             return error;
         }
-        *netmask = ((struct sockaddr_in*)&ifr.ifr_addr)->sin_addr;
+        netdev->netmask = sin->sin_addr;
+        netdev->cache_valid |= VALID_IN4;
     }
     *in4 = netdev->in4;
+    *netmask = netdev->netmask;
 
     return in4->s_addr == INADDR_ANY ? EADDRNOTAVAIL : 0;
 }
@@ -1146,11 +1153,14 @@ netdev_bsd_set_in4(struct netdev *netdev_, struct in_addr addr,
 
     error = do_set_addr(netdev_, SIOCSIFADDR, "SIOCSIFADDR", addr);
     if (!error) {
-        netdev->cache_valid |= VALID_IN4;
-        netdev->in4 = addr;
         if (addr.s_addr != INADDR_ANY) {
             error = do_set_addr(netdev_, SIOCSIFNETMASK,
                                 "SIOCSIFNETMASK", mask);
+            if (!error) {
+                netdev->cache_valid |= VALID_IN4;
+                netdev->in4 = addr;
+                netdev->netmask = mask;
+            }
         }
         netdev_bsd_changed(netdev);
     }
@@ -1192,36 +1202,28 @@ netdev_bsd_get_in6(const struct netdev *netdev_, struct in6_addr *in6)
 }
 
 #if defined(__NetBSD__)
-static struct netdev *
-find_netdev_by_kernel_name(const char *kernel_name)
+static char *
+netdev_bsd_kernel_name_to_ovs_name(const char *kernel_name)
 {
+    char *ovs_name = NULL;
     struct shash device_shash;
     struct shash_node *node;
 
     shash_init(&device_shash);
     netdev_get_devices(&netdev_tap_class, &device_shash);
     SHASH_FOR_EACH(node, &device_shash) {
-        struct netdev_bsd * const dev = node->data;
+        struct netdev *netdev = node->data;
+        struct netdev_bsd * const dev = netdev_bsd_cast(netdev);
 
         if (!strcmp(dev->kernel_name, kernel_name)) {
-            shash_destroy(&device_shash);
-            return &dev->up;
+            free(ovs_name);
+            ovs_name = xstrdup(netdev_get_name(&dev->up));
         }
+        netdev_close(netdev);
     }
     shash_destroy(&device_shash);
-    return NULL;
-}
 
-static const char *
-netdev_bsd_convert_kernel_name_to_ovs_name(const char *kernel_name)
-{
-    const struct netdev * const netdev =
-      find_netdev_by_kernel_name(kernel_name);
-
-    if (netdev == NULL) {
-        return NULL;
-    }
-    return netdev_get_name(netdev);
+    return ovs_name ? ovs_name : xstrdup(kernel_name);
 }
 #endif
 
@@ -1303,18 +1305,10 @@ netdev_bsd_get_next_hop(const struct in_addr *host OVS_UNUSED,
             if ((i == RTA_IFP) && sa->sa_family == AF_LINK) {
                 const struct sockaddr_dl * const sdl =
                   (const struct sockaddr_dl *)sa;
-                const size_t nlen = sdl->sdl_nlen;
-                char * const kernel_name = xmalloc(nlen + 1);
-                const char *name;
+                char *kernel_name;
 
-                memcpy(kernel_name, sdl->sdl_data, nlen);
-                kernel_name[nlen] = 0;
-                name = netdev_bsd_convert_kernel_name_to_ovs_name(kernel_name);
-                if (name == NULL) {
-                    ifname = xstrdup(kernel_name);
-                } else {
-                    ifname = xstrdup(name);
-                }
+                kernel_name = xmemdup0(sdl->sdl_data, sdl->sdl_nlen);
+                ifname = netdev_bsd_kernel_name_to_ovs_name(kernel_name);
                 free(kernel_name);
             }
             RT_ADVANCE(cp, sa);

@@ -193,8 +193,6 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/svec.h \
 	lib/table.c \
 	lib/table.h \
-	lib/tag.c \
-	lib/tag.h \
 	lib/timer.c \
 	lib/timer.h \
 	lib/timeval.c \
@@ -267,7 +265,7 @@ endif
 if HAVE_POSIX_AIO
 lib_libopenvswitch_a_SOURCES += lib/async-append-aio.c
 else
-lib_libopenvswitch_a_SOURCES += lib/async-append-sync.c
+lib_libopenvswitch_a_SOURCES += lib/async-append-null.c
 endif
 
 if ESX

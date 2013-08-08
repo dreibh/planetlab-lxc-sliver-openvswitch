@@ -1915,6 +1915,8 @@ iface_refresh_cfm_stats(struct iface *iface)
         } else {
             ovsrec_interface_set_cfm_health(cfg, NULL, 0);
         }
+
+        free(status.rmps);
     }
 }
 
@@ -2445,7 +2447,7 @@ bridge_run(void)
              * process that forked us to exit successfully. */
             daemonize_complete();
 
-            async_append_enable();
+            vlog_enable_async();
 
             VLOG_INFO_ONCE("%s (Open vSwitch) %s", program_name, VERSION);
         }

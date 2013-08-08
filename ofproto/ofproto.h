@@ -27,7 +27,6 @@
 #include "netflow.h"
 #include "sset.h"
 #include "stp.h"
-#include "tag.h"
 
 #ifdef  __cplusplus
 extern "C" {
@@ -410,7 +409,7 @@ struct ofproto_cfm_status {
     int health;
 
     /* MPIDs of remote maintenance points whose CCMs have been received. */
-    const uint64_t *rmps;
+    uint64_t *rmps;
     size_t n_rmps;
 };
 
