@@ -55,6 +55,8 @@ VLOG_DEFINE_THIS_MODULE(ofproto_dpif_xlate);
  * flow translation. */
 #define MAX_RESUBMIT_RECURSION 64
 
+struct ovs_rwlock xlate_rwlock = OVS_RWLOCK_INITIALIZER;
+
 struct xbridge {
     struct hmap_node hmap_node;   /* Node in global 'xbridges' map. */
     struct ofproto_dpif *ofproto; /* Key in global 'xbridges' map. */
@@ -69,6 +71,10 @@ struct xbridge {
     struct dpif_sflow *sflow;     /* SFlow handle, or null. */
     struct dpif_ipfix *ipfix;     /* Ipfix handle, or null. */
     struct stp *stp;              /* STP or null if disabled. */
+
+    /* Special rules installed by ofproto-dpif. */
+    struct rule_dpif *miss_rule;
+    struct rule_dpif *no_packet_in_rule;
 
     enum ofp_config_flags frag;   /* Fragmentation handling. */
     bool has_netflow;             /* Bridge runs netflow? */
@@ -209,8 +215,10 @@ static bool dscp_from_skb_priority(const struct xport *, uint32_t skb_priority,
 
 void
 xlate_ofproto_set(struct ofproto_dpif *ofproto, const char *name,
-                  struct dpif *dpif, const struct mac_learning *ml,
-                  struct stp *stp, const struct mbridge *mbridge,
+                  struct dpif *dpif, struct rule_dpif *miss_rule,
+                  struct rule_dpif *no_packet_in_rule,
+                  const struct mac_learning *ml, struct stp *stp,
+                  const struct mbridge *mbridge,
                   const struct dpif_sflow *sflow,
                   const struct dpif_ipfix *ipfix, enum ofp_config_flags frag,
                   bool forward_bpdu, bool has_in_band, bool has_netflow)
@@ -259,6 +267,8 @@ xlate_ofproto_set(struct ofproto_dpif *ofproto, const char *name,
     xbridge->has_in_band = has_in_band;
     xbridge->has_netflow = has_netflow;
     xbridge->frag = frag;
+    xbridge->miss_rule = miss_rule;
+    xbridge->no_packet_in_rule = no_packet_in_rule;
 }
 
 void
@@ -494,6 +504,7 @@ xlate_receive(const struct dpif_backer *backer, struct ofpbuf *packet,
     const struct xport *xport;
     int error = ENODEV;
 
+    ovs_rwlock_rdlock(&xlate_rwlock);
     fitness = odp_flow_key_to_flow(key, key_len, flow);
     if (fitness == ODP_FIT_ERROR) {
         error = EINVAL;
@@ -545,6 +556,7 @@ exit:
     if (fitnessp) {
         *fitnessp = fitness;
     }
+    ovs_rwlock_unlock(&xlate_rwlock);
     return error;
 }
 
@@ -1025,21 +1037,67 @@ is_gratuitous_arp(const struct flow *flow, struct flow_wildcards *wc)
     }
 }
 
-static void
-update_learning_table(const struct xbridge *xbridge,
-                      const struct flow *flow, struct flow_wildcards *wc,
-                      int vlan, struct xbundle *in_xbundle)
+/* Checks whether a MAC learning update is necessary for MAC learning table
+ * 'ml' given that a packet matching 'flow' was received  on 'in_xbundle' in
+ * 'vlan'.
+ *
+ * Most packets processed through the MAC learning table do not actually
+ * change it in any way.  This function requires only a read lock on the MAC
+ * learning table, so it is much cheaper in this common case.
+ *
+ * Keep the code here synchronized with that in update_learning_table__()
+ * below. */
+static bool
+is_mac_learning_update_needed(const struct mac_learning *ml,
+                              const struct flow *flow,
+                              struct flow_wildcards *wc,
+                              int vlan, struct xbundle *in_xbundle)
+    OVS_REQ_RDLOCK(ml->rwlock)
 {
     struct mac_entry *mac;
 
-    /* Don't learn the OFPP_NONE port. */
-    if (in_xbundle == &ofpp_none_bundle) {
-        return;
+    if (!mac_learning_may_learn(ml, flow->dl_src, vlan)) {
+        return false;
     }
 
-    ovs_rwlock_wrlock(&xbridge->ml->rwlock);
+    mac = mac_learning_lookup(ml, flow->dl_src, vlan);
+    if (!mac || mac_entry_age(ml, mac)) {
+        return true;
+    }
+
+    if (is_gratuitous_arp(flow, wc)) {
+        /* We don't want to learn from gratuitous ARP packets that are
+         * reflected back over bond slaves so we lock the learning table. */
+        if (!in_xbundle->bond) {
+            return true;
+        } else if (mac_entry_is_grat_arp_locked(mac)) {
+            return false;
+        }
+    }
+
+    return mac->port.p != in_xbundle->ofbundle;
+}
+
+
+/* Updates MAC learning table 'ml' given that a packet matching 'flow' was
+ * received on 'in_xbundle' in 'vlan'.
+ *
+ * This code repeats all the checks in is_mac_learning_update_needed() because
+ * the lock was released between there and here and thus the MAC learning state
+ * could have changed.
+ *
+ * Keep the code here synchronized with that in is_mac_learning_update_needed()
+ * above. */
+static void
+update_learning_table__(const struct xbridge *xbridge,
+                        const struct flow *flow, struct flow_wildcards *wc,
+                        int vlan, struct xbundle *in_xbundle)
+    OVS_REQ_WRLOCK(xbridge->ml->rwlock)
+{
+    struct mac_entry *mac;
+
     if (!mac_learning_may_learn(xbridge->ml, flow->dl_src, vlan)) {
-        goto out;
+        return;
     }
 
     mac = mac_learning_insert(xbridge->ml, flow->dl_src, vlan);
@@ -1049,7 +1107,7 @@ update_learning_table(const struct xbridge *xbridge,
         if (!in_xbundle->bond) {
             mac_entry_set_grat_arp_lock(mac);
         } else if (mac_entry_is_grat_arp_locked(mac)) {
-            goto out;
+            return;
         }
     }
 
@@ -1057,6 +1115,7 @@ update_learning_table(const struct xbridge *xbridge,
         /* The log messages here could actually be useful in debugging,
          * so keep the rate limit relatively high. */
         static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(30, 300);
+
         VLOG_DBG_RL(&rl, "bridge %s: learned that "ETH_ADDR_FMT" is "
                     "on port %s in VLAN %d",
                     xbridge->name, ETH_ADDR_ARGS(flow->dl_src),
@@ -1065,8 +1124,32 @@ update_learning_table(const struct xbridge *xbridge,
         mac->port.p = in_xbundle->ofbundle;
         mac_learning_changed(xbridge->ml);
     }
-out:
+}
+
+static void
+update_learning_table(const struct xbridge *xbridge,
+                      const struct flow *flow, struct flow_wildcards *wc,
+                      int vlan, struct xbundle *in_xbundle)
+{
+    bool need_update;
+
+    /* Don't learn the OFPP_NONE port. */
+    if (in_xbundle == &ofpp_none_bundle) {
+        return;
+    }
+
+    /* First try the common case: no change to MAC learning table. */
+    ovs_rwlock_rdlock(&xbridge->ml->rwlock);
+    need_update = is_mac_learning_update_needed(xbridge->ml, flow, wc, vlan,
+                                                in_xbundle);
     ovs_rwlock_unlock(&xbridge->ml->rwlock);
+
+    if (need_update) {
+        /* Slow path: MAC learning table might need an update. */
+        ovs_rwlock_wrlock(&xbridge->ml->rwlock);
+        update_learning_table__(xbridge, flow, wc, vlan, in_xbundle);
+        ovs_rwlock_unlock(&xbridge->ml->rwlock);
+    }
 }
 
 /* Determines whether packets in 'flow' within 'xbridge' should be forwarded or
@@ -1493,7 +1576,7 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
         }
 
         ctx->xin->flow = old_flow;
-        ctx->xbridge = xport->xbundle->xbridge;
+        ctx->xbridge = xport->xbridge;
 
         if (ctx->xin->resubmit_stats) {
             netdev_vport_inc_tx(xport->netdev, ctx->xin->resubmit_stats);
@@ -1586,14 +1669,18 @@ ctx_rule_hooks(struct xlate_ctx *ctx, struct rule_dpif *rule,
         ctx->xin->resubmit_hook(ctx->xin, rule, ctx->recurse);
     }
     if (rule == NULL && may_packet_in) {
+        struct xport *xport;
+
         /* XXX
          * check if table configuration flags
          * OFPTC_TABLE_MISS_CONTROLLER, default.
          * OFPTC_TABLE_MISS_CONTINUE,
          * OFPTC_TABLE_MISS_DROP
-         * When OF1.0, OFPTC_TABLE_MISS_CONTINUE is used. What to do?
-         */
-        rule = rule_dpif_miss_rule(ctx->xbridge->ofproto, &ctx->xin->flow);
+         * When OF1.0, OFPTC_TABLE_MISS_CONTINUE is used. What to do? */
+        xport = get_ofp_port(ctx->xbridge, ctx->xin->flow.in_port.ofp_port);
+        rule = choose_miss_rule(xport ? xport->config : 0,
+                                ctx->xbridge->miss_rule,
+                                ctx->xbridge->no_packet_in_rule);
     }
     if (rule && ctx->xin->resubmit_stats) {
         rule_credit_stats(rule, ctx->xin->resubmit_stats);
@@ -1688,7 +1775,7 @@ execute_controller_action(struct xlate_ctx *ctx, int len,
                           enum ofp_packet_in_reason reason,
                           uint16_t controller_id)
 {
-    struct ofputil_packet_in pin;
+    struct ofputil_packet_in *pin;
     struct ofpbuf *packet;
     struct flow key;
 
@@ -1710,17 +1797,18 @@ execute_controller_action(struct xlate_ctx *ctx, int len,
     odp_execute_actions(NULL, packet, &key, ctx->xout->odp_actions.data,
                         ctx->xout->odp_actions.size, NULL, NULL);
 
-    pin.packet = packet->data;
-    pin.packet_len = packet->size;
-    pin.reason = reason;
-    pin.controller_id = controller_id;
-    pin.table_id = ctx->table_id;
-    pin.cookie = ctx->rule ? ctx->rule->up.flow_cookie : 0;
+    pin = xmalloc(sizeof *pin);
+    pin->packet_len = packet->size;
+    pin->packet = ofpbuf_steal_data(packet);
+    pin->reason = reason;
+    pin->controller_id = controller_id;
+    pin->table_id = ctx->table_id;
+    pin->cookie = ctx->rule ? ctx->rule->up.flow_cookie : 0;
 
-    pin.send_len = len;
-    flow_get_metadata(&ctx->xin->flow, &pin.fmd);
+    pin->send_len = len;
+    flow_get_metadata(&ctx->xin->flow, &pin->fmd);
 
-    ofproto_dpif_send_packet_in(ctx->xbridge->ofproto, &pin);
+    ofproto_dpif_send_packet_in(ctx->xbridge->ofproto, pin);
     ofpbuf_delete(packet);
 }
 
@@ -2035,12 +2123,16 @@ xlate_fin_timeout(struct xlate_ctx *ctx,
     if (ctx->xin->tcp_flags & (TCP_FIN | TCP_RST) && ctx->rule) {
         struct rule_dpif *rule = ctx->rule;
 
-         if (list_is_empty(&rule->up.expirable)) {
-             list_insert(&rule->up.ofproto->expirable, &rule->up.expirable);
-         }
+        ovs_mutex_lock(&rule->up.ofproto->expirable_mutex);
+        if (list_is_empty(&rule->up.expirable)) {
+            list_insert(&rule->up.ofproto->expirable, &rule->up.expirable);
+        }
+        ovs_mutex_unlock(&rule->up.ofproto->expirable_mutex);
 
+        ovs_mutex_lock(&rule->up.timeout_mutex);
         reduce_timeout(oft->fin_idle_timeout, &rule->up.idle_timeout);
         reduce_timeout(oft->fin_hard_timeout, &rule->up.hard_timeout);
+        ovs_mutex_unlock(&rule->up.timeout_mutex);
     }
 }
 
@@ -2478,6 +2570,8 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
 
     COVERAGE_INC(xlate_actions);
 
+    ovs_rwlock_rdlock(&xlate_rwlock);
+
     /* Flow initialization rules:
      * - 'base_flow' must match the kernel's view of the packet at the
      *   time that action processing starts.  'flow' represents any
@@ -2513,7 +2607,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
 
     ctx.xbridge = xbridge_lookup(xin->ofproto);
     if (!ctx.xbridge) {
-        return;
+        goto out;
     }
 
     ctx.rule = xin->rule;
@@ -2570,7 +2664,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
             break;
 
         case OFPC_FRAG_DROP:
-            return;
+            goto out;
 
         case OFPC_FRAG_REASM:
             NOT_REACHED();
@@ -2631,4 +2725,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
      * use non-header fields as part of the cache. */
     memset(&wc->masks.metadata, 0, sizeof wc->masks.metadata);
     memset(&wc->masks.regs, 0, sizeof wc->masks.regs);
+
+out:
+    ovs_rwlock_unlock(&xlate_rwlock);
 }

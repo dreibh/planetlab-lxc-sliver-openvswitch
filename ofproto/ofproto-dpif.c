@@ -71,6 +71,7 @@ COVERAGE_DEFINE(facet_revalidate);
 COVERAGE_DEFINE(facet_unexpected);
 COVERAGE_DEFINE(facet_suppress);
 COVERAGE_DEFINE(subfacet_install_fail);
+COVERAGE_DEFINE(packet_in_overflow);
 COVERAGE_DEFINE(flow_mod_overflow);
 
 /* Number of implemented OpenFlow tables. */
@@ -501,6 +502,10 @@ struct ofproto_dpif {
     struct ovs_mutex flow_mod_mutex;
     struct list flow_mods OVS_GUARDED;
     size_t n_flow_mods OVS_GUARDED;
+
+    struct ovs_mutex pin_mutex;
+    struct list pins OVS_GUARDED;
+    size_t n_pins OVS_GUARDED;
 };
 
 /* Defer flow mod completion until "ovs-appctl ofproto/unclog"?  (Useful only
@@ -570,7 +575,18 @@ void
 ofproto_dpif_send_packet_in(struct ofproto_dpif *ofproto,
                             struct ofputil_packet_in *pin)
 {
-    connmgr_send_packet_in(ofproto->up.connmgr, pin);
+    ovs_mutex_lock(&ofproto->pin_mutex);
+    if (ofproto->n_pins > 1024) {
+        ovs_mutex_unlock(&ofproto->pin_mutex);
+        COVERAGE_INC(packet_in_overflow);
+        free(CONST_CAST(void *, pin->packet));
+        free(pin);
+        return;
+    }
+
+    list_push_back(&ofproto->pins, &pin->list_node);
+    ofproto->n_pins++;
+    ovs_mutex_unlock(&ofproto->pin_mutex);
 }
 
 /* Factory functions. */
@@ -782,8 +798,10 @@ type_run(const char *type)
                 continue;
             }
 
+            ovs_rwlock_wrlock(&xlate_rwlock);
             xlate_ofproto_set(ofproto, ofproto->up.name,
-                              ofproto->backer->dpif, ofproto->ml,
+                              ofproto->backer->dpif, ofproto->miss_rule,
+                              ofproto->no_packet_in_rule, ofproto->ml,
                               ofproto->stp, ofproto->mbridge,
                               ofproto->sflow, ofproto->ipfix,
                               ofproto->up.frag_handling,
@@ -811,8 +829,13 @@ type_run(const char *type)
                                  ofport->up.pp.config, ofport->is_tunnel,
                                  ofport->may_enable);
             }
+            ovs_rwlock_unlock(&xlate_rwlock);
 
+            /* Only ofproto-dpif cares about the facet classifier so we just
+             * lock cls_cursor_init() to appease the thread safety analysis. */
+            ovs_rwlock_rdlock(&ofproto->facets.rwlock);
             cls_cursor_init(&cursor, &ofproto->facets, NULL);
+            ovs_rwlock_unlock(&ofproto->facets.rwlock);
             CLS_CURSOR_FOR_EACH_SAFE (facet, next, cr, &cursor) {
                 facet_revalidate(facet);
                 run_fast_rl();
@@ -1287,6 +1310,12 @@ construct(struct ofproto *ofproto_)
     ofproto->n_flow_mods = 0;
     ovs_mutex_unlock(&ofproto->flow_mod_mutex);
 
+    ovs_mutex_init(&ofproto->pin_mutex, PTHREAD_MUTEX_NORMAL);
+    ovs_mutex_lock(&ofproto->pin_mutex);
+    list_init(&ofproto->pins);
+    ofproto->n_pins = 0;
+    ovs_mutex_unlock(&ofproto->pin_mutex);
+
     ofproto_dpif_unixctl_init();
 
     hmap_init(&ofproto->vlandev_map);
@@ -1417,11 +1446,14 @@ destruct(struct ofproto *ofproto_)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
     struct rule_dpif *rule, *next_rule;
+    struct ofputil_flow_mod *pin, *next_pin;
     struct ofputil_flow_mod *fm, *next_fm;
     struct oftable *table;
 
     ofproto->backer->need_revalidate = REV_RECONFIGURE;
+    ovs_rwlock_wrlock(&xlate_rwlock);
     xlate_remove_ofproto(ofproto);
+    ovs_rwlock_unlock(&xlate_rwlock);
 
     hmap_remove(&all_ofproto_dpifs, &ofproto->all_ofproto_dpifs_node);
     complete_operations(ofproto);
@@ -1429,10 +1461,12 @@ destruct(struct ofproto *ofproto_)
     OFPROTO_FOR_EACH_TABLE (table, &ofproto->up) {
         struct cls_cursor cursor;
 
+        ovs_rwlock_wrlock(&table->cls.rwlock);
         cls_cursor_init(&cursor, &table->cls, NULL);
         CLS_CURSOR_FOR_EACH_SAFE (rule, next_rule, up.cr, &cursor) {
-            ofproto_rule_destroy(&rule->up);
+            ofproto_rule_destroy(&ofproto->up, &table->cls, &rule->up);
         }
+        ovs_rwlock_unlock(&table->cls.rwlock);
     }
 
     ovs_mutex_lock(&ofproto->flow_mod_mutex);
@@ -1444,6 +1478,16 @@ destruct(struct ofproto *ofproto_)
     }
     ovs_mutex_unlock(&ofproto->flow_mod_mutex);
     ovs_mutex_destroy(&ofproto->flow_mod_mutex);
+
+    ovs_mutex_lock(&ofproto->pin_mutex);
+    LIST_FOR_EACH_SAFE (pin, next_pin, list_node, &ofproto->pins) {
+        list_remove(&pin->list_node);
+        ofproto->n_pins--;
+        free(pin->ofpacts);
+        free(pin);
+    }
+    ovs_mutex_unlock(&ofproto->pin_mutex);
+    ovs_mutex_destroy(&ofproto->pin_mutex);
 
     mbridge_unref(ofproto->mbridge);
 
@@ -1470,9 +1514,10 @@ static int
 run_fast(struct ofproto *ofproto_)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
-    struct ofputil_flow_mod *fm, *next;
+    struct ofputil_packet_in *pin, *next_pin;
+    struct ofputil_flow_mod *fm, *next_fm;
+    struct list flow_mods, pins;
     struct ofport_dpif *ofport;
-    struct list flow_mods;
 
     /* Do not perform any periodic activity required by 'ofproto' while
      * waiting for flow restore to complete. */
@@ -1491,7 +1536,7 @@ run_fast(struct ofproto *ofproto_)
     }
     ovs_mutex_unlock(&ofproto->flow_mod_mutex);
 
-    LIST_FOR_EACH_SAFE (fm, next, list_node, &flow_mods) {
+    LIST_FOR_EACH_SAFE (fm, next_fm, list_node, &flow_mods) {
         int error = ofproto_flow_mod(&ofproto->up, fm);
         if (error && !VLOG_DROP_WARN(&rl)) {
             VLOG_WARN("learning action failed to modify flow table (%s)",
@@ -1501,6 +1546,24 @@ run_fast(struct ofproto *ofproto_)
         list_remove(&fm->list_node);
         free(fm->ofpacts);
         free(fm);
+    }
+
+    ovs_mutex_lock(&ofproto->pin_mutex);
+    if (ofproto->n_pins) {
+        pins = ofproto->pins;
+        list_moved(&pins);
+        list_init(&ofproto->pins);
+        ofproto->n_pins = 0;
+    } else {
+        list_init(&pins);
+    }
+    ovs_mutex_unlock(&ofproto->pin_mutex);
+
+    LIST_FOR_EACH_SAFE (pin, next_pin, list_node, &pins) {
+        connmgr_send_packet_in(ofproto->up.connmgr, pin);
+        list_remove(&pin->list_node);
+        free(CONST_CAST(void *, pin->packet));
+        free(pin);
     }
 
     HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
@@ -1564,6 +1627,7 @@ run(struct ofproto *ofproto_)
     ovs_rwlock_unlock(&ofproto->ml->rwlock);
 
     /* Check the consistency of a random facet, to aid debugging. */
+    ovs_rwlock_rdlock(&ofproto->facets.rwlock);
     if (time_msec() >= ofproto->consistency_rl
         && !classifier_is_empty(&ofproto->facets)
         && !ofproto->backer->need_revalidate) {
@@ -1583,6 +1647,7 @@ run(struct ofproto *ofproto_)
             ofproto->backer->need_revalidate = REV_INCONSISTENCY;
         }
     }
+    ovs_rwlock_unlock(&ofproto->facets.rwlock);
 
     return 0;
 }
@@ -1635,12 +1700,16 @@ get_memory_usage(const struct ofproto *ofproto_, struct simap *usage)
     size_t n_subfacets = 0;
     struct facet *facet;
 
+    ovs_rwlock_rdlock(&ofproto->facets.rwlock);
     simap_increase(usage, "facets", classifier_count(&ofproto->facets));
+    ovs_rwlock_unlock(&ofproto->facets.rwlock);
 
+    ovs_rwlock_rdlock(&ofproto->facets.rwlock);
     cls_cursor_init(&cursor, &ofproto->facets, NULL);
     CLS_CURSOR_FOR_EACH (facet, cr, &cursor) {
         n_subfacets += list_size(&facet->subfacets);
     }
+    ovs_rwlock_unlock(&ofproto->facets.rwlock);
     simap_increase(usage, "subfacets", n_subfacets);
 }
 
@@ -1811,7 +1880,9 @@ port_destruct(struct ofport *port_)
     const char *dp_port_name;
 
     ofproto->backer->need_revalidate = REV_RECONFIGURE;
+    ovs_rwlock_wrlock(&xlate_rwlock);
     xlate_ofport_remove(port);
+    ovs_rwlock_unlock(&xlate_rwlock);
 
     dp_port_name = netdev_vport_get_dpif_port(port->up.netdev, namebuf,
                                               sizeof namebuf);
@@ -2402,7 +2473,9 @@ bundle_destroy(struct ofbundle *bundle)
     ofproto = bundle->ofproto;
     mbridge_unregister_bundle(ofproto->mbridge, bundle->aux);
 
+    ovs_rwlock_wrlock(&xlate_rwlock);
     xlate_bundle_remove(bundle);
+    ovs_rwlock_unlock(&xlate_rwlock);
 
     LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &bundle->ports) {
         bundle_del_port(port);
@@ -3976,10 +4049,12 @@ expire(struct dpif_backer *backer)
 
         /* Expire OpenFlow flows whose idle_timeout or hard_timeout
          * has passed. */
+        ovs_mutex_lock(&ofproto->up.expirable_mutex);
         LIST_FOR_EACH_SAFE (rule, next_rule, expirable,
                             &ofproto->up.expirable) {
             rule_expire(rule_dpif_cast(rule));
         }
+        ovs_mutex_unlock(&ofproto->up.expirable_mutex);
 
         /* All outstanding data in existing flows has been accounted, so it's a
          * good time to do bond rebalancing. */
@@ -4241,6 +4316,7 @@ expire_subfacets(struct dpif_backer *backer, int dp_max_idle)
 static void
 rule_expire(struct rule_dpif *rule)
 {
+    uint16_t idle_timeout, hard_timeout;
     long long int now;
     uint8_t reason;
 
@@ -4249,13 +4325,16 @@ rule_expire(struct rule_dpif *rule)
         return;
     }
 
+    ovs_mutex_lock(&rule->up.timeout_mutex);
+    hard_timeout = rule->up.hard_timeout;
+    idle_timeout = rule->up.idle_timeout;
+    ovs_mutex_unlock(&rule->up.timeout_mutex);
+
     /* Has 'rule' expired? */
     now = time_msec();
-    if (rule->up.hard_timeout
-        && now > rule->up.modified + rule->up.hard_timeout * 1000) {
+    if (hard_timeout && now > rule->up.modified + hard_timeout * 1000) {
         reason = OFPRR_HARD_TIMEOUT;
-    } else if (rule->up.idle_timeout
-               && now > rule->up.used + rule->up.idle_timeout * 1000) {
+    } else if (idle_timeout && now > rule->up.used + idle_timeout * 1000) {
         reason = OFPRR_IDLE_TIMEOUT;
     } else {
         return;
@@ -4305,7 +4384,9 @@ facet_create(const struct flow_miss *miss, struct rule_dpif *rule,
 
     match_init(&match, &facet->flow, &facet->xout.wc);
     cls_rule_init(&facet->cr, &match, OFP_DEFAULT_PRIORITY);
+    ovs_rwlock_wrlock(&ofproto->facets.rwlock);
     classifier_insert(&ofproto->facets, &facet->cr);
+    ovs_rwlock_unlock(&ofproto->facets.rwlock);
 
     facet->nf_flow.output_iface = facet->xout.nf_output_iface;
     facet->fail_open = rule->up.cr.priority == FAIL_OPEN_PRIORITY;
@@ -4373,7 +4454,9 @@ facet_remove(struct facet *facet)
                         &facet->subfacets) {
         subfacet_destroy__(subfacet);
     }
+    ovs_rwlock_wrlock(&facet->ofproto->facets.rwlock);
     classifier_remove(&facet->ofproto->facets, &facet->cr);
+    ovs_rwlock_unlock(&facet->ofproto->facets.rwlock);
     cls_rule_destroy(&facet->cr);
     facet_free(facet);
 }
@@ -4517,7 +4600,11 @@ facet_flush_stats(struct facet *facet)
 static struct facet *
 facet_find(struct ofproto_dpif *ofproto, const struct flow *flow)
 {
-    struct cls_rule *cr = classifier_lookup(&ofproto->facets, flow, NULL);
+    struct cls_rule *cr;
+
+    ovs_rwlock_rdlock(&ofproto->facets.rwlock);
+    cr = classifier_lookup(&ofproto->facets, flow, NULL);
+    ovs_rwlock_unlock(&ofproto->facets.rwlock);
     return cr ? CONTAINER_OF(cr, struct facet, cr) : NULL;
 }
 
@@ -4762,6 +4849,7 @@ push_all_stats__(bool run_fast)
         struct cls_cursor cursor;
         struct facet *facet;
 
+        ovs_rwlock_rdlock(&ofproto->facets.rwlock);
         cls_cursor_init(&cursor, &ofproto->facets, NULL);
         CLS_CURSOR_FOR_EACH (facet, cr, &cursor) {
             facet_push_stats(facet, false);
@@ -4769,6 +4857,7 @@ push_all_stats__(bool run_fast)
                 run_fast_rl();
             }
         }
+        ovs_rwlock_unlock(&ofproto->facets.rwlock);
     }
 
     rl = time_msec() + 100;
@@ -5047,14 +5136,21 @@ static struct rule_dpif *
 rule_dpif_lookup(struct ofproto_dpif *ofproto, const struct flow *flow,
                  struct flow_wildcards *wc)
 {
+    struct ofport_dpif *port;
     struct rule_dpif *rule;
 
     rule = rule_dpif_lookup_in_table(ofproto, flow, wc, 0);
     if (rule) {
         return rule;
     }
+    port = get_ofp_port(ofproto, flow->in_port.ofp_port);
+    if (!port) {
+        VLOG_WARN_RL(&rl, "packet-in on unknown OpenFlow port %"PRIu16,
+                     flow->in_port.ofp_port);
+    }
 
-    return rule_dpif_miss_rule(ofproto, flow);
+    return choose_miss_rule(port ? port->up.pp.config : 0, ofproto->miss_rule,
+                            ofproto->no_packet_in_rule);
 }
 
 struct rule_dpif *
@@ -5082,34 +5178,30 @@ rule_dpif_lookup_in_table(struct ofproto_dpif *ofproto,
         struct flow ofpc_normal_flow = *flow;
         ofpc_normal_flow.tp_src = htons(0);
         ofpc_normal_flow.tp_dst = htons(0);
+        ovs_rwlock_rdlock(&cls->rwlock);
         cls_rule = classifier_lookup(cls, &ofpc_normal_flow, wc);
+        ovs_rwlock_unlock(&cls->rwlock);
     } else if (frag && ofproto->up.frag_handling == OFPC_FRAG_DROP) {
         cls_rule = &ofproto->drop_frags_rule->up.cr;
         if (wc) {
             flow_wildcards_init_exact(wc);
         }
     } else {
+        ovs_rwlock_rdlock(&cls->rwlock);
         cls_rule = classifier_lookup(cls, flow, wc);
+        ovs_rwlock_unlock(&cls->rwlock);
     }
     return rule_dpif_cast(rule_from_cls_rule(cls_rule));
 }
 
+/* Given a port configuration (specified as zero if there's no port), chooses
+ * which of 'miss_rule' and 'no_packet_in_rule' should be used in case of a
+ * flow table miss. */
 struct rule_dpif *
-rule_dpif_miss_rule(struct ofproto_dpif *ofproto, const struct flow *flow)
+choose_miss_rule(enum ofputil_port_config config, struct rule_dpif *miss_rule,
+                 struct rule_dpif *no_packet_in_rule)
 {
-    struct ofport_dpif *port;
-
-    port = get_ofp_port(ofproto, flow->in_port.ofp_port);
-    if (!port) {
-        VLOG_WARN_RL(&rl, "packet-in on unknown OpenFlow port %"PRIu16,
-                     flow->in_port.ofp_port);
-        return ofproto->miss_rule;
-    }
-
-    if (port->up.pp.config & OFPUTIL_PC_NO_PACKET_IN) {
-        return ofproto->no_packet_in_rule;
-    }
-    return ofproto->miss_rule;
+    return config & OFPUTIL_PC_NO_PACKET_IN ? no_packet_in_rule : miss_rule;
 }
 
 static void
@@ -5425,10 +5517,12 @@ send_netflow_active_timeouts(struct ofproto_dpif *ofproto)
     struct cls_cursor cursor;
     struct facet *facet;
 
+    ovs_rwlock_rdlock(&ofproto->facets.rwlock);
     cls_cursor_init(&cursor, &ofproto->facets, NULL);
     CLS_CURSOR_FOR_EACH (facet, cr, &cursor) {
         send_active_timeout(ofproto, facet);
     }
+    ovs_rwlock_unlock(&ofproto->facets.rwlock);
 }
 
 static struct ofproto_dpif *
@@ -5827,12 +5921,14 @@ ofproto_dpif_self_check__(struct ofproto_dpif *ofproto, struct ds *reply)
     int errors;
 
     errors = 0;
+    ovs_rwlock_rdlock(&ofproto->facets.rwlock);
     cls_cursor_init(&cursor, &ofproto->facets, NULL);
     CLS_CURSOR_FOR_EACH (facet, cr, &cursor) {
         if (!facet_check_consistency(facet)) {
             errors++;
         }
     }
+    ovs_rwlock_unlock(&ofproto->facets.rwlock);
     if (errors) {
         ofproto->backer->need_revalidate = REV_INCONSISTENCY;
     }
@@ -6053,6 +6149,7 @@ ofproto_unixctl_dpif_dump_megaflows(struct unixctl_conn *conn,
         return;
     }
 
+    ovs_rwlock_rdlock(&ofproto->facets.rwlock);
     cls_cursor_init(&cursor, &ofproto->facets, NULL);
     CLS_CURSOR_FOR_EACH (facet, cr, &cursor) {
         cls_rule_format(&facet->cr, &ds);
@@ -6075,6 +6172,7 @@ ofproto_unixctl_dpif_dump_megaflows(struct unixctl_conn *conn,
         }
         ds_put_cstr(&ds, "\n");
     }
+    ovs_rwlock_unlock(&ofproto->facets.rwlock);
 
     ds_chomp(&ds, '\n');
     unixctl_command_reply(conn, ds_cstr(&ds));
@@ -6377,7 +6475,7 @@ vlandev_find(const struct ofproto_dpif *ofproto, ofp_port_t vlandev_ofp_port)
 static ofp_port_t
 vsp_vlandev_to_realdev(const struct ofproto_dpif *ofproto,
                        ofp_port_t vlandev_ofp_port, int *vid)
-    OVS_REQ_WRLOCK(ofproto->vsp_mutex)
+    OVS_REQUIRES(ofproto->vsp_mutex)
 {
     if (!hmap_is_empty(&ofproto->vlandev_map)) {
         const struct vlan_splinter *vsp;

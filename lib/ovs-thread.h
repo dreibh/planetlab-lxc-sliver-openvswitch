@@ -116,7 +116,7 @@ void ovs_rwlock_unlock(const struct ovs_rwlock *rwlock) OVS_RELEASES(rwlock);
 void ovs_rwlock_wrlock_at(const struct ovs_rwlock *rwlock, const char *where)
     OVS_ACQ_WRLOCK(rwlock);
 #define ovs_rwlock_wrlock(rwlock) \
-        ovs_rwlock_wrlock_at(rwlock, SOURCE_LOCATOR);
+        ovs_rwlock_wrlock_at(rwlock, SOURCE_LOCATOR)
 
 int ovs_rwlock_trywrlock_at(const struct ovs_rwlock *rwlock, const char *where)
     OVS_TRY_WRLOCK(0, rwlock);
@@ -126,7 +126,7 @@ int ovs_rwlock_trywrlock_at(const struct ovs_rwlock *rwlock, const char *where)
 void ovs_rwlock_rdlock_at(const struct ovs_rwlock *rwlock, const char *where)
     OVS_ACQ_RDLOCK(rwlock);
 #define ovs_rwlock_rdlock(rwlock) \
-        ovs_rwlock_rdlock_at(rwlock, SOURCE_LOCATOR);
+        ovs_rwlock_rdlock_at(rwlock, SOURCE_LOCATOR)
 
 int ovs_rwlock_tryrdlock_at(const struct ovs_rwlock *rwlock, const char *where)
     OVS_TRY_RDLOCK(0, rwlock);
@@ -153,8 +153,10 @@ void xpthread_cond_broadcast(pthread_cond_t *);
 #endif
 
 void xpthread_key_create(pthread_key_t *, void (*destructor)(void *));
+void xpthread_setspecific(pthread_key_t, const void *);
 
 void xpthread_create(pthread_t *, pthread_attr_t *, void *(*)(void *), void *);
+void xpthread_join(pthread_t, void **);
 
 /* Per-thread data.
  *
@@ -192,7 +194,15 @@ void xpthread_create(pthread_t *, pthread_attr_t *, void *(*)(void *), void *);
  * cross-thread access?     yes                no                yes
  */
 
-/* DEFINE_PER_THREAD_DATA(TYPE, NAME, INITIALIZER).
+/* For static data, use this macro in a source file:
+ *
+ *    DEFINE_STATIC_PER_THREAD_DATA(TYPE, NAME, INITIALIZER).
+ *
+ * For global data, "declare" the data in the header and "define" it in
+ * the source file, with:
+ *
+ *    DECLARE_EXTERN_PER_THREAD_DATA(TYPE, NAME).
+ *    DEFINE_EXTERN_PER_THREAD_DATA(NAME, INITIALIZER).
  *
  * One should prefer to use POSIX per-thread data, via pthread_key_t, when its
  * performance is acceptable, because of its portability (see the table above).
@@ -230,23 +240,40 @@ void xpthread_create(pthread_t *, pthread_attr_t *, void *(*)(void *), void *);
 #error
 #endif
 
-#define DEFINE_PER_THREAD_DATA(TYPE, NAME, ...)                 \
-    typedef TYPE NAME##_type;                                   \
-    static thread_local NAME##_type NAME##_var = __VA_ARGS__;   \
-                                                                \
-    static NAME##_type *                                        \
-    NAME##_get_unsafe(void)                                     \
-    {                                                           \
-        return &NAME##_var;                                     \
-    }                                                           \
-                                                                \
-    static NAME##_type *                                        \
-    NAME##_get(void)                                            \
-    {                                                           \
-        return NAME##_get_unsafe();                             \
+#define DEFINE_STATIC_PER_THREAD_DATA(TYPE, NAME, ...)                  \
+    typedef TYPE NAME##_type;                                           \
+                                                                        \
+    static NAME##_type *                                                \
+    NAME##_get_unsafe(void)                                             \
+    {                                                                   \
+        static thread_local NAME##_type var = __VA_ARGS__;              \
+        return &var;                                                    \
+    }                                                                   \
+                                                                        \
+    static NAME##_type *                                                \
+    NAME##_get(void)                                                    \
+    {                                                                   \
+        return NAME##_get_unsafe();                                     \
     }
+#define DECLARE_EXTERN_PER_THREAD_DATA(TYPE, NAME)                      \
+    typedef TYPE NAME##_type;                                           \
+    extern thread_local NAME##_type NAME##_var;                         \
+                                                                        \
+    static inline NAME##_type *                                         \
+    NAME##_get_unsafe(void)                                             \
+    {                                                                   \
+        return &NAME##_var;                                             \
+    }                                                                   \
+                                                                        \
+    static inline NAME##_type *                                         \
+    NAME##_get(void)                                                    \
+    {                                                                   \
+        return NAME##_get_unsafe();                                     \
+    }
+#define DEFINE_EXTERN_PER_THREAD_DATA(NAME, ...)         \
+    thread_local NAME##_type NAME##_var = __VA_ARGS__;
 #else  /* no C implementation support for thread-local storage  */
-#define DEFINE_PER_THREAD_DATA(TYPE, NAME, ...)                         \
+#define DEFINE_STATIC_PER_THREAD_DATA(TYPE, NAME, ...)                  \
     typedef TYPE NAME##_type;                                           \
     static pthread_key_t NAME##_key;                                    \
                                                                         \
@@ -277,7 +304,44 @@ void xpthread_create(pthread_t *, pthread_attr_t *, void *(*)(void *), void *);
                                                                         \
             value = xmalloc(sizeof *value);                             \
             *value = initial_value;                                     \
-            pthread_setspecific(NAME##_key, value);                     \
+            xpthread_setspecific(NAME##_key, value);                    \
+        }                                                               \
+        return value;                                                   \
+    }
+#define DECLARE_EXTERN_PER_THREAD_DATA(TYPE, NAME)                      \
+    typedef TYPE NAME##_type;                                           \
+    static pthread_key_t NAME##_key;                                    \
+                                                                        \
+    static inline NAME##_type *                                         \
+    NAME##_get_unsafe(void)                                             \
+    {                                                                   \
+        return pthread_getspecific(NAME##_key);                         \
+    }                                                                   \
+                                                                        \
+    NAME##_type *NAME##_get(void);
+#define DEFINE_EXTERN_PER_THREAD_DATA(NAME, ...)                        \
+    static void                                                         \
+    NAME##_once_init(void)                                              \
+    {                                                                   \
+        if (pthread_key_create(&NAME##_key, free)) {                    \
+            abort();                                                    \
+        }                                                               \
+    }                                                                   \
+                                                                        \
+    NAME##_type *                                                       \
+    NAME##_get(void)                                                    \
+    {                                                                   \
+        static pthread_once_t once = PTHREAD_ONCE_INIT;                 \
+        NAME##_type *value;                                             \
+                                                                        \
+        pthread_once(&once, NAME##_once_init);                          \
+        value = NAME##_get_unsafe();                                    \
+        if (!value) {                                                   \
+            static const NAME##_type initial_value = __VA_ARGS__;       \
+                                                                        \
+            value = xmalloc(sizeof *value);                             \
+            *value = initial_value;                                     \
+            xpthread_setspecific(NAME##_key, value);                    \
         }                                                               \
         return value;                                                   \
     }
@@ -348,7 +412,7 @@ void xpthread_create(pthread_t *, pthread_attr_t *, void *(*)(void *), void *);
     NAME##_set_unsafe(TYPE value)                       \
     {                                                   \
         TYPE old_value = NAME##_get_unsafe();           \
-        pthread_setspecific(NAME##_key, value);         \
+        xpthread_setspecific(NAME##_key, value);        \
         return old_value;                               \
     }                                                   \
                                                         \
@@ -437,6 +501,23 @@ ovsthread_once_start(struct ovsthread_once *once)
 #define ovsthread_once_start(ONCE) \
     ((ONCE)->done ? false : ({ OVS_MACRO_LOCK((&ONCE->mutex)); true; }))
 #endif
+
+/* Thread ID.
+ *
+ * pthread_t isn't so nice for some purposes.  Its size and representation are
+ * implementation dependent, which means that there is no way to hash it.
+ * This thread ID avoids the problem.
+ */
+
+DECLARE_EXTERN_PER_THREAD_DATA(unsigned int, ovsthread_id);
+
+/* Returns a per-thread identifier unique within the lifetime of the
+ * process. */
+static inline unsigned int
+ovsthread_id_self(void)
+{
+    return *ovsthread_id_get();
+}
 
 void assert_single_threaded_at(const char *where);
 #define assert_single_threaded() assert_single_threaded_at(SOURCE_LOCATOR)
