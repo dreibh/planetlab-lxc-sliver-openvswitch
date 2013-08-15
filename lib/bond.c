@@ -475,7 +475,7 @@ bond_wait(struct bond *bond)
         poll_timer_wait_until(bond->next_fake_iface_update);
     }
 
-    if (!bond->bond_revalidate) {
+    if (bond->bond_revalidate) {
         poll_immediate_wake();
     }
     ovs_rwlock_unlock(&rwlock);
@@ -661,11 +661,14 @@ bond_choose_output_slave(struct bond *bond, const struct flow *flow,
                          struct flow_wildcards *wc, uint16_t vlan)
 {
     struct bond_slave *slave;
+    void *aux;
 
     ovs_rwlock_rdlock(&rwlock);
     slave = choose_output_slave(bond, flow, wc, vlan);
+    aux = slave ? slave->aux : NULL;
     ovs_rwlock_unlock(&rwlock);
-    return slave;
+
+    return aux;
 }
 
 /* Rebalancing. */

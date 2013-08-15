@@ -96,7 +96,7 @@ struct flow {
     ovs_be32 nw_dst;            /* IPv4 destination address. */
     ovs_be32 ipv6_label;        /* IPv6 flow label. */
     union flow_in_port in_port; /* Input port.*/
-    uint32_t skb_mark;          /* Packet mark. */
+    uint32_t pkt_mark;          /* Packet mark. */
     ovs_be32 mpls_lse;          /* MPLS label stack entry. */
     uint16_t mpls_depth;        /* Depth of MPLS stack. */
     ovs_be16 vlan_tci;          /* If 802.1Q, TCI | VLAN_CFI; otherwise 0. */
@@ -128,6 +128,7 @@ struct flow_metadata {
     ovs_be32 tun_dst;                /* Tunnel outer IPv4 dst addr */
     ovs_be64 metadata;               /* OpenFlow 1.1+ metadata field. */
     uint32_t regs[FLOW_N_REGS];      /* Registers. */
+    uint32_t pkt_mark;               /* Packet mark. */
     ofp_port_t in_port;              /* OpenFlow port or zero. */
 };
 

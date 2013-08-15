@@ -806,6 +806,13 @@ exactly, and a 0-bit wildcards that bit.
 When a packet enters an OpenFlow switch, all of the registers are set
 to 0.  Only explicit Nicira extension actions change register values.
 .
+.IP \fBpkt_mark=\fIvalue\fR[\fB/\fImask\fR]
+Matches packet metadata mark \fIvalue\fR either exactly or with optional
+\fImask\fR. The mark is associated data that may be passed into other
+system components in order to facilitate interaction between subsystems.
+On Linux this corresponds to the skb mark but the exact implementation is
+platform-dependent.
+.
 .PP
 Defining IPv6 flows (those with \fBdl_type\fR equal to 0x86dd) requires
 support for NXM.  The following shorthand notations are available for
@@ -1107,7 +1114,7 @@ be specified as a name used for matching.  (This is similar to
 Open Flow 1.2 and above.)
 .
 .IP
-Example: \fBset_field:fe80:0123:4567:890a:a6ba:dbff:fefe:59fa\->ipv6_src\fR
+Example: \fBset_field:00:11:22:33:44:55->eth_src\fR.
 .
 .IP "\fBmultipath(\fIfields\fB, \fIbasis\fB, \fIalgorithm\fB, \fIn_links\fB, \fIarg\fB, \fIdst\fB[\fIstart\fB..\fIend\fB])\fR"
 Hashes \fIfields\fR using \fIbasis\fR as a universal hash parameter,

@@ -35,9 +35,10 @@
 #include <linux/kernel.h>
 #include <linux/workqueue.h>
 #include <linux/rculist.h>
+#include <net/net_namespace.h>
+#include <net/netns/generic.h>
 #include <net/route.h>
 #include <net/xfrm.h>
-
 
 #include <net/icmp.h>
 #include <net/ip.h>
@@ -46,7 +47,6 @@
 #include <net/protocol.h>
 
 #include "datapath.h"
-#include "tunnel.h"
 #include "vport.h"
 
 /* Returns the least-significant 32 bits of a __be64. */
@@ -112,7 +112,7 @@ static int gre_rcv(struct sk_buff *skb,
 		return PACKET_REJECT;
 
 	key = key_to_tunnel_id(tpi->key, tpi->seq);
-	tnl_tun_key_init(&tun_key, ip_hdr(skb), key, filter_tnl_flags(tpi->flags));
+	ovs_flow_tun_key_init(&tun_key, ip_hdr(skb), key, filter_tnl_flags(tpi->flags));
 
 	ovs_vport_receive(vport, skb, &tun_key);
 	return PACKET_RCVD;
@@ -335,17 +335,19 @@ static __be32 be64_get_high32(__be64 x)
 
 static int gre64_send(struct vport *vport, struct sk_buff *skb)
 {
-	int hlen;
+	int hlen = GRE_HEADER_SECTION +		/* GRE Hdr */
+		   GRE_HEADER_SECTION +		/* GRE Key */
+		   GRE_HEADER_SECTION;		/* GRE SEQ */
 	__be32 seq;
 
 	if (unlikely(!OVS_CB(skb)->tun_key))
 		return -EINVAL;
 
-	hlen = ip_gre_calc_hlen(OVS_CB(skb)->tun_key->tun_flags)
-	       + GRE_HEADER_SECTION;
+	if (OVS_CB(skb)->tun_key->tun_flags & TUNNEL_CSUM)
+		hlen += GRE_HEADER_SECTION;
 
 	seq = be64_get_high32(OVS_CB(skb)->tun_key->tun_id);
-	return __send(vport, skb, hlen, seq, TUNNEL_SEQ);
+	return __send(vport, skb, hlen, seq, (TUNNEL_KEY|TUNNEL_SEQ));
 }
 
 const struct vport_ops ovs_gre64_vport_ops = {

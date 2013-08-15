@@ -201,8 +201,6 @@ static void output_normal(struct xlate_ctx *, const struct xbundle *,
                           uint16_t vlan);
 static void compose_output_action(struct xlate_ctx *, ofp_port_t ofp_port);
 
-static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
-
 static struct xbridge *xbridge_lookup(const struct ofproto_dpif *);
 static struct xbundle *xbundle_lookup(const struct ofbundle *);
 static struct xport *xport_lookup(const struct ofport_dpif *);
@@ -1519,7 +1517,7 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
     struct flow_wildcards *wc = &ctx->xout->wc;
     struct flow *flow = &ctx->xin->flow;
     ovs_be16 flow_vlan_tci;
-    uint32_t flow_skb_mark;
+    uint32_t flow_pkt_mark;
     uint8_t flow_nw_tos;
     odp_port_t out_port, odp_port;
     uint8_t dscp;
@@ -1587,7 +1585,7 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
     }
 
     flow_vlan_tci = flow->vlan_tci;
-    flow_skb_mark = flow->skb_mark;
+    flow_pkt_mark = flow->pkt_mark;
     flow_nw_tos = flow->nw_tos;
 
     if (dscp_from_skb_priority(xport, flow->skb_priority, &dscp)) {
@@ -1633,7 +1631,6 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
             out_port = ofp_port_to_odp_port(ctx->xbridge, vlandev_port);
             flow->vlan_tci = htons(0);
         }
-        flow->skb_mark &= ~IPSEC_MARK;
     }
 
     if (out_port != ODPP_NONE) {
@@ -1650,7 +1647,7 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
  out:
     /* Restore flow */
     flow->vlan_tci = flow_vlan_tci;
-    flow->skb_mark = flow_skb_mark;
+    flow->pkt_mark = flow_pkt_mark;
     flow->nw_tos = flow_nw_tos;
 }
 
@@ -1658,34 +1655,6 @@ static void
 compose_output_action(struct xlate_ctx *ctx, ofp_port_t ofp_port)
 {
     compose_output_action__(ctx, ofp_port, true);
-}
-
-/* Common rule processing in one place to avoid duplicating code. */
-static struct rule_dpif *
-ctx_rule_hooks(struct xlate_ctx *ctx, struct rule_dpif *rule,
-               bool may_packet_in)
-{
-    if (ctx->xin->resubmit_hook) {
-        ctx->xin->resubmit_hook(ctx->xin, rule, ctx->recurse);
-    }
-    if (rule == NULL && may_packet_in) {
-        struct xport *xport;
-
-        /* XXX
-         * check if table configuration flags
-         * OFPTC_TABLE_MISS_CONTROLLER, default.
-         * OFPTC_TABLE_MISS_CONTINUE,
-         * OFPTC_TABLE_MISS_DROP
-         * When OF1.0, OFPTC_TABLE_MISS_CONTINUE is used. What to do? */
-        xport = get_ofp_port(ctx->xbridge, ctx->xin->flow.in_port.ofp_port);
-        rule = choose_miss_rule(xport ? xport->config : 0,
-                                ctx->xbridge->miss_rule,
-                                ctx->xbridge->no_packet_in_rule);
-    }
-    if (rule && ctx->xin->resubmit_stats) {
-        rule_credit_stats(rule, ctx->xin->resubmit_stats);
-    }
-    return rule;
 }
 
 static void
@@ -1701,15 +1670,39 @@ xlate_table_action(struct xlate_ctx *ctx,
 
         /* Look up a flow with 'in_port' as the input port. */
         ctx->xin->flow.in_port.ofp_port = in_port;
-        rule = rule_dpif_lookup_in_table(ctx->xbridge->ofproto,
-                                         &ctx->xin->flow, &ctx->xout->wc,
-                                         table_id);
+        rule_dpif_lookup_in_table(ctx->xbridge->ofproto, &ctx->xin->flow,
+                                  &ctx->xout->wc, table_id, &rule);
 
         /* Restore the original input port.  Otherwise OFPP_NORMAL and
          * OFPP_IN_PORT will have surprising behavior. */
         ctx->xin->flow.in_port.ofp_port = old_in_port;
 
-        rule = ctx_rule_hooks(ctx, rule, may_packet_in);
+        if (ctx->xin->resubmit_hook) {
+            ctx->xin->resubmit_hook(ctx->xin, rule, ctx->recurse);
+        }
+
+        if (rule == NULL && may_packet_in) {
+            struct xport *xport;
+
+            /* Makes clang's thread safety analysis happy. */
+            rule_release(rule);
+
+            /* XXX
+             * check if table configuration flags
+             * OFPTC_TABLE_MISS_CONTROLLER, default.
+             * OFPTC_TABLE_MISS_CONTINUE,
+             * OFPTC_TABLE_MISS_DROP
+             * When OF1.0, OFPTC_TABLE_MISS_CONTINUE is used. What to do? */
+            xport = get_ofp_port(ctx->xbridge, ctx->xin->flow.in_port.ofp_port);
+            rule = choose_miss_rule(xport ? xport->config : 0,
+                                    ctx->xbridge->miss_rule,
+                                    ctx->xbridge->no_packet_in_rule);
+            ovs_rwlock_rdlock(&rule->up.evict);
+        }
+
+        if (rule && ctx->xin->resubmit_stats) {
+            rule_credit_stats(rule, ctx->xin->resubmit_stats);
+        }
 
         if (rule) {
             struct rule_dpif *old_rule = ctx->rule;
@@ -1720,6 +1713,7 @@ xlate_table_action(struct xlate_ctx *ctx,
             ctx->rule = old_rule;
             ctx->recurse--;
         }
+        rule_release(rule);
 
         ctx->table_id = old_table_id;
     } else {
@@ -1788,7 +1782,7 @@ execute_controller_action(struct xlate_ctx *ctx, int len,
     packet = ofpbuf_clone(ctx->xin->packet);
 
     key.skb_priority = 0;
-    key.skb_mark = 0;
+    key.pkt_mark = 0;
     memset(&key.tunnel, 0, sizeof key.tunnel);
 
     commit_odp_actions(&ctx->xin->flow, &ctx->base_flow,
@@ -2174,38 +2168,13 @@ may_receive(const struct xport *xport, struct xlate_ctx *ctx)
     return true;
 }
 
-static bool
-tunnel_ecn_ok(struct xlate_ctx *ctx)
-{
-    if (is_ip_any(&ctx->base_flow)
-        && (ctx->xin->flow.tunnel.ip_tos & IP_ECN_MASK) == IP_ECN_CE) {
-        if ((ctx->base_flow.nw_tos & IP_ECN_MASK) == IP_ECN_NOT_ECT) {
-            VLOG_WARN_RL(&rl, "dropping tunnel packet marked ECN CE"
-                         " but is not ECN capable");
-            return false;
-        } else {
-            /* Set the ECN CE value in the tunneled packet. */
-            ctx->xin->flow.nw_tos |= IP_ECN_CE;
-        }
-    }
-
-    return true;
-}
-
 static void
 do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
                  struct xlate_ctx *ctx)
 {
     struct flow_wildcards *wc = &ctx->xout->wc;
     struct flow *flow = &ctx->xin->flow;
-    bool was_evictable = true;
     const struct ofpact *a;
-
-    if (ctx->rule) {
-        /* Don't let the rule we're working on get evicted underneath us. */
-        was_evictable = ctx->rule->up.evictable;
-        ctx->rule->up.evictable = false;
-    }
 
     OFPACT_FOR_EACH (a, ofpacts, ofpacts_len) {
         struct ofpact_controller *controller;
@@ -2352,20 +2321,20 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
         case OFPACT_SET_MPLS_TTL:
             if (compose_set_mpls_ttl_action(ctx,
                                             ofpact_get_SET_MPLS_TTL(a)->ttl)) {
-                goto out;
+                return;
             }
             break;
 
         case OFPACT_DEC_MPLS_TTL:
             if (compose_dec_mpls_ttl_action(ctx)) {
-                goto out;
+                return;
             }
             break;
 
         case OFPACT_DEC_TTL:
             wc->masks.nw_ttl = 0xff;
             if (compose_dec_ttl(ctx, ofpact_get_DEC_TTL(a))) {
-                goto out;
+                return;
             }
             break;
 
@@ -2431,11 +2400,6 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             xlate_sample_action(ctx, ofpact_get_SAMPLE(a));
             break;
         }
-    }
-
-out:
-    if (ctx->rule) {
-        ctx->rule->up.evictable = was_evictable;
     }
 }
 
@@ -2567,6 +2531,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
     struct flow orig_flow;
     struct xlate_ctx ctx;
     size_t ofpacts_len;
+    bool tnl_may_send;
 
     COVERAGE_INC(xlate_actions);
 
@@ -2622,12 +2587,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
     memset(&wc->masks.dl_type, 0xff, sizeof wc->masks.dl_type);
     wc->masks.nw_frag |= FLOW_NW_FRAG_MASK;
 
-    if (tnl_port_should_receive(&ctx.xin->flow)) {
-        memset(&wc->masks.tunnel, 0xff, sizeof wc->masks.tunnel);
-        /* skb_mark is currently used only by tunnels but that will likely
-         * change in the future. */
-        memset(&wc->masks.skb_mark, 0xff, sizeof wc->masks.skb_mark);
-    }
+    tnl_may_send = tnl_xlate_init(&ctx.base_flow, flow, wc);
     if (ctx.xbridge->has_netflow) {
         netflow_mask_wc(flow, wc);
     }
@@ -2696,7 +2656,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
         add_ipfix_action(&ctx);
         sample_actions_len = ctx.xout->odp_actions.size;
 
-        if (tunnel_ecn_ok(&ctx) && (!in_port || may_receive(in_port, &ctx))) {
+        if (tnl_may_send && (!in_port || may_receive(in_port, &ctx))) {
             do_xlate_actions(ofpacts, ofpacts_len, &ctx);
 
             /* We've let OFPP_NORMAL and the learning action look at the

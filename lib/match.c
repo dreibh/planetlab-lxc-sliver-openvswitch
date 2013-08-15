@@ -60,8 +60,8 @@ match_wc_init(struct match *match, const struct flow *flow)
         memset(&wc->masks.skb_priority, 0xff, sizeof wc->masks.skb_priority);
     }
 
-    if (flow->skb_mark) {
-        memset(&wc->masks.skb_mark, 0xff, sizeof wc->masks.skb_mark);
+    if (flow->pkt_mark) {
+        memset(&wc->masks.pkt_mark, 0xff, sizeof wc->masks.pkt_mark);
     }
 
     for (i = 0; i < FLOW_N_REGS; i++) {
@@ -138,7 +138,6 @@ match_init_exact(struct match *match, const struct flow *flow)
 {
     match->flow = *flow;
     match->flow.skb_priority = 0;
-    match->flow.skb_mark = 0;
     flow_wildcards_init_exact(&match->wc);
 }
 
@@ -286,10 +285,16 @@ match_set_skb_priority(struct match *match, uint32_t skb_priority)
 }
 
 void
-match_set_skb_mark(struct match *match, uint32_t skb_mark)
+match_set_pkt_mark(struct match *match, uint32_t pkt_mark)
 {
-    match->wc.masks.skb_mark = UINT32_MAX;
-    match->flow.skb_mark = skb_mark;
+    match_set_pkt_mark_masked(match, pkt_mark, UINT32_MAX);
+}
+
+void
+match_set_pkt_mark_masked(struct match *match, uint32_t pkt_mark, uint32_t mask)
+{
+    match->flow.pkt_mark = pkt_mark & mask;
+    match->wc.masks.pkt_mark = mask;
 }
 
 void
@@ -836,8 +841,16 @@ match_format(const struct match *match, struct ds *s, unsigned int priority)
         ds_put_format(s, "priority=%u,", priority);
     }
 
-    if (wc->masks.skb_mark) {
-        ds_put_format(s, "skb_mark=%#"PRIx32",", f->skb_mark);
+    switch (wc->masks.pkt_mark) {
+    case 0:
+        break;
+    case UINT32_MAX:
+        ds_put_format(s, "pkt_mark=%#"PRIx32",", f->pkt_mark);
+        break;
+    default:
+        ds_put_format(s, "pkt_mark=%#"PRIx32"/%#"PRIx32",",
+                      f->pkt_mark, wc->masks.pkt_mark);
+        break;
     }
 
     if (wc->masks.skb_priority) {

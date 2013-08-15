@@ -31,12 +31,15 @@
 
 VLOG_DEFINE_THIS_MODULE(tunnel);
 
+/* skb mark used for IPsec tunnel packets */
+#define IPSEC_MARK 1
+
 struct tnl_match {
     ovs_be64 in_key;
     ovs_be32 ip_src;
     ovs_be32 ip_dst;
     odp_port_t odp_port;
-    uint32_t skb_mark;
+    uint32_t pkt_mark;
     bool in_key_flow;
     bool ip_src_flow;
     bool ip_dst_flow;
@@ -101,7 +104,7 @@ tnl_port_add__(const struct ofport_dpif *ofport, const struct netdev *netdev,
     tnl_port->match.ip_dst = cfg->ip_dst;
     tnl_port->match.ip_src_flow = cfg->ip_src_flow;
     tnl_port->match.ip_dst_flow = cfg->ip_dst_flow;
-    tnl_port->match.skb_mark = cfg->ipsec ? IPSEC_MARK : 0;
+    tnl_port->match.pkt_mark = cfg->ipsec ? IPSEC_MARK : 0;
     tnl_port->match.in_key_flow = cfg->in_key_flow;
     tnl_port->match.odp_port = odp_port;
 
@@ -213,7 +216,7 @@ tnl_port_receive(const struct flow *flow) OVS_EXCLUDED(rwlock)
     match.ip_src = flow->tunnel.ip_dst;
     match.ip_dst = flow->tunnel.ip_src;
     match.in_key = flow->tunnel.tun_id;
-    match.skb_mark = flow->skb_mark;
+    match.pkt_mark = flow->pkt_mark;
 
     ovs_rwlock_rdlock(&rwlock);
     tnl_port = tnl_find(&match);
@@ -249,6 +252,46 @@ out:
     return ofport;
 }
 
+static bool
+tnl_ecn_ok(const struct flow *base_flow, struct flow *flow)
+{
+    if (is_ip_any(base_flow)
+        && (flow->tunnel.ip_tos & IP_ECN_MASK) == IP_ECN_CE) {
+        if ((base_flow->nw_tos & IP_ECN_MASK) == IP_ECN_NOT_ECT) {
+            VLOG_WARN_RL(&rl, "dropping tunnel packet marked ECN CE"
+                         " but is not ECN capable");
+            return false;
+        } else {
+            /* Set the ECN CE value in the tunneled packet. */
+            flow->nw_tos |= IP_ECN_CE;
+        }
+    }
+
+    return true;
+}
+
+/* Should be called at the beginning of action translation to initialize
+ * wildcards and perform any actions based on receiving on tunnel port.
+ *
+ * Returns false if the packet must be dropped. */
+bool
+tnl_xlate_init(const struct flow *base_flow, struct flow *flow,
+               struct flow_wildcards *wc)
+{
+    if (tnl_port_should_receive(flow)) {
+        memset(&wc->masks.tunnel, 0xff, sizeof wc->masks.tunnel);
+        memset(&wc->masks.pkt_mark, 0xff, sizeof wc->masks.pkt_mark);
+
+        if (!tnl_ecn_ok(base_flow, flow)) {
+            return false;
+        }
+
+        flow->pkt_mark &= ~IPSEC_MARK;
+    }
+
+    return true;
+}
+
 /* Given that 'flow' should be output to the ofport corresponding to
  * 'tnl_port', updates 'flow''s tunnel headers and returns the actual datapath
  * port that the output should happen on.  May return ODPP_NONE if the output
@@ -282,7 +325,7 @@ tnl_port_send(const struct ofport_dpif *ofport, struct flow *flow,
     if (!cfg->ip_dst_flow) {
         flow->tunnel.ip_dst = tnl_port->match.ip_dst;
     }
-    flow->skb_mark = tnl_port->match.skb_mark;
+    flow->pkt_mark = tnl_port->match.pkt_mark;
 
     if (!cfg->out_key_flow) {
         flow->tunnel.tun_id = cfg->out_key;
@@ -444,7 +487,7 @@ tnl_match_fmt(const struct tnl_match *match, struct ds *ds)
     }
 
     ds_put_format(ds, ", dp port=%"PRIu32, match->odp_port);
-    ds_put_format(ds, ", skb mark=%"PRIu32, match->skb_mark);
+    ds_put_format(ds, ", pkt mark=%"PRIu32, match->pkt_mark);
 }
 
 static void
