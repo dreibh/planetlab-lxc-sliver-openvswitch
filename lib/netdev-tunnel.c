@@ -40,6 +40,10 @@ VLOG_DEFINE_THIS_MODULE(netdev_tunnel);
 
 struct netdev_tunnel {
     struct netdev up;
+
+    /* Protects all members below. */
+    struct ovs_mutex mutex;
+
     uint8_t hwaddr[ETH_ADDR_LEN];
     struct netdev_stats stats;
     enum netdev_flags flags;
@@ -59,7 +63,9 @@ struct netdev_rx_tunnel {
 
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
-static struct shash tunnel_netdevs = SHASH_INITIALIZER(&tunnel_netdevs);
+static struct ovs_mutex tunnel_netdevs_mutex = OVS_MUTEX_INITIALIZER;
+static struct shash tunnel_netdevs OVS_GUARDED_BY(tunnel_netdevs_mutex)
+    = SHASH_INITIALIZER(&tunnel_netdevs);
 
 static int netdev_tunnel_construct(struct netdev *netdevp_);
 static void netdev_tunnel_update_seq(struct netdev_tunnel *);
@@ -94,9 +100,13 @@ netdev_tunnel_alloc(void)
 static int
 netdev_tunnel_construct(struct netdev *netdev_)
 {
-    static unsigned int n = 0;
+    static atomic_uint next_n = ATOMIC_VAR_INIT(0);
     struct netdev_tunnel *netdev = netdev_tunnel_cast(netdev_);
+    unsigned int n;
 
+    atomic_add(&next_n, 1, &n);
+
+    ovs_mutex_init(&netdev->mutex, PTHREAD_MUTEX_NORMAL);
     netdev->hwaddr[0] = 0xfe;
     netdev->hwaddr[1] = 0xff;
     netdev->hwaddr[2] = 0xff;
@@ -133,11 +143,16 @@ netdev_tunnel_destruct(struct netdev *netdev_)
 {
     struct netdev_tunnel *netdev = netdev_tunnel_cast(netdev_);
 
+    ovs_mutex_lock(&tunnel_netdevs_mutex);
+
     if (netdev->sockfd != -1)
     	close(netdev->sockfd);
 
     shash_find_and_delete(&tunnel_netdevs,
                           netdev_get_name(netdev_));
+
+    ovs_mutex_destroy(&netdev->mutex);
+    ovs_mutex_unlock(&tunnel_netdevs_mutex);
 }
 
 static void
@@ -152,17 +167,20 @@ netdev_tunnel_get_config(const struct netdev *dev_, struct smap *args)
 {
     struct netdev_tunnel *netdev = netdev_tunnel_cast(dev_);
 
+    ovs_mutex_lock(&netdev->mutex);
     if (netdev->valid_remote_ip)
     	smap_add_format(args, "remote_ip", IP_FMT,
 		IP_ARGS(netdev->remote_addr.sin_addr.s_addr));
     if (netdev->valid_remote_port)
         smap_add_format(args, "remote_port", "%"PRIu16,
 		ntohs(netdev->remote_addr.sin_port));
+    ovs_mutex_unlock(&netdev->mutex);
     return 0;
 }
 
 static int
 netdev_tunnel_connect(struct netdev_tunnel *dev)
+    OVS_REQUIRES(dev->mutex)
 {
     char buf[1024];
     if (dev->sockfd < 0)
@@ -185,7 +203,9 @@ netdev_tunnel_set_config(struct netdev *dev_, const struct smap *args)
 {
     struct netdev_tunnel *netdev = netdev_tunnel_cast(dev_);
     struct shash_node *node;
+    int error;
 
+    ovs_mutex_lock(&netdev->mutex);
     VLOG_DBG("tunnel_set_config(%s)", netdev_get_name(dev_));
     SMAP_FOR_EACH(node, args) {
         VLOG_DBG("arg: %s->%s", node->name, (char*)node->data);
@@ -205,7 +225,9 @@ netdev_tunnel_set_config(struct netdev *dev_, const struct smap *args)
 	    	netdev_get_name(dev_), node->name);
 	}
     }
-    return netdev_tunnel_connect(netdev);        
+    error = netdev_tunnel_connect(netdev);        
+    ovs_mutex_unlock(&netdev->mutex);
+    return error;
 }
 
 static struct netdev_rx *
@@ -220,9 +242,11 @@ netdev_tunnel_rx_construct(struct netdev_rx *rx_)
 {   
     struct netdev_rx_tunnel *rx = netdev_rx_tunnel_cast(rx_);
     struct netdev *netdev_ = rx->up.netdev;
-    struct netdev_tunnel *netdev =
-        netdev_tunnel_cast(netdev_);
+    struct netdev_tunnel *netdev = netdev_tunnel_cast(netdev_);
+
+    ovs_mutex_lock(&netdev->mutex);
     rx->fd = netdev->sockfd;
+    ovs_mutex_unlock(&netdev->mutex);
     return 0;
 }
 
@@ -354,10 +378,12 @@ netdev_tunnel_set_etheraddr(struct netdev *netdev,
 {
     struct netdev_tunnel *dev = netdev_tunnel_cast(netdev);
 
+    ovs_mutex_lock(&dev->mutex);
     if (!eth_addr_equals(dev->hwaddr, mac)) {
         memcpy(dev->hwaddr, mac, ETH_ADDR_LEN);
         netdev_tunnel_update_seq(dev);
     }
+    ovs_mutex_unlock(&dev->mutex);
 
     return 0;
 }
@@ -368,7 +394,9 @@ netdev_tunnel_get_etheraddr(const struct netdev *netdev,
 {
     const struct netdev_tunnel *dev = netdev_tunnel_cast(netdev);
 
+    ovs_mutex_lock(&dev->mutex);
     memcpy(mac, dev->hwaddr, ETH_ADDR_LEN);
+    ovs_mutex_unlock(&dev->mutex);
     return 0;
 }
 
@@ -378,7 +406,9 @@ netdev_tunnel_get_stats(const struct netdev *netdev, struct netdev_stats *stats)
 {
     const struct netdev_tunnel *dev = netdev_tunnel_cast(netdev);
 
+    ovs_mutex_lock(&dev->mutex);
     *stats = dev->stats;
+    ovs_mutex_unlock(&dev->mutex);
     return 0;
 }
 
@@ -387,7 +417,9 @@ netdev_tunnel_set_stats(struct netdev *netdev, const struct netdev_stats *stats)
 {
     struct netdev_tunnel *dev = netdev_tunnel_cast(netdev);
 
+    ovs_mutex_lock(&dev->mutex);
     dev->stats = *stats;
+    ovs_mutex_unlock(&dev->mutex);
     return 0;
 }
 
@@ -398,9 +430,12 @@ netdev_tunnel_update_flags(struct netdev *dev_,
 {
     struct netdev_tunnel *netdev =
         netdev_tunnel_cast(dev_);
+    int error = 0;
 
+    ovs_mutex_lock(&netdev->mutex);
     if ((off | on) & ~(NETDEV_UP | NETDEV_PROMISC)) {
-        return EINVAL;
+        error = EINVAL;
+        goto out;
     }
 
     // XXX should we actually do something with these flags?
@@ -410,19 +445,30 @@ netdev_tunnel_update_flags(struct netdev *dev_,
     if (*old_flagsp != netdev->flags) {
         netdev_tunnel_update_seq(netdev);
     }
-    return 0;
+
+out:
+    ovs_mutex_unlock(&netdev->mutex);
+    return error;
 }
 
 static unsigned int
-netdev_tunnel_change_seq(const struct netdev *netdev)
+netdev_tunnel_change_seq(const struct netdev *netdev_)
 {
-    return netdev_tunnel_cast(netdev)->change_seq;
+    struct netdev_tunnel *netdev = netdev_tunnel_cast(netdev_);
+    unsigned int change_seq;
+
+
+    ovs_mutex_lock(&netdev->mutex);
+    change_seq = netdev->change_seq;
+    ovs_mutex_unlock(&netdev->mutex);
+    return change_seq;
 }
 
 /* Helper functions. */
 
 static void
 netdev_tunnel_update_seq(struct netdev_tunnel *dev)
+    OVS_REQUIRES(dev->mutex)
 {
     dev->change_seq++;
     if (!dev->change_seq) {
@@ -437,14 +483,20 @@ netdev_tunnel_get_port(struct unixctl_conn *conn,
     struct netdev_tunnel *tunnel_dev;
     char buf[6];
 
+    ovs_mutex_lock(&tunnel_netdevs_mutex);
     tunnel_dev = shash_find_data(&tunnel_netdevs, argv[1]);
     if (!tunnel_dev) {
         unixctl_command_reply_error(conn, "no such tunnel netdev");
-        return;
+        goto out;
     }
 
+    ovs_mutex_lock(&tunnel_dev->mutex);
     sprintf(buf, "%d", ntohs(tunnel_dev->local_addr.sin_port));
+    ovs_mutex_unlock(&tunnel_dev->mutex);
+
     unixctl_command_reply(conn, buf);
+out:
+    ovs_mutex_unlock(&tunnel_netdevs_mutex);
 }
 
 static void
@@ -454,14 +506,19 @@ netdev_tunnel_get_tx_bytes(struct unixctl_conn *conn,
     struct netdev_tunnel *tunnel_dev;
     char buf[128];
 
+    ovs_mutex_lock(&tunnel_netdevs_mutex);
     tunnel_dev = shash_find_data(&tunnel_netdevs, argv[1]);
     if (!tunnel_dev) {
         unixctl_command_reply_error(conn, "no such tunnel netdev");
-        return;
+        goto out;
     }
 
+    ovs_mutex_lock(&tunnel_dev->mutex);
     sprintf(buf, "%"PRIu64, tunnel_dev->stats.tx_bytes);
+    ovs_mutex_unlock(&tunnel_dev->mutex);
     unixctl_command_reply(conn, buf);
+out:
+    ovs_mutex_unlock(&tunnel_netdevs_mutex);
 }
 
 static void
@@ -471,14 +528,17 @@ netdev_tunnel_get_rx_bytes(struct unixctl_conn *conn,
     struct netdev_tunnel *tunnel_dev;
     char buf[128];
 
+    ovs_mutex_lock(&tunnel_netdevs_mutex);
     tunnel_dev = shash_find_data(&tunnel_netdevs, argv[1]);
     if (!tunnel_dev) {
         unixctl_command_reply_error(conn, "no such tunnel netdev");
-        return;
+        goto out;
     }
 
     sprintf(buf, "%"PRIu64, tunnel_dev->stats.rx_bytes);
     unixctl_command_reply(conn, buf);
+out:
+    ovs_mutex_unlock(&tunnel_netdevs_mutex);
 }
 
 
@@ -494,11 +554,21 @@ netdev_tunnel_init(void)
     return 0;
 }
 
+static void
+netdev_tunnel_run(void)
+{
+}
+
+static void
+netdev_tunnel_wait(void)
+{
+}
+
 const struct netdev_class netdev_tunnel_class = {
     "tunnel",
-    netdev_tunnel_init,         /* init */
-    NULL,                       /* run */
-    NULL,                       /* wait */
+    netdev_tunnel_init,    
+    netdev_tunnel_run,      
+    netdev_tunnel_wait,   
 
     netdev_tunnel_alloc,
     netdev_tunnel_construct,

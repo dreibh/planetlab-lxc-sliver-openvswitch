@@ -45,8 +45,21 @@
 
 VLOG_DEFINE_THIS_MODULE(netdev_pltap);
 
+/* Protects 'sync_list'. */
+static struct ovs_mutex sync_list_mutex = OVS_MUTEX_INITIALIZER;
+
+static struct list sync_list OVS_GUARDED_BY(sync_list_mutex)
+    = LIST_INITIALIZER(&sync_list);
+
 struct netdev_pltap {
     struct netdev up;
+
+    /* In sync_list. */
+    struct list sync_list OVS_GUARDED_BY(sync_list_mutex);
+
+    /* Protects all members below. */
+    struct ovs_mutex mutex OVS_ACQ_AFTER(sync_list_mutex);
+
     char *real_name;
     struct netdev_stats stats;
     enum netdev_flags new_flags;
@@ -57,11 +70,9 @@ struct netdev_pltap {
     bool valid_local_ip;
     bool valid_local_netmask;
     bool sync_flags_needed;
-    struct list sync_list;
     unsigned int change_seq;
 };
 
-static struct list sync_list;
 
 struct netdev_rx_pltap {
     struct netdev_rx up;    
@@ -70,15 +81,21 @@ struct netdev_rx_pltap {
 
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
-static struct shash pltap_netdevs = SHASH_INITIALIZER(&pltap_netdevs);
+/* Protects 'pltap_netdevs' */
+static struct ovs_mutex pltap_netdevs_mutex = OVS_MUTEX_INITIALIZER;
+static struct shash pltap_netdevs OVS_GUARDED_BY(pltap_netdevs_mutex)
+    = SHASH_INITIALIZER(&pltap_netdevs);
 
 static int netdev_pltap_construct(struct netdev *netdev_);
 
-static void netdev_pltap_update_seq(struct netdev_pltap *);
-static int get_flags(struct netdev_pltap *dev, enum netdev_flags *flags);
+static void netdev_pltap_update_seq(struct netdev_pltap *) 
+    OVS_REQUIRES(dev->mutex);
+static int get_flags(struct netdev_pltap *dev, enum netdev_flags *flags)
+    OVS_REQUIRES(dev->mutex);
 
 static bool
 netdev_pltap_finalized(struct netdev_pltap *dev)
+    OVS_REQUIRES(dev->mutex)
 {
     return dev->valid_local_ip && dev->valid_local_netmask;
 }
@@ -104,16 +121,17 @@ netdev_rx_pltap_cast(const struct netdev_rx *rx)
 }
 
 static void sync_needed(struct netdev_pltap *dev)
+    OVS_REQUIRES(dev->mutex, sync_list_mutex)
 {
     if (dev->sync_flags_needed)
         return;
 
     dev->sync_flags_needed = true;
     list_insert(&sync_list, &dev->sync_list);
-	
 }
 
 static void sync_done(struct netdev_pltap *dev)
+    OVS_REQUIRES(dev->mutex, sync_list_mutex)
 {
     if (!dev->sync_flags_needed)
         return;
@@ -135,6 +153,7 @@ netdev_pltap_construct(struct netdev *netdev_)
     struct netdev_pltap *netdev = netdev_pltap_cast(netdev_);
     int error;
 
+    ovs_mutex_init(&netdev->mutex, PTHREAD_MUTEX_NORMAL);
     netdev->real_name = xzalloc(IFNAMSIZ + 1);
     memset(&netdev->local_addr, 0, sizeof(netdev->local_addr));
     netdev->valid_local_ip = false;
@@ -142,7 +161,6 @@ netdev_pltap_construct(struct netdev *netdev_)
     netdev->flags = 0;
     netdev->sync_flags_needed = false;
     netdev->change_seq = 1;
-    list_init(&netdev->sync_list);
 
 
     /* Open tap device. */
@@ -161,7 +179,9 @@ netdev_pltap_construct(struct netdev *netdev_)
         return error;
     }
 
+    ovs_mutex_lock(&pltap_netdevs_mutex);
     shash_add(&pltap_netdevs, netdev_get_name(netdev_), netdev);
+    ovs_mutex_unlock(&pltap_netdevs_mutex);
     return 0;
 }
 
@@ -170,13 +190,20 @@ netdev_pltap_destruct(struct netdev *netdev_)
 {
     struct netdev_pltap *netdev = netdev_pltap_cast(netdev_);
 
+    ovs_mutex_lock(&pltap_netdevs_mutex);
     if (netdev->fd != -1)
     	close(netdev->fd);
 
-    sync_done(netdev);
+    if (netdev->sync_flags_needed) {
+        ovs_mutex_lock(&sync_list_mutex);
+        (void) list_remove(&netdev->sync_list);
+        ovs_mutex_unlock(&sync_list_mutex);
+    }
 
     shash_find_and_delete(&pltap_netdevs,
                           netdev_get_name(netdev_));
+    ovs_mutex_unlock(&pltap_netdevs_mutex);
+    ovs_mutex_destroy(&netdev->mutex);
 }
 
 static void
@@ -186,7 +213,7 @@ netdev_pltap_dealloc(struct netdev *netdev_)
     free(netdev);
 }
 
-static int netdev_pltap_up(struct netdev_pltap *dev);
+static int netdev_pltap_up(struct netdev_pltap *dev) OVS_REQUIRES(dev->mutex);
 
 static struct netdev_rx *
 netdev_pltap_rx_alloc(void)
@@ -202,16 +229,19 @@ netdev_pltap_rx_construct(struct netdev_rx *rx_)
     struct netdev *netdev_ = rx->up.netdev;
     struct netdev_pltap *netdev =
         netdev_pltap_cast(netdev_);
-    int error;
+    int error = 0;
 
+    ovs_mutex_lock(&netdev->mutex);
     rx->fd = netdev->fd;
     if (!netdev_pltap_finalized(netdev))
-        return 0;
+        goto out;
     error = netdev_pltap_up(netdev);
     if (error) {
-        return error;
+        goto out;
     }
-    return 0;
+out:
+    ovs_mutex_unlock(&netdev->mutex);
+    return error;
 }
 
 static void
@@ -351,6 +381,7 @@ cleanup:
 
 static int
 netdev_pltap_up(struct netdev_pltap *dev)
+    OVS_REQUIRES(dev->mutex)
 {
     if (!netdev_pltap_finalized(dev)) {
         return 0;
@@ -364,6 +395,7 @@ netdev_pltap_up(struct netdev_pltap *dev)
 
 static int
 netdev_pltap_down(struct netdev_pltap *dev)
+    OVS_REQUIRES(dev->mutex)
 {
     if (!netdev_pltap_finalized(dev)) {
         return 0;
@@ -374,6 +406,7 @@ netdev_pltap_down(struct netdev_pltap *dev)
 
 static int
 netdev_pltap_promisc(struct netdev_pltap *dev, bool promisc)
+    OVS_REQUIRES(dev-mutex)
 {
     if (!netdev_pltap_finalized(dev)) {
         return 0;
@@ -386,11 +419,13 @@ netdev_pltap_promisc(struct netdev_pltap *dev, bool promisc)
 
 static void
 netdev_pltap_sync_flags(struct netdev_pltap *dev)
+    OVS_REQUIRES(sync_list_mutex)
 {
 
+    ovs_mutex_lock(&dev->mutex);
+
     if (dev->fd < 0 || !netdev_pltap_finalized(dev)) {
-    	sync_done(dev);
-    	return;
+    	goto out;
     }
     
     VLOG_DBG("sync_flags(%s): current: %s %s  target: %s %s",
@@ -411,7 +446,10 @@ netdev_pltap_sync_flags(struct netdev_pltap *dev)
     }
 
     netdev_pltap_update_seq(dev);
+
+out:
     sync_done(dev);
+    ovs_mutex_unlock(&dev->mutex);
 }
 
 
@@ -420,12 +458,14 @@ netdev_pltap_get_config(const struct netdev *dev_, struct smap *args)
 {
     struct netdev_pltap *netdev = netdev_pltap_cast(dev_);
 
+    ovs_mutex_lock(&netdev->mutex);
     if (netdev->valid_local_ip)
     	smap_add_format(args, "local_ip", IP_FMT,
             IP_ARGS(netdev->local_addr.sin_addr.s_addr));
     if (netdev->valid_local_netmask)
         smap_add_format(args, "local_netmask", "%"PRIu32,
             ntohs(netdev->local_netmask));
+    ovs_mutex_unlock(&netdev->mutex);
     return 0;
 }
 
@@ -435,6 +475,8 @@ netdev_pltap_set_config(struct netdev *dev_, const struct smap *args)
     struct netdev_pltap *netdev = netdev_pltap_cast(dev_);
     struct shash_node *node;
 
+    ovs_mutex_lock(&sync_list_mutex);
+    ovs_mutex_lock(&netdev->mutex);
     VLOG_DBG("pltap_set_config(%s)", netdev_get_name(dev_));
     SMAP_FOR_EACH(node, args) {
         VLOG_DBG("arg: %s->%s", node->name, (char*)node->data);
@@ -459,6 +501,8 @@ netdev_pltap_set_config(struct netdev *dev_, const struct smap *args)
         netdev->new_flags |= NETDEV_UP;
         sync_needed(netdev);
     }
+    ovs_mutex_unlock(&netdev->mutex);
+    ovs_mutex_unlock(&sync_list_mutex);
     return 0;
 }
 
@@ -574,6 +618,7 @@ netdev_pltap_set_etheraddr(struct netdev *netdevi OVS_UNUSED,
 // XXX from netdev-linux.c
 static int
 get_etheraddr(struct netdev_pltap *dev, uint8_t ea[ETH_ADDR_LEN])
+    OVS_REQUIRES(dev->mutex)
 {
     struct ifreq ifr;
     int hwaddr_family;
@@ -584,7 +629,7 @@ get_etheraddr(struct netdev_pltap *dev, uint8_t ea[ETH_ADDR_LEN])
     error = af_inet_ifreq_ioctl(dev->real_name, &ifr,
         SIOCGIFHWADDR, "SIOCGIFHWADDR");
     if (error) {
-        return errno;
+        return error;
     }
     hwaddr_family = ifr.ifr_hwaddr.sa_family;
     if (hwaddr_family != AF_UNSPEC && hwaddr_family != ARPHRD_ETHER) {
@@ -597,6 +642,7 @@ get_etheraddr(struct netdev_pltap *dev, uint8_t ea[ETH_ADDR_LEN])
 
 static int
 get_flags(struct netdev_pltap *dev, enum netdev_flags *flags)
+    OVS_REQUIRES(dev->mutex)
 {
     struct ifreq ifr;
     int error;
@@ -620,9 +666,18 @@ netdev_pltap_get_etheraddr(const struct netdev *netdev,
 {
     struct netdev_pltap *dev = 
     	netdev_pltap_cast(netdev);
-    if (dev->fd < 0)
-        return EAGAIN;
-    return get_etheraddr(dev, mac);
+    int error = 0;
+
+    ovs_mutex_lock(&dev->mutex);
+    if (dev->fd < 0) {
+        error = EAGAIN;
+        goto out;
+    }
+    error = get_etheraddr(dev, mac);
+
+out:
+    ovs_mutex_unlock(&dev->mutex);
+    return error;
 }
 
 
@@ -649,8 +704,11 @@ netdev_pltap_update_flags(struct netdev *dev_,
         netdev_pltap_cast(dev_);
     int error = 0;
 
+    ovs_mutex_lock(&sync_list_mutex);
+    ovs_mutex_lock(&netdev->mutex);
     if ((off | on) & ~(NETDEV_UP | NETDEV_PROMISC)) {
-        return EINVAL;
+        error = EINVAL;
+        goto out;
     }
 
     if (netdev_pltap_finalized(netdev)) {
@@ -664,19 +722,31 @@ netdev_pltap_update_flags(struct netdev *dev_,
         sync_needed(netdev);
     }
 
+out:
+    ovs_mutex_unlock(&netdev->mutex);
+    ovs_mutex_unlock(&sync_list_mutex);
     return error;
 }
 
 static unsigned int
 netdev_pltap_change_seq(const struct netdev *netdev)
 {
-    return netdev_pltap_cast(netdev)->change_seq;
+    struct netdev_pltap *dev =
+        netdev_pltap_cast(netdev);
+    unsigned int change_seq;
+
+    ovs_mutex_lock(&dev->mutex);
+    change_seq = dev->change_seq;
+    ovs_mutex_unlock(&dev->mutex);
+
+    return change_seq;
 }
 
 /* Helper functions. */
 
 static void
 netdev_pltap_update_seq(struct netdev_pltap *dev)
+    OVS_REQUIRES(dev->mutex)
 {
     dev->change_seq++;
     if (!dev->change_seq) {
@@ -690,23 +760,26 @@ netdev_pltap_get_real_name(struct unixctl_conn *conn,
 {
     struct netdev_pltap *pltap_dev;
 
+    ovs_mutex_lock(&pltap_netdevs_mutex);
     pltap_dev = shash_find_data(&pltap_netdevs, argv[1]);
     if (!pltap_dev) {
         unixctl_command_reply_error(conn, "no such pltap netdev");
-        return;
+        goto out;
     }
     if (pltap_dev->fd < 0) {
     	unixctl_command_reply_error(conn, "no real device attached");
-	return;
+        goto out;	
     }
 
     unixctl_command_reply(conn, pltap_dev->real_name);
+
+out:
+    ovs_mutex_unlock(&pltap_netdevs_mutex);
 }
 
 static int
 netdev_pltap_init(void)
 {
-    list_init(&sync_list);
     unixctl_command_register("netdev-pltap/get-tapname", "port",
                              1, 1, netdev_pltap_get_real_name, NULL);
     return 0;
@@ -716,18 +789,22 @@ static void
 netdev_pltap_run(void)
 {
     struct netdev_pltap *iter, *next;
+    ovs_mutex_lock(&sync_list_mutex);
     LIST_FOR_EACH_SAFE(iter, next, sync_list, &sync_list) {
         netdev_pltap_sync_flags(iter);
     }
+    ovs_mutex_unlock(&sync_list_mutex);
 }
 
 static void
 netdev_pltap_wait(void)
 {
+    ovs_mutex_lock(&sync_list_mutex);
     if (!list_is_empty(&sync_list)) {
         VLOG_DBG("netdev_pltap: scheduling sync");
         poll_immediate_wake();
     }
+    ovs_mutex_unlock(&sync_list_mutex);
 }
 
 const struct netdev_class netdev_pltap_class = {
