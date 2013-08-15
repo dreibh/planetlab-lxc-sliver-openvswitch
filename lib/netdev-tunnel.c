@@ -57,20 +57,17 @@ struct netdev_rx_tunnel {
     int fd;
 };
 
-static const struct netdev_rx_class netdev_rx_tunnel_class;
-
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
 static struct shash tunnel_netdevs = SHASH_INITIALIZER(&tunnel_netdevs);
 
-static int netdev_tunnel_create(const struct netdev_class *, const char *,
-                               struct netdev **);
+static int netdev_tunnel_construct(struct netdev *netdevp_);
 static void netdev_tunnel_update_seq(struct netdev_tunnel *);
 
 static bool
 is_netdev_tunnel_class(const struct netdev_class *class)
 {
-    return class->create == netdev_tunnel_create;
+    return class->construct == netdev_tunnel_construct;
 }
 
 static struct netdev_tunnel *
@@ -83,20 +80,23 @@ netdev_tunnel_cast(const struct netdev *netdev)
 static struct netdev_rx_tunnel *
 netdev_rx_tunnel_cast(const struct netdev_rx *rx)
 {
-    netdev_rx_assert_class(rx, &netdev_rx_tunnel_class);
+    ovs_assert(is_netdev_tunnel_class(netdev_get_class(rx->netdev)));
     return CONTAINER_OF(rx, struct netdev_rx_tunnel, up);
 }
 
+static struct netdev *
+netdev_tunnel_alloc(void)
+{
+    struct netdev_tunnel *netdev = xzalloc(sizeof *netdev);
+    return &netdev->up;
+}
+
 static int
-netdev_tunnel_create(const struct netdev_class *class, const char *name,
-                    struct netdev **netdevp)
+netdev_tunnel_construct(struct netdev *netdev_)
 {
     static unsigned int n = 0;
-    struct netdev_tunnel *netdev;
-    int error;
+    struct netdev_tunnel *netdev = netdev_tunnel_cast(netdev_);
 
-    netdev = xzalloc(sizeof *netdev);
-    netdev_init(&netdev->up, name, class);
     netdev->hwaddr[0] = 0xfe;
     netdev->hwaddr[1] = 0xff;
     netdev->hwaddr[2] = 0xff;
@@ -113,28 +113,23 @@ netdev_tunnel_create(const struct netdev_class *class, const char *name,
 
     netdev->sockfd = inet_open_passive(SOCK_DGRAM, "", 0, &netdev->local_addr, 0);
     if (netdev->sockfd < 0) {
-    	error = netdev->sockfd;
-        goto error;
+    	return netdev->sockfd;
     }
 
 
-    shash_add(&tunnel_netdevs, name, netdev);
+    shash_add(&tunnel_netdevs, netdev_get_name(netdev_), netdev);
 
     n++;
 
-    *netdevp = &netdev->up;
-
-    VLOG_DBG("tunnel_create: name=%s, fd=%d, port=%d", name, netdev->sockfd, netdev->local_addr.sin_port);
+    VLOG_DBG("tunnel_create: name=%s, fd=%d, port=%d",
+        netdev_get_name(netdev_), netdev->sockfd, netdev->local_addr.sin_port);
 
     return 0;
 
-error:
-    free(netdev);
-    return error;
 }
 
 static void
-netdev_tunnel_destroy(struct netdev *netdev_)
+netdev_tunnel_destruct(struct netdev *netdev_)
 {
     struct netdev_tunnel *netdev = netdev_tunnel_cast(netdev_);
 
@@ -143,6 +138,12 @@ netdev_tunnel_destroy(struct netdev *netdev_)
 
     shash_find_and_delete(&tunnel_netdevs,
                           netdev_get_name(netdev_));
+}
+
+static void
+netdev_tunnel_dealloc(struct netdev *netdev_)
+{
+    struct netdev_tunnel *netdev = netdev_tunnel_cast(netdev_);
     free(netdev);
 }
 
@@ -207,28 +208,39 @@ netdev_tunnel_set_config(struct netdev *dev_, const struct smap *args)
     return netdev_tunnel_connect(netdev);        
 }
 
+static struct netdev_rx *
+netdev_tunnel_rx_alloc(void)
+{
+    struct netdev_rx_tunnel *rx = xzalloc(sizeof *rx);
+    return &rx->up;
+}
+
 static int
-netdev_tunnel_rx_open(struct netdev *netdev_, struct netdev_rx **rxp)
+netdev_tunnel_rx_construct(struct netdev_rx *rx_)
 {   
+    struct netdev_rx_tunnel *rx = netdev_rx_tunnel_cast(rx_);
+    struct netdev *netdev_ = rx->up.netdev;
     struct netdev_tunnel *netdev =
         netdev_tunnel_cast(netdev_);
-    struct netdev_rx_tunnel *rx;
-    rx = xmalloc(sizeof *rx);
-    netdev_rx_init(&rx->up, netdev_, &netdev_rx_tunnel_class);
     rx->fd = netdev->sockfd;
-    *rxp = &rx->up;
     return 0;
 }
 
 static void
-netdev_rx_tunnel_destroy(struct netdev_rx *rx_)
+netdev_tunnel_rx_destruct(struct netdev_rx *rx_ OVS_UNUSED)
+{
+}
+
+static void
+netdev_tunnel_rx_dealloc(struct netdev_rx *rx_)
 {
     struct netdev_rx_tunnel *rx = netdev_rx_tunnel_cast(rx_);
+
     free(rx);
 }
 
 static int
-netdev_rx_tunnel_recv(struct netdev_rx *rx_, void *buffer, size_t size)
+netdev_tunnel_rx_recv(struct netdev_rx *rx_, void *buffer, size_t size)
 {
     struct netdev_rx_tunnel *rx = netdev_rx_tunnel_cast(rx_);
     struct netdev_tunnel *netdev =
@@ -262,7 +274,7 @@ netdev_rx_tunnel_recv(struct netdev_rx *rx_, void *buffer, size_t size)
 }
 
 static void
-netdev_rx_tunnel_wait(struct netdev_rx *rx_)
+netdev_tunnel_rx_wait(struct netdev_rx *rx_)
 {
     struct netdev_rx_tunnel *rx = 
     	netdev_rx_tunnel_cast(rx_);
@@ -313,7 +325,7 @@ netdev_tunnel_send_wait(struct netdev *netdev_)
 }
 
 static int
-netdev_rx_tunnel_drain(struct netdev_rx *rx_)
+netdev_tunnel_rx_drain(struct netdev_rx *rx_)
 {
     struct netdev_tunnel *netdev =
         netdev_tunnel_cast(rx_->netdev);
@@ -488,13 +500,13 @@ const struct netdev_class netdev_tunnel_class = {
     NULL,                       /* run */
     NULL,                       /* wait */
 
-    netdev_tunnel_create,
-    netdev_tunnel_destroy,
+    netdev_tunnel_alloc,
+    netdev_tunnel_construct,
+    netdev_tunnel_destruct,
+    netdev_tunnel_dealloc,
     netdev_tunnel_get_config,
     netdev_tunnel_set_config, 
     NULL,			            /* get_tunnel_config */
-
-    netdev_tunnel_rx_open,
 
     netdev_tunnel_send, 
     netdev_tunnel_send_wait,  
@@ -535,14 +547,13 @@ const struct netdev_class netdev_tunnel_class = {
 
     netdev_tunnel_update_flags,
 
-    netdev_tunnel_change_seq
+    netdev_tunnel_change_seq,
+
+    netdev_tunnel_rx_alloc,
+    netdev_tunnel_rx_construct,
+    netdev_tunnel_rx_destruct,
+    netdev_tunnel_rx_dealloc,
+    netdev_tunnel_rx_recv,
+    netdev_tunnel_rx_wait,
+    netdev_tunnel_rx_drain,
 };
-
-
-static const struct netdev_rx_class netdev_rx_tunnel_class = {
-    netdev_rx_tunnel_destroy,
-    netdev_rx_tunnel_recv,
-    netdev_rx_tunnel_wait,
-    netdev_rx_tunnel_drain,
-};
-

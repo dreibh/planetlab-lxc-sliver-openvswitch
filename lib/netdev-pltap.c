@@ -61,8 +61,6 @@ struct netdev_pltap {
     unsigned int change_seq;
 };
 
-static const struct netdev_rx_class netdev_rx_pltap_class;
-
 static struct list sync_list;
 
 struct netdev_rx_pltap {
@@ -74,8 +72,7 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
 static struct shash pltap_netdevs = SHASH_INITIALIZER(&pltap_netdevs);
 
-static int netdev_pltap_create(const struct netdev_class *, const char *,
-                               struct netdev **);
+static int netdev_pltap_construct(struct netdev *netdev_);
 
 static void netdev_pltap_update_seq(struct netdev_pltap *);
 static int get_flags(struct netdev_pltap *dev, enum netdev_flags *flags);
@@ -89,7 +86,7 @@ netdev_pltap_finalized(struct netdev_pltap *dev)
 static bool
 is_netdev_pltap_class(const struct netdev_class *class)
 {
-    return class->create == netdev_pltap_create;
+    return class->construct == netdev_pltap_construct;
 }
 
 static struct netdev_pltap *
@@ -102,7 +99,7 @@ netdev_pltap_cast(const struct netdev *netdev)
 static struct netdev_rx_pltap*
 netdev_rx_pltap_cast(const struct netdev_rx *rx)
 {
-    netdev_rx_assert_class(rx, &netdev_rx_pltap_class);
+    ovs_assert(is_netdev_pltap_class(netdev_get_class(rx->netdev)));
     return CONTAINER_OF(rx, struct netdev_rx_pltap, up);
 }
 
@@ -125,14 +122,18 @@ static void sync_done(struct netdev_pltap *dev)
     dev->sync_flags_needed = false;
 }
 
-static int
-netdev_pltap_create(const struct netdev_class *class OVS_UNUSED, const char *name,
-                    struct netdev **netdevp)
+static struct netdev *
+netdev_pltap_alloc(void)
 {
-    struct netdev_pltap *netdev;
-    int error;
+    struct netdev_pltap *netdev = xzalloc(sizeof *netdev);
+    return &netdev->up;
+}
 
-    netdev = xzalloc(sizeof *netdev);
+static int
+netdev_pltap_construct(struct netdev *netdev_)
+{
+    struct netdev_pltap *netdev = netdev_pltap_cast(netdev_);
+    int error;
 
     netdev->real_name = xzalloc(IFNAMSIZ + 1);
     memset(&netdev->local_addr, 0, sizeof(netdev->local_addr));
@@ -140,6 +141,7 @@ netdev_pltap_create(const struct netdev_class *class OVS_UNUSED, const char *nam
     netdev->valid_local_netmask = false;
     netdev->flags = 0;
     netdev->sync_flags_needed = false;
+    netdev->change_seq = 1;
     list_init(&netdev->sync_list);
 
 
@@ -147,29 +149,24 @@ netdev_pltap_create(const struct netdev_class *class OVS_UNUSED, const char *nam
     netdev->fd = tun_alloc(IFF_TAP, netdev->real_name);
     if (netdev->fd < 0) {
         error = errno;
-        VLOG_WARN("tun_alloc(IFF_TAP, %s) failed: %s", name, ovs_strerror(error));
-        goto cleanup;
+        VLOG_WARN("tun_alloc(IFF_TAP, %s) failed: %s",
+            netdev_get_name(netdev_), ovs_strerror(error));
+        return error;
     }
     VLOG_DBG("real_name = %s", netdev->real_name);
 
     /* Make non-blocking. */
     error = set_nonblocking(netdev->fd);
     if (error) {
-        goto cleanup;
+        return error;
     }
 
-    netdev_init(&netdev->up, name, &netdev_pltap_class);
-    shash_add(&pltap_netdevs, name, netdev);
-    *netdevp = &netdev->up;
+    shash_add(&pltap_netdevs, netdev_get_name(netdev_), netdev);
     return 0;
-
-cleanup:
-    free(netdev);
-    return error;
 }
 
 static void
-netdev_pltap_destroy(struct netdev *netdev_)
+netdev_pltap_destruct(struct netdev *netdev_)
 {
     struct netdev_pltap *netdev = netdev_pltap_cast(netdev_);
 
@@ -180,38 +177,53 @@ netdev_pltap_destroy(struct netdev *netdev_)
 
     shash_find_and_delete(&pltap_netdevs,
                           netdev_get_name(netdev_));
+}
+
+static void
+netdev_pltap_dealloc(struct netdev *netdev_)
+{
+    struct netdev_pltap *netdev = netdev_pltap_cast(netdev_);
     free(netdev);
 }
 
 static int netdev_pltap_up(struct netdev_pltap *dev);
 
-static int
-netdev_pltap_rx_open(struct netdev *netdev_, struct netdev_rx **rxp)
+static struct netdev_rx *
+netdev_pltap_rx_alloc(void)
 {
+    struct netdev_rx_pltap *rx = xzalloc(sizeof *rx);
+    return &rx->up;
+}
+
+static int
+netdev_pltap_rx_construct(struct netdev_rx *rx_)
+{
+    struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
+    struct netdev *netdev_ = rx->up.netdev;
     struct netdev_pltap *netdev =
         netdev_pltap_cast(netdev_);
-    struct netdev_rx_pltap *rx;
-    int err;
+    int error;
 
-    rx = xmalloc(sizeof *rx);
-    netdev_rx_init(&rx->up, netdev_, &netdev_rx_pltap_class);
     rx->fd = netdev->fd;
-    *rxp = &rx->up;
     if (!netdev_pltap_finalized(netdev))
         return 0;
-    err = netdev_pltap_up(netdev);
-    if (err) {
-        free(rx);
-        *rxp = NULL;
-        return err;
+    error = netdev_pltap_up(netdev);
+    if (error) {
+        return error;
     }
     return 0;
 }
 
 static void
-netdev_rx_pltap_destroy(struct netdev_rx *rx_)
+netdev_pltap_rx_destruct(struct netdev_rx *rx_ OVS_UNUSED)
+{
+}
+
+static void
+netdev_pltap_rx_dealloc(struct netdev_rx *rx_)
 {
     struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
+
     free(rx);
 }
 
@@ -451,7 +463,7 @@ netdev_pltap_set_config(struct netdev *dev_, const struct smap *args)
 }
 
 static int
-netdev_rx_pltap_recv(struct netdev_rx *rx_, void *buffer, size_t size)
+netdev_pltap_rx_recv(struct netdev_rx *rx_, void *buffer, size_t size)
 {
     struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
     struct tun_pi pi;
@@ -479,7 +491,7 @@ netdev_rx_pltap_recv(struct netdev_rx *rx_, void *buffer, size_t size)
 }
 
 static void
-netdev_rx_pltap_wait(struct netdev_rx *rx_)
+netdev_pltap_rx_wait(struct netdev_rx *rx_)
 {
     struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
     struct netdev_pltap *netdev =
@@ -531,7 +543,7 @@ netdev_pltap_send_wait(struct netdev *netdev_)
 }
 
 static int
-netdev_rx_pltap_drain(struct netdev_rx *rx_)
+netdev_pltap_rx_drain(struct netdev_rx *rx_)
 {
     struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
     char buffer[128];
@@ -724,23 +736,23 @@ const struct netdev_class netdev_pltap_class = {
     netdev_pltap_run,  
     netdev_pltap_wait,            
 
-    netdev_pltap_create,
-    netdev_pltap_destroy,
+    netdev_pltap_alloc,
+    netdev_pltap_construct,
+    netdev_pltap_destruct,
+    netdev_pltap_dealloc,
     netdev_pltap_get_config,
     netdev_pltap_set_config, 
-    NULL,			/* get_tunnel_config */
-
-    netdev_pltap_rx_open,
+    NULL,			            /* get_tunnel_config */
 
     netdev_pltap_send, 
     netdev_pltap_send_wait,  
 
     netdev_pltap_set_etheraddr,
     netdev_pltap_get_etheraddr,
-    NULL,			/* get_mtu */
-    NULL,			/* set_mtu */
+    NULL,			            /* get_mtu */
+    NULL,			            /* set_mtu */
     NULL,                       /* get_ifindex */
-    NULL,			/* get_carrier */
+    NULL,			            /* get_carrier */
     NULL,                       /* get_carrier_resets */
     NULL,                       /* get_miimon */
     netdev_pltap_get_stats,
@@ -771,13 +783,13 @@ const struct netdev_class netdev_pltap_class = {
 
     netdev_pltap_update_flags,
 
-    netdev_pltap_change_seq
-};
+    netdev_pltap_change_seq,
 
-static const struct netdev_rx_class netdev_rx_pltap_class = {
-    netdev_rx_pltap_destroy,
-    netdev_rx_pltap_recv,
-    netdev_rx_pltap_wait,
-    netdev_rx_pltap_drain,
-
+    netdev_pltap_rx_alloc,
+    netdev_pltap_rx_construct,
+    netdev_pltap_rx_destruct,
+    netdev_pltap_rx_dealloc,
+    netdev_pltap_rx_recv,
+    netdev_pltap_rx_wait,
+    netdev_pltap_rx_drain,
 };
