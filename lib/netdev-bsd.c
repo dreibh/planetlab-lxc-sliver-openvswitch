@@ -50,6 +50,7 @@
 #include "fatal-signal.h"
 #include "ofpbuf.h"
 #include "openflow/openflow.h"
+#include "ovs-thread.h"
 #include "packets.h"
 #include "poll-loop.h"
 #include "socket-util.h"
@@ -72,8 +73,6 @@ struct netdev_rx_bsd {
      * This descriptor will be used for polling operations. */
     int fd;
 };
-
-static const struct netdev_rx_class netdev_rx_bsd_class;
 
 struct netdev_bsd {
     struct netdev up;
@@ -107,11 +106,6 @@ enum {
     VALID_CARRIER = 1 << 5
 };
 
-#if defined(__NetBSD__)
-/* AF_LINK socket used for netdev_bsd_get_stats and set_etheraddr */
-static int af_link_sock = -1;
-#endif /* defined(__NetBSD__) */
-
 #define PCAP_SNAPLEN 2048
 
 
@@ -144,12 +138,16 @@ static int get_ifindex(const struct netdev *, int *ifindexp);
 static int ifr_get_flags(const struct ifreq *);
 static void ifr_set_flags(struct ifreq *, int flags);
 
-static int netdev_bsd_init(void);
+#ifdef __NetBSD__
+static int af_link_ioctl(int command, const void *arg);
+#endif
+
+static void netdev_bsd_run(void);
 
 static bool
 is_netdev_bsd_class(const struct netdev_class *netdev_class)
 {
-    return netdev_class->init == netdev_bsd_init;
+    return netdev_class->run == netdev_bsd_run;
 }
 
 static struct netdev_bsd *
@@ -162,7 +160,7 @@ netdev_bsd_cast(const struct netdev *netdev)
 static struct netdev_rx_bsd *
 netdev_rx_bsd_cast(const struct netdev_rx *rx)
 {
-    netdev_rx_assert_class(rx, &netdev_rx_bsd_class);
+    ovs_assert(is_netdev_bsd_class(netdev_get_class(rx->netdev)));
     return CONTAINER_OF(rx, struct netdev_rx_bsd, up);
 }
 
@@ -170,29 +168,6 @@ static const char *
 netdev_get_kernel_name(const struct netdev *netdev)
 {
     return netdev_bsd_cast(netdev)->kernel_name;
-}
-
-/* Initialize the AF_INET socket used for ioctl operations */
-static int
-netdev_bsd_init(void)
-{
-#if defined(__NetBSD__)
-    static int status = -1;
-
-    if (status >= 0) {  /* already initialized */
-        return status;
-    }
-
-    af_link_sock = socket(AF_LINK, SOCK_DGRAM, 0);
-    status = af_link_sock >= 0 ? 0 : errno;
-    if (status) {
-        VLOG_ERR("failed to create link socket: %s", ovs_strerror(status));
-    }
-
-    return status;
-#else
-    return 0;
-#endif /* defined(__NetBSD__) */
 }
 
 /*
@@ -292,12 +267,17 @@ cache_notifier_unref(void)
     return 0;
 }
 
-/* Allocate a netdev_bsd structure */
-static int
-netdev_bsd_create_system(const struct netdev_class *class, const char *name,
-                  struct netdev **netdevp)
+static struct netdev *
+netdev_bsd_alloc(void)
 {
-    struct netdev_bsd *netdev;
+    struct netdev_bsd *netdev = xzalloc(sizeof *netdev);
+    return &netdev->up;
+}
+
+static int
+netdev_bsd_construct_system(struct netdev *netdev_)
+{
+    struct netdev_bsd *netdev = netdev_bsd_cast(netdev_);
     enum netdev_flags flags;
     int error;
 
@@ -306,34 +286,26 @@ netdev_bsd_create_system(const struct netdev_class *class, const char *name,
         return error;
     }
 
-    netdev = xzalloc(sizeof *netdev);
     netdev->change_seq = 1;
-    netdev_init(&netdev->up, name, class);
     netdev->tap_fd = -1;
-    netdev->kernel_name = xstrdup(name);
+    netdev->kernel_name = xstrdup(netdev_->name);
 
     /* Verify that the netdev really exists by attempting to read its flags */
-    error = netdev_get_flags(&netdev->up, &flags);
+    error = netdev_get_flags(netdev_, &flags);
     if (error == ENXIO) {
         free(netdev->kernel_name);
-        netdev_uninit(&netdev->up, false);
-        free(netdev);
         cache_notifier_unref();
         return error;
     }
 
-    *netdevp = &netdev->up;
     return 0;
 }
 
-/*
- * Allocate a netdev_bsd structure with 'tap' class.
- */
 static int
-netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
-                  struct netdev **netdevp)
+netdev_bsd_construct_tap(struct netdev *netdev_)
 {
-    struct netdev_bsd *netdev = NULL;
+    struct netdev_bsd *netdev = netdev_bsd_cast(netdev_);
+    const char *name = netdev_->name;
     int error = 0;
     struct ifreq ifr;
     char *kernel_name = NULL;
@@ -342,9 +314,6 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
     if (error) {
         goto error;
     }
-
-    /* allocate the device structure and set the internal flag */
-    netdev = xzalloc(sizeof *netdev);
 
     memset(&ifr, 0, sizeof(ifr));
 
@@ -399,24 +368,19 @@ netdev_bsd_create_tap(const struct netdev_class *class, const char *name,
         goto error_unref_notifier;
     }
 
-    /* initialize the device structure and
-     * link the structure to its netdev */
-    netdev_init(&netdev->up, name, class);
     netdev->kernel_name = kernel_name;
-    *netdevp = &netdev->up;
 
     return 0;
 
 error_unref_notifier:
     cache_notifier_unref();
 error:
-    free(netdev);
     free(kernel_name);
     return error;
 }
 
 static void
-netdev_bsd_destroy(struct netdev *netdev_)
+netdev_bsd_destruct(struct netdev *netdev_)
 {
     struct netdev_bsd *netdev = netdev_bsd_cast(netdev_);
 
@@ -429,6 +393,13 @@ netdev_bsd_destroy(struct netdev *netdev_)
         pcap_close(netdev->pcap);
     }
     free(netdev->kernel_name);
+}
+
+static void
+netdev_bsd_dealloc(struct netdev *netdev_)
+{
+    struct netdev_bsd *netdev = netdev_bsd_cast(netdev_);
+
     free(netdev);
 }
 
@@ -501,21 +472,26 @@ error:
     return error;
 }
 
-static int
-netdev_bsd_rx_open(struct netdev *netdev_, struct netdev_rx **rxp)
+static struct netdev_rx *
+netdev_bsd_rx_alloc(void)
 {
+    struct netdev_rx_bsd *rx = xzalloc(sizeof *rx);
+    return &rx->up;
+}
+
+static int
+netdev_bsd_rx_construct(struct netdev_rx *rx_)
+{
+    struct netdev_rx_bsd *rx = netdev_rx_bsd_cast(rx_);
+    struct netdev *netdev_ = rx->up.netdev;
     struct netdev_bsd *netdev = netdev_bsd_cast(netdev_);
 
-    struct netdev_rx_bsd *rx;
-    pcap_t *pcap;
-    int fd;
-
     if (!strcmp(netdev_get_type(netdev_), "tap")) {
-        pcap = NULL;
-        fd = netdev->tap_fd;
+        rx->pcap_handle = NULL;
+        rx->fd = netdev->tap_fd;
     } else {
         int error = netdev_bsd_open_pcap(netdev_get_kernel_name(netdev_),
-                                         &pcap, &fd);
+                                         &rx->pcap_handle, &rx->fd);
         if (error) {
             return error;
         }
@@ -523,23 +499,24 @@ netdev_bsd_rx_open(struct netdev *netdev_, struct netdev_rx **rxp)
         netdev_bsd_changed(netdev);
     }
 
-    rx = xmalloc(sizeof *rx);
-    netdev_rx_init(&rx->up, netdev_, &netdev_rx_bsd_class);
-    rx->pcap_handle = pcap;
-    rx->fd = fd;
-
-    *rxp = &rx->up;
     return 0;
 }
 
 static void
-netdev_rx_bsd_destroy(struct netdev_rx *rx_)
+netdev_bsd_rx_destruct(struct netdev_rx *rx_)
 {
     struct netdev_rx_bsd *rx = netdev_rx_bsd_cast(rx_);
 
     if (rx->pcap_handle) {
         pcap_close(rx->pcap_handle);
     }
+}
+
+static void
+netdev_bsd_rx_dealloc(struct netdev_rx *rx_)
+{
+    struct netdev_rx_bsd *rx = netdev_rx_bsd_cast(rx_);
+
     free(rx);
 }
 
@@ -638,9 +615,8 @@ netdev_rx_bsd_recv_tap(struct netdev_rx_bsd *rx, void *data, size_t size)
     }
 }
 
-
 static int
-netdev_rx_bsd_recv(struct netdev_rx *rx_, void *data, size_t size)
+netdev_bsd_rx_recv(struct netdev_rx *rx_, void *data, size_t size)
 {
     struct netdev_rx_bsd *rx = netdev_rx_bsd_cast(rx_);
 
@@ -654,7 +630,7 @@ netdev_rx_bsd_recv(struct netdev_rx *rx_, void *data, size_t size)
  * when a packet is ready to be received with netdev_rx_recv() on 'rx'.
  */
 static void
-netdev_rx_bsd_wait(struct netdev_rx *rx_)
+netdev_bsd_rx_wait(struct netdev_rx *rx_)
 {
     struct netdev_rx_bsd *rx = netdev_rx_bsd_cast(rx_);
 
@@ -663,7 +639,7 @@ netdev_rx_bsd_wait(struct netdev_rx *rx_)
 
 /* Discards all packets waiting to be received from 'rx'. */
 static int
-netdev_rx_bsd_drain(struct netdev_rx *rx_)
+netdev_bsd_rx_drain(struct netdev_rx *rx_)
 {
     struct ifreq ifr;
     struct netdev_rx_bsd *rx = netdev_rx_bsd_cast(rx_);
@@ -931,19 +907,16 @@ netdev_bsd_get_stats(const struct netdev *netdev_, struct netdev_stats *stats)
     return 0;
 #elif defined(__NetBSD__)
     struct ifdatareq ifdr;
-    int saved_errno;
-    int ret;
+    int error;
 
     memset(&ifdr, 0, sizeof(ifdr));
     strncpy(ifdr.ifdr_name, netdev_get_kernel_name(netdev_),
             sizeof(ifdr.ifdr_name));
-    ret = ioctl(af_link_sock, SIOCGIFDATA, &ifdr);
-    saved_errno = errno;
-    if (ret == -1) {
-        return saved_errno;
+    error = af_link_ioctl(SIOCGIFDATA, &ifdr);
+    if (!error) {
+        convert_stats(stats, &ifdr.ifdr_data);
     }
-    convert_stats(stats, &ifdr.ifdr_data);
-    return 0;
+    return error;
 #else
 #error not implemented
 #endif
@@ -1402,16 +1375,16 @@ netdev_bsd_change_seq(const struct netdev *netdev)
 const struct netdev_class netdev_bsd_class = {
     "system",
 
-    netdev_bsd_init,
+    NULL, /* init */
     netdev_bsd_run,
     netdev_bsd_wait,
-    netdev_bsd_create_system,
-    netdev_bsd_destroy,
+    netdev_bsd_alloc,
+    netdev_bsd_construct_system,
+    netdev_bsd_destruct,
+    netdev_bsd_dealloc,
     NULL, /* get_config */
     NULL, /* set_config */
     NULL, /* get_tunnel_config */
-
-    netdev_bsd_rx_open,
 
     netdev_bsd_send,
     netdev_bsd_send_wait,
@@ -1451,22 +1424,30 @@ const struct netdev_class netdev_bsd_class = {
 
     netdev_bsd_update_flags,
 
-    netdev_bsd_change_seq
+    netdev_bsd_change_seq,
+
+    netdev_bsd_rx_alloc,
+    netdev_bsd_rx_construct,
+    netdev_bsd_rx_destruct,
+    netdev_bsd_rx_dealloc,
+    netdev_bsd_rx_recv,
+    netdev_bsd_rx_wait,
+    netdev_bsd_rx_drain,
 };
 
 const struct netdev_class netdev_tap_class = {
     "tap",
 
-    netdev_bsd_init,
+    NULL, /* init */
     netdev_bsd_run,
     netdev_bsd_wait,
-    netdev_bsd_create_tap,
-    netdev_bsd_destroy,
+    netdev_bsd_alloc,
+    netdev_bsd_construct_tap,
+    netdev_bsd_destruct,
+    netdev_bsd_dealloc,
     NULL, /* get_config */
     NULL, /* set_config */
     NULL, /* get_tunnel_config */
-
-    netdev_bsd_rx_open,
 
     netdev_bsd_send,
     netdev_bsd_send_wait,
@@ -1506,14 +1487,15 @@ const struct netdev_class netdev_tap_class = {
 
     netdev_bsd_update_flags,
 
-    netdev_bsd_change_seq
-};
+    netdev_bsd_change_seq,
 
-static const struct netdev_rx_class netdev_rx_bsd_class = {
-    netdev_rx_bsd_destroy,
-    netdev_rx_bsd_recv,
-    netdev_rx_bsd_wait,
-    netdev_rx_bsd_drain,
+    netdev_bsd_rx_alloc,
+    netdev_bsd_rx_construct,
+    netdev_bsd_rx_destruct,
+    netdev_bsd_rx_dealloc,
+    netdev_bsd_rx_recv,
+    netdev_bsd_rx_wait,
+    netdev_bsd_rx_drain,
 };
 
 
@@ -1625,7 +1607,7 @@ set_etheraddr(const char *netdev_name OVS_UNUSED, int hwaddr_family OVS_UNUSED,
     struct if_laddrreq req;
     struct sockaddr_dl *sdl;
     struct sockaddr_storage oldaddr;
-    int ret;
+    int error;
 
     /*
      * get the old address, add new one, and then remove old one.
@@ -1641,9 +1623,10 @@ set_etheraddr(const char *netdev_name OVS_UNUSED, int hwaddr_family OVS_UNUSED,
     req.addr.ss_family = hwaddr_family;
     sdl = (struct sockaddr_dl *)&req.addr;
     sdl->sdl_alen = hwaddr_len;
-    ret = ioctl(af_link_sock, SIOCGLIFADDR, &req);
-    if (ret == -1) {
-        return errno;
+
+    error = af_link_ioctl(SIOCGLIFADDR, &req);
+    if (error) {
+        return error;
     }
     if (!memcmp(&sdl->sdl_data[sdl->sdl_nlen], mac, hwaddr_len)) {
         return 0;
@@ -1658,19 +1641,15 @@ set_etheraddr(const char *netdev_name OVS_UNUSED, int hwaddr_family OVS_UNUSED,
     sdl->sdl_alen = hwaddr_len;
     sdl->sdl_family = hwaddr_family;
     memcpy(sdl->sdl_data, mac, hwaddr_len);
-    ret = ioctl(af_link_sock, SIOCALIFADDR, &req);
-    if (ret == -1) {
-        return errno;
+    error = af_link_ioctl(SIOCALIFADDR, &req);
+    if (error) {
+        return error;
     }
 
     memset(&req, 0, sizeof(req));
     strncpy(req.iflr_name, netdev_name, sizeof(req.iflr_name));
     req.addr = oldaddr;
-    ret = ioctl(af_link_sock, SIOCDLIFADDR, &req);
-    if (ret == -1) {
-        return errno;
-    }
-    return 0;
+    return af_link_ioctl(SIOCDLIFADDR, &req);
 #else
 #error not implemented
 #endif
@@ -1693,4 +1672,26 @@ ifr_set_flags(struct ifreq *ifr, int flags)
 #ifdef HAVE_STRUCT_IFREQ_IFR_FLAGSHIGH
     ifr->ifr_flagshigh = flags >> 16;
 #endif
+}
+
+/* Calls ioctl() on an AF_LINK sock, passing the specified 'command' and
+ * 'arg'.  Returns 0 if successful, otherwise a positive errno value. */
+int
+af_link_ioctl(int command, const void *arg)
+{
+    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
+    static int sock;
+
+    if (ovsthread_once_start(&once)) {
+        sock = socket(AF_LINK, SOCK_DGRAM, 0);
+        if (sock < 0) {
+            sock = -errno;
+            VLOG_ERR("failed to create link socket: %s", ovs_strerror(errno));
+        }
+        ovsthread_once_done(&once);
+    }
+
+    return (sock < 0 ? -sock
+            : ioctl(sock, command, arg) == -1 ? errno
+            : 0);
 }
