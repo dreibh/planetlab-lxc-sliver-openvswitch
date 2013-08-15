@@ -70,8 +70,6 @@ struct netdev_rx_pltap {
     int fd;
 };
 
-static int af_inet_sock = -1;
-
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
 static struct shash pltap_netdevs = SHASH_INITIALIZER(&pltap_netdevs);
@@ -567,16 +565,13 @@ get_etheraddr(struct netdev_pltap *dev, uint8_t ea[ETH_ADDR_LEN])
 {
     struct ifreq ifr;
     int hwaddr_family;
+    int error;
 
     memset(&ifr, 0, sizeof ifr);
     ovs_strzcpy(ifr.ifr_name, dev->real_name, sizeof ifr.ifr_name);
-    if (ioctl(af_inet_sock, SIOCGIFHWADDR, &ifr) < 0) {
-        /* ENODEV probably means that a vif disappeared asynchronously and
-         * hasn't been removed from the database yet, so reduce the log level
-         * to INFO for that case. */
-        VLOG(errno == ENODEV ? VLL_INFO : VLL_ERR,
-             "ioctl(SIOCGIFHWADDR) on %s device failed: %s",
-             dev->real_name, ovs_strerror(errno));
+    error = af_inet_ifreq_ioctl(dev->real_name, &ifr,
+        SIOCGIFHWADDR, "SIOCGIFHWADDR");
+    if (error) {
         return errno;
     }
     hwaddr_family = ifr.ifr_hwaddr.sa_family;
@@ -592,11 +587,13 @@ static int
 get_flags(struct netdev_pltap *dev, enum netdev_flags *flags)
 {
     struct ifreq ifr;
+    int error;
 
-    memset(&ifr, 0, sizeof ifr);
-    ovs_strzcpy(ifr.ifr_name, dev->real_name, sizeof ifr.ifr_name);
-    if (ioctl(af_inet_sock, SIOCGIFFLAGS, &ifr) < 0)
-    	return errno;
+    error = af_inet_ifreq_ioctl(dev->real_name, &ifr,
+        SIOCGIFFLAGS, "SIOCGIFFLAGS");
+    if (error) {
+        return error;
+    }
     *flags = 0;
     if (ifr.ifr_flags & IFF_UP)
     	*flags |= NETDEV_UP;
@@ -698,10 +695,6 @@ static int
 netdev_pltap_init(void)
 {
     list_init(&sync_list);
-    af_inet_sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (af_inet_sock < 0) {
-        VLOG_ERR("failed to create inet socket: %s", ovs_strerror(errno));
-    }
     unixctl_command_register("netdev-pltap/get-tapname", "port",
                              1, 1, netdev_pltap_get_real_name, NULL);
     return 0;
