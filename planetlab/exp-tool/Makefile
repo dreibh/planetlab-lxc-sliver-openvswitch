@@ -395,6 +395,21 @@ cache/endpoint.%: cache/host.$$(call rget,%) cache/port.$$(call opp,%) cache/ifa
 			$$(cat cache/port.$(call opp,$(*F))) 2> $(call log,$@)
 	@touch $@
 
+
+######################
+# testing
+######################
+
+test: $(foreach l,$(LINKS),test-$(l))
+
+test-%: ping-% ping-$$(call get,$$*@2)$(SEP)$$(call get,$$*@1)
+	@true
+
+ping-%: FORCE
+	@echo "Testing connectivity $(call get,$*@1) ===> $(call get,$*@2) - logs in $(call log,$@)"
+	@$(SSH) $(call solve,$(call get,$*@1)) ping -c 1 $(call solve_ip_addr,$(call get,$*@2)) > $(call log,$@) 2>&1
+	@echo "Connectivity $(call get,$*@1) ===> $(call get,$*@2) OK"
+
 ####################
 CLEANTARGETS=$(addprefix del-,$(notdir $(wildcard cache/bridge.*)))
 clean: $(CLEANTARGETS)
@@ -577,6 +592,9 @@ $(foreach host,$(EXTERNAL_HOSTS),del-bridge.$(host)): del-bridge.%: | cache/db.%
 	      cache/endpoint.$*$(SEP)*@?  cache/endpoint.*$(SEP)$*@?  \
 	      L/$*$(SEP)*	      L/*$(SEP)$* \
 	      cache/controller.$*
+
+$(foreach link,$(EXTERNAL_LINKS),ping-$(call get,$(link)@2)$(SEP)$(call get,$(link)@1)): ping-%: FORCE
+	@echo "Test from external host $(call get,$*@1) to $(call get,$*@2) skipped"
 
 # we assume that a program called tunproxy is available on the
 # external nodes.  
