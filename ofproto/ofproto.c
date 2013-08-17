@@ -21,6 +21,7 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include "bitmap.h"
 #include "byte-order.h"
 #include "classifier.h"
@@ -229,6 +230,7 @@ static size_t n_ofproto_classes;
 static size_t allocated_ofproto_classes;
 
 unsigned flow_eviction_threshold = OFPROTO_FLOW_EVICTION_THRESHOLD_DEFAULT;
+unsigned n_handler_threads;
 enum ofproto_flow_miss_model flow_miss_model = OFPROTO_HANDLE_MISS_AUTO;
 
 /* Map from datapath name to struct ofproto, for use by unixctl commands. */
@@ -625,6 +627,18 @@ ofproto_set_mac_table_config(struct ofproto *ofproto, unsigned idle_time,
     if (ofproto->ofproto_class->set_mac_table_config) {
         ofproto->ofproto_class->set_mac_table_config(ofproto, idle_time,
                                                      max_entries);
+    }
+}
+
+/* Sets number of upcall handler threads.  The default is
+ * (number of online cores - 1). */
+void
+ofproto_set_n_handler_threads(unsigned limit)
+{
+    if (limit) {
+        n_handler_threads = limit;
+    } else {
+        n_handler_threads = MAX(1, sysconf(_SC_NPROCESSORS_ONLN) - 1);
     }
 }
 
@@ -3345,7 +3359,6 @@ add_flow(struct ofproto *ofproto, struct ofconn *ofconn,
     struct rule *victim;
     struct rule *rule;
     uint8_t table_id;
-    bool overlaps;
     int error;
 
     error = check_table_id(ofproto, fm->table_id);
@@ -3402,13 +3415,18 @@ add_flow(struct ofproto *ofproto, struct ofconn *ofconn,
     }
 
     /* Check for overlap, if requested. */
-    ovs_rwlock_rdlock(&table->cls.rwlock);
-    overlaps = classifier_rule_overlaps(&table->cls, &rule->cr);
-    ovs_rwlock_unlock(&table->cls.rwlock);
-    if (fm->flags & OFPFF_CHECK_OVERLAP && overlaps) {
-        cls_rule_destroy(&rule->cr);
-        ofproto->ofproto_class->rule_dealloc(rule);
-        return OFPERR_OFPFMFC_OVERLAP;
+    if (fm->flags & OFPFF_CHECK_OVERLAP) {
+        bool overlaps;
+
+        ovs_rwlock_rdlock(&table->cls.rwlock);
+        overlaps = classifier_rule_overlaps(&table->cls, &rule->cr);
+        ovs_rwlock_unlock(&table->cls.rwlock);
+
+        if (overlaps) {
+            cls_rule_destroy(&rule->cr);
+            ofproto->ofproto_class->rule_dealloc(rule);
+            return OFPERR_OFPFMFC_OVERLAP;
+        }
     }
 
     /* FIXME: Implement OFPFF12_RESET_COUNTS */

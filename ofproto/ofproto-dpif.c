@@ -75,8 +75,6 @@ COVERAGE_DEFINE(subfacet_install_fail);
 COVERAGE_DEFINE(packet_in_overflow);
 COVERAGE_DEFINE(flow_mod_overflow);
 
-#define N_THREADS 16
-
 /* Number of implemented OpenFlow tables. */
 enum { N_TABLES = 255 };
 enum { TBL_INTERNAL = N_TABLES - 1 };    /* Used for internal hidden rules. */
@@ -431,6 +429,9 @@ struct dpif_backer {
     /* Number of subfacets added or deleted from 'created' to 'last_minute.' */
     unsigned long long int total_subfacet_add_count;
     unsigned long long int total_subfacet_del_count;
+
+    /* Number of upcall handling threads. */
+    unsigned int n_handler_threads;
 };
 
 /* All existing ofproto_backer instances, indexed by ofproto->up.type. */
@@ -559,6 +560,8 @@ ofproto_dpif_flow_mod(struct ofproto_dpif *ofproto,
     ovs_mutex_unlock(&ofproto->flow_mod_mutex);
 }
 
+/* Appends 'pin' to the queue of "packet ins" to be sent to the controller.
+ * Takes ownership of 'pin' and pin->packet. */
 void
 ofproto_dpif_send_packet_in(struct ofproto_dpif *ofproto,
                             struct ofputil_packet_in *pin)
@@ -700,9 +703,18 @@ type_run(const char *type)
             VLOG_ERR("Failed to enable receiving packets in dpif.");
             return error;
         }
-        udpif_recv_set(backer->udpif, N_THREADS, backer->recv_set_enable);
+        udpif_recv_set(backer->udpif, n_handler_threads,
+                       backer->recv_set_enable);
         dpif_flow_flush(backer->dpif);
         backer->need_revalidate = REV_RECONFIGURE;
+    }
+
+    /* If the n_handler_threads is reconfigured, call udpif_recv_set()
+     * to reset the handler threads. */
+    if (backer->n_handler_threads != n_handler_threads) {
+        udpif_recv_set(backer->udpif, n_handler_threads,
+                       backer->recv_set_enable);
+        backer->n_handler_threads = n_handler_threads;
     }
 
     if (backer->need_revalidate) {
@@ -1051,6 +1063,8 @@ type_wait(const char *type)
     }
 
     timer_wait(&backer->next_expiration);
+    dpif_wait(backer->dpif);
+    udpif_wait(backer->udpif);
 }
 
 /* Basic life-cycle. */
@@ -1209,7 +1223,9 @@ open_dpif_backer(const char *type, struct dpif_backer **backerp)
         close_dpif_backer(backer);
         return error;
     }
-    udpif_recv_set(backer->udpif, N_THREADS, backer->recv_set_enable);
+    udpif_recv_set(backer->udpif, n_handler_threads,
+                   backer->recv_set_enable);
+    backer->n_handler_threads = n_handler_threads;
 
     backer->max_n_subfacet = 0;
     backer->created = time_msec();
@@ -1404,7 +1420,7 @@ destruct(struct ofproto *ofproto_)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
     struct rule_dpif *rule, *next_rule;
-    struct ofputil_flow_mod *pin, *next_pin;
+    struct ofputil_packet_in *pin, *next_pin;
     struct ofputil_flow_mod *fm, *next_fm;
     struct oftable *table;
 
@@ -1441,7 +1457,7 @@ destruct(struct ofproto *ofproto_)
     LIST_FOR_EACH_SAFE (pin, next_pin, list_node, &ofproto->pins) {
         list_remove(&pin->list_node);
         ofproto->n_pins--;
-        free(pin->ofpacts);
+        free(CONST_CAST(void *, pin->packet));
         free(pin);
     }
     ovs_mutex_unlock(&ofproto->pin_mutex);
@@ -1625,8 +1641,6 @@ wait(struct ofproto *ofproto_)
         return;
     }
 
-    dpif_wait(ofproto->backer->dpif);
-    udpif_wait(ofproto->backer->udpif);
     if (ofproto->sflow) {
         dpif_sflow_wait(ofproto->sflow);
     }
