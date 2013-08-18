@@ -604,3 +604,13 @@ $(foreach link,$(EXTERNAL_LINKS),cache/endpoint.$(link)@2): cache/endpoint.%@2: 
 	   ./tunproxy -t $$(cat cache/host.$(call leftnode,$*)):$$(cat cache/port.$*@1) \
            -p $(call default,EXTERNAL_PORT,$(call rightnode,$*)) -e -d
 
+# reporting
+.PHONY: report
+report:	
+	@echo SHELL=$(SHELL)
+	@echo "===> Configuration ($(CONF)):"
+	@cat $(CONF)
+	@for f in log/*; do \
+	     echo "===> Log file $$(basename $$f):"; \
+	     cat $$f; \
+	 done
