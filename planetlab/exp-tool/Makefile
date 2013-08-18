@@ -173,7 +173,7 @@ cache/status.%: FORCE
 
 cache/host.%:
 	@echo "IP lookup for $(call display,$*)"
-	@host $(HOST_$*) | sed -n 's/^.*has address *//p' > $@
+	@host $(HOST_$*) | sed -n '/^.*has address */{s///p;q}' > $@
 
 cache/db.%:
 	@echo "Starting db server on $(call display,$*) - logs in $(call log,$@)"
