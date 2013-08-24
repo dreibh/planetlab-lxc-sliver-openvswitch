@@ -106,7 +106,7 @@ netdev_tunnel_construct(struct netdev *netdev_)
 
     atomic_add(&next_n, 1, &n);
 
-    ovs_mutex_init(&netdev->mutex, PTHREAD_MUTEX_NORMAL);
+    ovs_mutex_init(&netdev->mutex);
     netdev->hwaddr[0] = 0xfe;
     netdev->hwaddr[1] = 0xff;
     netdev->hwaddr[2] = 0xff;

@@ -153,7 +153,7 @@ netdev_pltap_construct(struct netdev *netdev_)
     struct netdev_pltap *netdev = netdev_pltap_cast(netdev_);
     int error;
 
-    ovs_mutex_init(&netdev->mutex, PTHREAD_MUTEX_NORMAL);
+    ovs_mutex_init(&netdev->mutex);
     netdev->real_name = xzalloc(IFNAMSIZ + 1);
     memset(&netdev->local_addr, 0, sizeof(netdev->local_addr));
     netdev->valid_local_ip = false;
