@@ -280,6 +280,7 @@ dpif_sflow_clear__(struct dpif_sflow *ds) OVS_REQUIRES(mutex)
 {
     if (ds->sflow_agent) {
         sfl_agent_release(ds->sflow_agent);
+        free(ds->sflow_agent);
         ds->sflow_agent = NULL;
     }
     collectors_destroy(ds->collectors);
@@ -317,7 +318,7 @@ dpif_sflow_create(void)
     struct dpif_sflow *ds;
 
     if (ovsthread_once_start(&once)) {
-        ovs_mutex_init(&mutex, PTHREAD_MUTEX_RECURSIVE);
+        ovs_mutex_init_recursive(&mutex);
         ovsthread_once_done(&once);
     }
 

@@ -128,7 +128,9 @@ netdev_run(void)
 
     ovs_rwlock_rdlock(&netdev_class_rwlock);
     HMAP_FOR_EACH (rc, hmap_node, &netdev_classes) {
-        rc->class->run();
+        if (rc->class->run) {
+            rc->class->run();
+        }
     }
     ovs_rwlock_unlock(&netdev_class_rwlock);
 }
@@ -145,7 +147,9 @@ netdev_wait(void)
 
     ovs_rwlock_rdlock(&netdev_class_rwlock);
     HMAP_FOR_EACH (rc, hmap_node, &netdev_classes) {
-        rc->class->wait();
+        if (rc->class->wait) {
+            rc->class->wait();
+        }
     }
     ovs_rwlock_unlock(&netdev_class_rwlock);
 }

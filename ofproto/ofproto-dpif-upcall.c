@@ -123,9 +123,9 @@ udpif_create(struct dpif_backer *backer, struct dpif *dpif)
     list_init(&udpif->upcalls);
     list_init(&udpif->fmbs);
     atomic_init(&udpif->reval_seq, 0);
-    ovs_mutex_init(&udpif->drop_key_mutex, PTHREAD_MUTEX_NORMAL);
-    ovs_mutex_init(&udpif->upcall_mutex, PTHREAD_MUTEX_NORMAL);
-    ovs_mutex_init(&udpif->fmb_mutex, PTHREAD_MUTEX_NORMAL);
+    ovs_mutex_init(&udpif->drop_key_mutex);
+    ovs_mutex_init(&udpif->upcall_mutex);
+    ovs_mutex_init(&udpif->fmb_mutex);
 
     return udpif;
 }
@@ -219,7 +219,7 @@ udpif_recv_set(struct udpif *udpif, size_t n_handlers, bool enable)
             handler->udpif = udpif;
             list_init(&handler->upcalls);
             xpthread_cond_init(&handler->wake_cond, NULL);
-            ovs_mutex_init(&handler->mutex, PTHREAD_MUTEX_NORMAL);
+            ovs_mutex_init(&handler->mutex);
             xpthread_create(&handler->thread, NULL, udpif_miss_handler, handler);
         }
         xpthread_create(&udpif->dispatcher, NULL, udpif_dispatcher, udpif);
@@ -554,30 +554,30 @@ recv_upcalls(struct udpif *udpif)
                     }
                 }
             }
-           hash =  mhash_finish(hash, n_bytes);
+            hash =  mhash_finish(hash, n_bytes);
 
-           handler = &udpif->handlers[hash % udpif->n_handlers];
+            handler = &udpif->handlers[hash % udpif->n_handlers];
 
-           ovs_mutex_lock(&handler->mutex);
-           if (handler->n_upcalls < MAX_QUEUE_LENGTH) {
-               list_push_back(&handler->upcalls, &upcall->list_node);
-               handler->n_upcalls++;
-               xpthread_cond_signal(&handler->wake_cond);
-               ovs_mutex_unlock(&handler->mutex);
-               if (!VLOG_DROP_DBG(&rl)) {
-                   struct ds ds = DS_EMPTY_INITIALIZER;
+            ovs_mutex_lock(&handler->mutex);
+            if (handler->n_upcalls < MAX_QUEUE_LENGTH) {
+                list_push_back(&handler->upcalls, &upcall->list_node);
+                handler->n_upcalls++;
+                xpthread_cond_signal(&handler->wake_cond);
+                ovs_mutex_unlock(&handler->mutex);
+                if (!VLOG_DROP_DBG(&rl)) {
+                    struct ds ds = DS_EMPTY_INITIALIZER;
 
-                   odp_flow_key_format(upcall->dpif_upcall.key,
-                                       upcall->dpif_upcall.key_len,
-                                       &ds);
-                   VLOG_DBG("dispatcher: miss enqueue (%s)", ds_cstr(&ds));
-                   ds_destroy(&ds);
-               }
-           } else {
-               ovs_mutex_unlock(&handler->mutex);
-               COVERAGE_INC(miss_queue_overflow);
-               upcall_destroy(upcall);
-           }
+                    odp_flow_key_format(upcall->dpif_upcall.key,
+                                        upcall->dpif_upcall.key_len,
+                                        &ds);
+                    VLOG_DBG("dispatcher: miss enqueue (%s)", ds_cstr(&ds));
+                    ds_destroy(&ds);
+                }
+            } else {
+                ovs_mutex_unlock(&handler->mutex);
+                COVERAGE_INC(miss_queue_overflow);
+                upcall_destroy(upcall);
+            }
         } else {
             ovs_mutex_lock(&udpif->upcall_mutex);
             if (udpif->n_upcalls < MAX_QUEUE_LENGTH) {

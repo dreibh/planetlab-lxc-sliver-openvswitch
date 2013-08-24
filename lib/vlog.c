@@ -74,6 +74,7 @@ extern struct vlog_module *__stop_vlog_modules[];
 #include "vlog-modules.def"
 #undef VLOG_MODULE
 
+extern struct vlog_module *vlog_modules[];
 struct vlog_module *vlog_modules[] = {
 #define VLOG_MODULE(NAME) &VLM_##NAME,
 #include "vlog-modules.def"
@@ -106,7 +107,7 @@ DEFINE_STATIC_PER_THREAD_DATA(unsigned int, msg_num, 0);
  *
  * All of the following is protected by 'log_file_mutex', which nests inside
  * pattern_rwlock. */
-static struct ovs_mutex log_file_mutex = OVS_ADAPTIVE_MUTEX_INITIALIZER;
+static struct ovs_mutex log_file_mutex = OVS_MUTEX_INITIALIZER;
 static char *log_file_name OVS_GUARDED_BY(log_file_mutex);
 static int log_fd OVS_GUARDED_BY(log_file_mutex) = -1;
 static struct async_append *log_writer OVS_GUARDED_BY(log_file_mutex);

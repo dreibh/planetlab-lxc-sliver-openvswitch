@@ -1,5 +1,7 @@
 post-v1.12.0
 ---------------------
+    - OpenFlow:
+      * Support matching, rewriting SCTP ports
 
 
 v1.12.0 - xx xxx xxxx
@@ -25,6 +27,7 @@ v1.12.0 - xx xxx xxxx
     - Support for Linux kernels up to 3.10
     - ovs-ofctl:
       * New "ofp-parse" for printing OpenFlow messages read from a file.
+    - Added configurable flow caching support to IPFIX exporter.
 
 
 v1.11.0 - xx xxx xxxx

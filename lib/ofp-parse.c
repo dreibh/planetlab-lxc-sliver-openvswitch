@@ -132,7 +132,7 @@ str_to_u64(const char *str, uint64_t *valuep)
 static char * WARN_UNUSED_RESULT
 str_to_be64(const char *str, ovs_be64 *valuep)
 {
-    uint64_t value;
+    uint64_t value = 0;
     char *error;
 
     error = str_to_u64(str, &value);
@@ -246,7 +246,7 @@ parse_resubmit(char *arg, struct ofpbuf *ofpacts)
 
     table_s = strsep(&arg, ",");
     if (table_s && table_s[0]) {
-        uint32_t table_id;
+        uint32_t table_id = 0;
         char *error;
 
         error = str_to_u32(table_s, &table_id);
@@ -598,10 +598,10 @@ parse_named_action(enum ofputil_action_code code,
     size_t orig_size = ofpacts->size;
     struct ofpact_tunnel *tunnel;
     char *error = NULL;
-    uint16_t ethertype;
-    uint16_t vid;
-    uint8_t pcp;
-    uint8_t tos;
+    uint16_t ethertype = 0;
+    uint16_t vid = 0;
+    uint8_t tos = 0;
+    uint8_t pcp = 0;
 
     switch (code) {
     case OFPUTIL_ACTION_INVALID:
@@ -1034,11 +1034,13 @@ parse_protocol(const char *name, const struct protocol **p_out)
         { "icmp", ETH_TYPE_IP, IPPROTO_ICMP },
         { "tcp", ETH_TYPE_IP, IPPROTO_TCP },
         { "udp", ETH_TYPE_IP, IPPROTO_UDP },
+        { "sctp", ETH_TYPE_IP, IPPROTO_SCTP },
         { "ipv6", ETH_TYPE_IPV6, 0 },
         { "ip6", ETH_TYPE_IPV6, 0 },
         { "icmp6", ETH_TYPE_IPV6, IPPROTO_ICMPV6 },
         { "tcp6", ETH_TYPE_IPV6, IPPROTO_TCP },
         { "udp6", ETH_TYPE_IPV6, IPPROTO_UDP },
+        { "sctp6", ETH_TYPE_IPV6, IPPROTO_SCTP },
         { "rarp", ETH_TYPE_RARP, 0},
         { "mpls", ETH_TYPE_MPLS, 0 },
         { "mplsm", ETH_TYPE_MPLS_MCAST, 0 },
@@ -1184,7 +1186,7 @@ parse_ofp_str__(struct ofputil_flow_mod *fm, int command, char *string)
                                       value);
                 }
             } else if (fields & F_PRIORITY && !strcmp(name, "priority")) {
-                uint16_t priority;
+                uint16_t priority = 0;
 
                 error = str_to_u16(value, name, &priority);
                 fm->priority = priority;

@@ -101,8 +101,8 @@ struct sw_flow_key {
 			} addr;
 			union {
 				struct {
-					__be16 src;		/* TCP/UDP source port. */
-					__be16 dst;		/* TCP/UDP destination port. */
+					__be16 src;		/* TCP/UDP/SCTP source port. */
+					__be16 dst;		/* TCP/UDP/SCTP destination port. */
 				} tp;
 				struct {
 					u8 sha[ETH_ALEN];	/* ARP source hardware address. */
@@ -117,8 +117,8 @@ struct sw_flow_key {
 			} addr;
 			__be32 label;			/* IPv6 flow label. */
 			struct {
-				__be16 src;		/* TCP/UDP source port. */
-				__be16 dst;		/* TCP/UDP destination port. */
+				__be16 src;		/* TCP/UDP/SCTP source port. */
+				__be16 dst;		/* TCP/UDP/SCTP destination port. */
 			} tp;
 			struct {
 				struct in6_addr target;	/* ND target address. */
@@ -245,7 +245,7 @@ int ovs_ipv4_tun_to_nlattr(struct sk_buff *skb,
 			   const struct ovs_key_ipv4_tunnel *output);
 
 bool ovs_flow_cmp_unmasked_key(const struct sw_flow *flow,
-		const struct sw_flow_key *key, int key_len);
+		const struct sw_flow_key *key, int key_end);
 
 struct sw_flow_mask {
 	int ref_count;

@@ -74,6 +74,10 @@ ofp_packet_to_string(const void *data, size_t len)
             struct udp_header *uh = buf.l4;
             ds_put_format(&ds, " udp_csum:%"PRIx16,
                           ntohs(uh->udp_csum));
+        } else if (flow.nw_proto == IPPROTO_SCTP) {
+            struct sctp_header *sh = buf.l4;
+            ds_put_format(&ds, " sctp_csum:%"PRIx32,
+                          ntohl(sh->sctp_csum));
         }
     }
 
@@ -649,6 +653,8 @@ ofp10_match_to_string(const struct ofp10_match *om, int verbosity)
                     ds_put_cstr(&f, "tcp,");
                 } else if (om->nw_proto == IPPROTO_UDP) {
                     ds_put_cstr(&f, "udp,");
+                } else if (om->nw_proto == IPPROTO_SCTP) {
+                    ds_put_cstr(&f, "sctp,");
                 } else {
                     ds_put_cstr(&f, "ip,");
                     skip_proto = false;
@@ -1106,13 +1112,9 @@ ofputil_meter_capabilities_to_name(uint32_t bit)
 static const char *
 ofputil_meter_band_types_to_name(uint32_t bit)
 {
-    /*
-     * Note: Meter band types start from 1.  We assume that the lowest bit
-     * in the band_types corresponds to DROP band type (1).
-     */
     switch (bit) {
-    case 1 << (OFPMBT13_DROP - 1):          return "drop";
-    case 1 << (OFPMBT13_DSCP_REMARK - 1):   return "dscp_remark";
+    case 1 << OFPMBT13_DROP:          return "drop";
+    case 1 << OFPMBT13_DSCP_REMARK:   return "dscp_remark";
     }
 
     return NULL;

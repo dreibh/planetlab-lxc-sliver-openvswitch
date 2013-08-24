@@ -248,7 +248,7 @@ open_dpif(const struct dpif_linux_dp *dp, struct dpif **dpifp)
 
     dpif = xzalloc(sizeof *dpif);
     dpif->port_notifier = NULL;
-    ovs_mutex_init(&dpif->upcall_lock, PTHREAD_MUTEX_DEFAULT);
+    ovs_mutex_init(&dpif->upcall_lock);
     dpif->epoll_fd = -1;
 
     dpif_init(&dpif->dpif, &dpif_linux_class, dp->name,
@@ -655,10 +655,10 @@ dpif_linux_port_query_by_name(const struct dpif *dpif, const char *devname,
     return dpif_linux_port_query__(dpif, 0, devname, dpif_port);
 }
 
-static odp_port_t
+static uint32_t
 dpif_linux_get_max_ports(const struct dpif *dpif OVS_UNUSED)
 {
-    return u32_to_odp(MAX_PORTS);
+    return MAX_PORTS;
 }
 
 static uint32_t

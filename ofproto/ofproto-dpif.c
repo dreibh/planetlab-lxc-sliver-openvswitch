@@ -1248,7 +1248,7 @@ construct(struct ofproto *ofproto_)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
     struct shash_node *node, *next;
-    odp_port_t max_ports;
+    uint32_t max_ports;
     int error;
 
     error = open_dpif_backer(ofproto->up.type, &ofproto->backer);
@@ -1257,8 +1257,7 @@ construct(struct ofproto *ofproto_)
     }
 
     max_ports = dpif_get_max_ports(ofproto->backer->dpif);
-    ofproto_init_max_ports(ofproto_, u16_to_ofp(MIN(odp_to_u32(max_ports),
-                                                    ofp_to_u16(OFPP_MAX))));
+    ofproto_init_max_ports(ofproto_, MIN(max_ports, ofp_to_u16(OFPP_MAX)));
 
     ofproto->netflow = NULL;
     ofproto->sflow = NULL;
@@ -1268,20 +1267,20 @@ construct(struct ofproto *ofproto_)
     ofproto->ml = mac_learning_create(MAC_ENTRY_DEFAULT_IDLE_TIME);
     ofproto->mbridge = mbridge_create();
     ofproto->has_bonded_bundles = false;
-    ovs_mutex_init(&ofproto->vsp_mutex, PTHREAD_MUTEX_NORMAL);
+    ovs_mutex_init(&ofproto->vsp_mutex);
 
     classifier_init(&ofproto->facets);
     ofproto->consistency_rl = LLONG_MIN;
 
     list_init(&ofproto->completions);
 
-    ovs_mutex_init(&ofproto->flow_mod_mutex, PTHREAD_MUTEX_NORMAL);
+    ovs_mutex_init(&ofproto->flow_mod_mutex);
     ovs_mutex_lock(&ofproto->flow_mod_mutex);
     list_init(&ofproto->flow_mods);
     ofproto->n_flow_mods = 0;
     ovs_mutex_unlock(&ofproto->flow_mod_mutex);
 
-    ovs_mutex_init(&ofproto->pin_mutex, PTHREAD_MUTEX_NORMAL);
+    ovs_mutex_init(&ofproto->pin_mutex);
     ovs_mutex_lock(&ofproto->pin_mutex);
     list_init(&ofproto->pins);
     ofproto->n_pins = 0;
@@ -1585,6 +1584,9 @@ run(struct ofproto *ofproto_)
     if (ofproto->sflow) {
         dpif_sflow_run(ofproto->sflow);
     }
+    if (ofproto->ipfix) {
+        dpif_ipfix_run(ofproto->ipfix);
+    }
 
     HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
         port_run(ofport);
@@ -1643,6 +1645,9 @@ wait(struct ofproto *ofproto_)
 
     if (ofproto->sflow) {
         dpif_sflow_wait(ofproto->sflow);
+    }
+    if (ofproto->ipfix) {
+        dpif_ipfix_wait(ofproto->ipfix);
     }
     HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
         port_wait(ofport);
@@ -1905,6 +1910,10 @@ port_modified(struct ofport *port_)
         cfm_set_netdev(port->cfm, port->up.netdev);
     }
 
+    if (port->bfd) {
+        bfd_set_netdev(port->bfd, port->up.netdev);
+    }
+
     if (port->is_tunnel && tnl_port_reconfigure(port, port->up.netdev,
                                                 port->odp_port)) {
         ofproto_dpif_cast(port->up.ofproto)->backer->need_revalidate =
@@ -1969,20 +1978,25 @@ set_ipfix(
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
     struct dpif_ipfix *di = ofproto->ipfix;
+    bool has_options = bridge_exporter_options || flow_exporters_options;
 
-    if (bridge_exporter_options || flow_exporters_options) {
-        if (!di) {
-            di = ofproto->ipfix = dpif_ipfix_create();
-        }
+    if (has_options && !di) {
+        di = ofproto->ipfix = dpif_ipfix_create();
+    }
+
+    if (di) {
+        /* Call set_options in any case to cleanly flush the flow
+         * caches in the last exporters that are to be destroyed. */
         dpif_ipfix_set_options(
             di, bridge_exporter_options, flow_exporters_options,
             n_flow_exporters_options);
-    } else {
-        if (di) {
+
+        if (!has_options) {
             dpif_ipfix_unref(di);
             ofproto->ipfix = NULL;
         }
     }
+
     return 0;
 }
 
@@ -2039,7 +2053,8 @@ set_bfd(struct ofport *ofport_, const struct smap *cfg)
     struct bfd *old;
 
     old = ofport->bfd;
-    ofport->bfd = bfd_configure(old, netdev_get_name(ofport->up.netdev), cfg);
+    ofport->bfd = bfd_configure(old, netdev_get_name(ofport->up.netdev),
+                                cfg, ofport->up.netdev);
     if (ofport->bfd != old) {
         ofproto->backer->need_revalidate = REV_RECONFIGURE;
     }
@@ -2952,6 +2967,8 @@ port_run(struct ofport_dpif *ofport)
     long long int carrier_seq = netdev_get_carrier_resets(ofport->up.netdev);
     bool carrier_changed = carrier_seq != ofport->carrier_seq;
     bool enable = netdev_get_carrier(ofport->up.netdev);
+    bool cfm_enable = false;
+    bool bfd_enable = false;
 
     ofport->carrier_seq = carrier_seq;
 
@@ -2961,16 +2978,20 @@ port_run(struct ofport_dpif *ofport)
         int cfm_opup = cfm_get_opup(ofport->cfm);
 
         cfm_run(ofport->cfm);
-        enable = enable && !cfm_get_fault(ofport->cfm);
+        cfm_enable = !cfm_get_fault(ofport->cfm);
 
         if (cfm_opup >= 0) {
-            enable = enable && cfm_opup;
+            cfm_enable = cfm_enable && cfm_opup;
         }
     }
 
     if (ofport->bfd) {
         bfd_run(ofport->bfd);
-        enable = enable && bfd_forwarding(ofport->bfd);
+        bfd_enable = bfd_forwarding(ofport->bfd);
+    }
+
+    if (ofport->bfd || ofport->cfm) {
+        enable = enable && (cfm_enable || bfd_enable);
     }
 
     if (ofport->bundle) {
@@ -3318,7 +3339,6 @@ handle_flow_miss_with_facet(struct flow_miss *miss, struct facet *facet,
     facet->byte_count += miss->stats.n_bytes;
     facet->prev_byte_count += miss->stats.n_bytes;
 
-    subfacet = subfacet_create(facet, miss);
     want_path = facet->xout.slow ? SF_SLOW_PATH : SF_FAST_PATH;
 
     /* Don't install the flow if it's the result of the "userspace"
@@ -4770,7 +4790,7 @@ bool
 rule_dpif_lookup_in_table(struct ofproto_dpif *ofproto,
                           const struct flow *flow, struct flow_wildcards *wc,
                           uint8_t table_id, struct rule_dpif **rule)
-    OVS_ACQ_RDLOCK((*rule)->up.evict)
+    OVS_TRY_RDLOCK(true, (*rule)->up.evict)
 {
     struct cls_rule *cls_rule;
     struct classifier *cls;
@@ -4827,6 +4847,7 @@ choose_miss_rule(enum ofputil_port_config config, struct rule_dpif *miss_rule,
 
 void
 rule_release(struct rule_dpif *rule)
+    OVS_NO_THREAD_SAFETY_ANALYSIS
 {
     if (rule) {
         ovs_rwlock_unlock(&rule->up.evict);
@@ -4866,7 +4887,7 @@ static enum ofperr
 rule_construct(struct rule *rule_)
 {
     struct rule_dpif *rule = rule_dpif_cast(rule_);
-    ovs_mutex_init(&rule->stats_mutex, PTHREAD_MUTEX_NORMAL);
+    ovs_mutex_init(&rule->stats_mutex);
     ovs_mutex_lock(&rule->stats_mutex);
     rule->packet_count = 0;
     rule->byte_count = 0;
