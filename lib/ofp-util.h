@@ -101,6 +101,17 @@ enum ofputil_protocol {
     OFPUTIL_P_OF13_OXM      = 1 << 6,
 #define OFPUTIL_P_ANY_OXM (OFPUTIL_P_OF12_OXM | OFPUTIL_P_OF13_OXM)
 
+#define OFPUTIL_P_NXM_OF11_UP (OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF11_STD | \
+                               OFPUTIL_P_ANY_OXM)
+
+#define OFPUTIL_P_NXM_OXM_ANY (OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_ANY_OXM)
+
+#define OFPUTIL_P_OF11_UP (OFPUTIL_P_OF11_STD | OFPUTIL_P_ANY_OXM)
+
+#define OFPUTIL_P_OF12_UP (OFPUTIL_P_ANY_OXM)
+
+#define OFPUTIL_P_OF13_UP (OFPUTIL_P_OF13_OXM)
+
     /* All protocols. */
 #define OFPUTIL_P_ANY ((1 << 7) - 1)
 
@@ -129,7 +140,6 @@ enum ofputil_protocol ofputil_protocol_set_base(
 const char *ofputil_protocol_to_string(enum ofputil_protocol);
 char *ofputil_protocols_to_string(enum ofputil_protocol);
 enum ofputil_protocol ofputil_protocols_from_string(const char *);
-enum ofputil_protocol ofputil_usable_protocols(const struct match *);
 
 void ofputil_format_version(struct ds *, enum ofp_version);
 void ofputil_format_version_name(struct ds *, enum ofp_version);
@@ -207,6 +217,16 @@ struct ofpbuf *ofputil_make_set_packet_in_format(enum ofp_version,
 /* NXT_FLOW_MOD_TABLE_ID extension. */
 struct ofpbuf *ofputil_make_flow_mod_table_id(bool flow_mod_table_id);
 
+/* Protocol-independent flow_mod flags. */
+enum ofputil_flow_mod_flags {
+    OFPUTIL_FF_SEND_FLOW_REM = 1 << 0, /* All versions. */
+    OFPUTIL_FF_CHECK_OVERLAP = 1 << 1, /* All versions. */
+    OFPUTIL_FF_EMERG         = 1 << 2, /* OpenFlow 1.0 only. */
+    OFPUTIL_FF_RESET_COUNTS  = 1 << 3, /* OpenFlow 1.2+. */
+    OFPUTIL_FF_NO_PKT_COUNTS = 1 << 4, /* OpenFlow 1.3+. */
+    OFPUTIL_FF_NO_BYT_COUNTS = 1 << 5  /* OpenFlow 1.3+. */
+};
+
 /* Protocol-independent flow_mod.
  *
  * The handling of cookies across multiple versions of OpenFlow is a bit
@@ -248,7 +268,7 @@ struct ofputil_flow_mod {
     uint16_t hard_timeout;
     uint32_t buffer_id;
     ofp_port_t out_port;
-    uint16_t flags;
+    enum ofputil_flow_mod_flags flags;
     struct ofpact *ofpacts;     /* Series of "struct ofpact"s. */
     size_t ofpacts_len;         /* Length of ofpacts, in bytes. */
 };
@@ -259,9 +279,6 @@ enum ofperr ofputil_decode_flow_mod(struct ofputil_flow_mod *,
                                     struct ofpbuf *ofpacts);
 struct ofpbuf *ofputil_encode_flow_mod(const struct ofputil_flow_mod *,
                                        enum ofputil_protocol);
-
-enum ofputil_protocol ofputil_flow_mod_usable_protocols(
-    const struct ofputil_flow_mod *fms, size_t n_fms);
 
 /* Flow stats or aggregate stats request, independent of protocol. */
 struct ofputil_flow_stats_request {
@@ -277,8 +294,6 @@ enum ofperr ofputil_decode_flow_stats_request(
     struct ofputil_flow_stats_request *, const struct ofp_header *);
 struct ofpbuf *ofputil_encode_flow_stats_request(
     const struct ofputil_flow_stats_request *, enum ofputil_protocol);
-enum ofputil_protocol ofputil_flow_stats_request_usable_protocols(
-    const struct ofputil_flow_stats_request *);
 
 /* Flow stats reply, independent of protocol. */
 struct ofputil_flow_stats {
@@ -296,7 +311,7 @@ struct ofputil_flow_stats {
     uint64_t byte_count;        /* Byte count, UINT64_MAX if unknown. */
     struct ofpact *ofpacts;
     size_t ofpacts_len;
-    uint16_t flags;             /* Added for OF 1.3 */
+    enum ofputil_flow_mod_flags flags;
 };
 
 int ofputil_decode_flow_stats_reply(struct ofputil_flow_stats *,

@@ -1100,158 +1100,6 @@ ofputil_packet_in_format_from_string(const char *s)
             : -1);
 }
 
-static bool
-regs_fully_wildcarded(const struct flow_wildcards *wc)
-{
-    int i;
-
-    for (i = 0; i < FLOW_N_REGS; i++) {
-        if (wc->masks.regs[i] != 0) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/* Returns a bit-mask of ofputil_protocols that can be used for sending 'match'
- * to a switch (e.g. to add or remove a flow).  Only NXM can handle tunnel IDs,
- * registers, or fixing the Ethernet multicast bit.  Otherwise, it's better to
- * use OpenFlow 1.0 protocol for backward compatibility. */
-enum ofputil_protocol
-ofputil_usable_protocols(const struct match *match)
-{
-    const struct flow_wildcards *wc = &match->wc;
-
-    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 20);
-
-    /* These tunnel params can't be sent in a flow_mod */
-    if (wc->masks.tunnel.ip_ttl
-        || wc->masks.tunnel.ip_tos || wc->masks.tunnel.flags) {
-        return OFPUTIL_P_NONE;
-    }
-
-    /* skb_priority can't be sent in a flow_mod */
-    if (wc->masks.skb_priority) {
-        return OFPUTIL_P_NONE;
-    }
-
-    /* NXM and OXM support pkt_mark */
-    if (wc->masks.pkt_mark) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM, OXM, and OF1.1 support bitwise matching on ethernet addresses. */
-    if (!eth_mask_is_exact(wc->masks.dl_src)
-        && !eth_addr_is_zero(wc->masks.dl_src)) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-    if (!eth_mask_is_exact(wc->masks.dl_dst)
-        && !eth_addr_is_zero(wc->masks.dl_dst)) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM, OXM, and OF1.1+ support matching metadata. */
-    if (wc->masks.metadata != htonll(0)) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM and OXM support matching ARP hardware addresses. */
-    if (!eth_addr_is_zero(wc->masks.arp_sha) ||
-        !eth_addr_is_zero(wc->masks.arp_tha)) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM and OXM support matching L3 and L4 fields within IPv6.
-     *
-     * (arp_sha, arp_tha, nw_frag, and nw_ttl are covered elsewhere so they
-     * don't need to be included in this test too.) */
-    if (match->flow.dl_type == htons(ETH_TYPE_IPV6)
-        && (!ipv6_mask_is_any(&wc->masks.ipv6_src)
-            || !ipv6_mask_is_any(&wc->masks.ipv6_dst)
-            || !ipv6_mask_is_any(&wc->masks.nd_target)
-            || wc->masks.ipv6_label
-            || wc->masks.tp_src
-            || wc->masks.tp_dst
-            || wc->masks.nw_proto
-            || wc->masks.nw_tos)) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM and OXM support matching registers. */
-    if (!regs_fully_wildcarded(wc)) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM and OXM support matching tun_id, tun_src, and tun_dst. */
-    if (wc->masks.tunnel.tun_id != htonll(0)
-        || wc->masks.tunnel.ip_src != htonl(0)
-        || wc->masks.tunnel.ip_dst != htonl(0)) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM and OXM support matching fragments. */
-    if (wc->masks.nw_frag) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM and OXM support matching IP ECN bits. */
-    if (wc->masks.nw_tos & IP_ECN_MASK) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM and OXM support matching IP TTL/hop limit. */
-    if (wc->masks.nw_ttl) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM and OXM support non-CIDR IPv4 address masks. */
-    if (!ip_is_cidr(wc->masks.nw_src) || !ip_is_cidr(wc->masks.nw_dst)) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM and OXM support bitwise matching on transport port. */
-    if ((wc->masks.tp_src && wc->masks.tp_src != htons(UINT16_MAX)) ||
-        (wc->masks.tp_dst && wc->masks.tp_dst != htons(UINT16_MAX))) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM and OF1.1+ support matching MPLS label */
-    if (wc->masks.mpls_lse & htonl(MPLS_LABEL_MASK)) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM and OF1.1+ support matching MPLS TC */
-    if (wc->masks.mpls_lse & htonl(MPLS_TC_MASK)) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* NXM and OF1.3+ support matching MPLS stack flag */
-    /* Allow for OF1.2 as there doesn't seem to be a
-     * particularly good reason not to */
-    if (wc->masks.mpls_lse & htonl(MPLS_BOS_MASK)) {
-        return OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-
-    /* Other formats can express this rule. */
-    return OFPUTIL_P_ANY;
-}
-
 void
 ofputil_format_version(struct ds *msg, enum ofp_version version)
 {
@@ -1554,6 +1402,74 @@ ofputil_make_flow_mod_table_id(bool flow_mod_table_id)
     return msg;
 }
 
+struct ofputil_flow_mod_flag {
+    uint16_t raw_flag;
+    enum ofp_version min_version, max_version;
+    enum ofputil_flow_mod_flags flag;
+};
+
+static const struct ofputil_flow_mod_flag ofputil_flow_mod_flags[] = {
+    { OFPFF_SEND_FLOW_REM,   OFP10_VERSION, 0, OFPUTIL_FF_SEND_FLOW_REM },
+    { OFPFF_CHECK_OVERLAP,   OFP10_VERSION, 0, OFPUTIL_FF_CHECK_OVERLAP },
+    { OFPFF10_EMERG,         OFP10_VERSION, OFP10_VERSION,
+      OFPUTIL_FF_EMERG },
+    { OFPFF12_RESET_COUNTS,  OFP12_VERSION, 0, OFPUTIL_FF_RESET_COUNTS },
+    { OFPFF13_NO_PKT_COUNTS, OFP13_VERSION, 0, OFPUTIL_FF_NO_PKT_COUNTS },
+    { OFPFF13_NO_BYT_COUNTS, OFP13_VERSION, 0, OFPUTIL_FF_NO_BYT_COUNTS },
+    { 0, 0, 0, 0 },
+};
+
+static enum ofperr
+ofputil_decode_flow_mod_flags(ovs_be16 raw_flags_,
+                              enum ofp_flow_mod_command command,
+                              enum ofp_version version,
+                              enum ofputil_flow_mod_flags *flagsp)
+{
+    uint16_t raw_flags = ntohs(raw_flags_);
+    const struct ofputil_flow_mod_flag *f;
+
+    *flagsp = 0;
+    for (f = ofputil_flow_mod_flags; f->raw_flag; f++) {
+        if (raw_flags & f->raw_flag
+            && version >= f->min_version
+            && (!f->max_version || version <= f->max_version)) {
+            raw_flags &= ~f->raw_flag;
+            *flagsp |= f->flag;
+        }
+    }
+
+    /* In OF1.0 and OF1.1, "add" always resets counters, and other commands
+     * never do.
+     *
+     * In OF1.2 and later, OFPFF12_RESET_COUNTS controls whether each command
+     * resets counters. */
+    if ((version == OFP10_VERSION || version == OFP11_VERSION)
+        && command == OFPFC_ADD) {
+        *flagsp |= OFPUTIL_FF_RESET_COUNTS;
+    }
+
+    return raw_flags ? OFPERR_OFPFMFC_BAD_FLAGS : 0;
+}
+
+static ovs_be16
+ofputil_encode_flow_mod_flags(enum ofputil_flow_mod_flags flags,
+                              enum ofp_version version)
+{
+    const struct ofputil_flow_mod_flag *f;
+    uint16_t raw_flags;
+
+    raw_flags = 0;
+    for (f = ofputil_flow_mod_flags; f->raw_flag; f++) {
+        if (f->flag & flags
+            && version >= f->min_version
+            && (!f->max_version || version <= f->max_version)) {
+            raw_flags |= f->raw_flag;
+        }
+    }
+
+    return htons(raw_flags);
+}
+
 /* Converts an OFPT_FLOW_MOD or NXT_FLOW_MOD message 'oh' into an abstract
  * flow_mod in 'fm'.  Returns 0 if successful, otherwise an OpenFlow error
  * code.
@@ -1570,16 +1486,16 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
                         enum ofputil_protocol protocol,
                         struct ofpbuf *ofpacts)
 {
-    uint16_t command;
+    ovs_be16 raw_flags;
+    enum ofperr error;
     struct ofpbuf b;
     enum ofpraw raw;
 
     ofpbuf_use_const(&b, oh, ntohs(oh->length));
     raw = ofpraw_pull_assert(&b);
     if (raw == OFPRAW_OFPT11_FLOW_MOD) {
-        /* Standard OpenFlow 1.1 flow_mod. */
+        /* Standard OpenFlow 1.1+ flow_mod. */
         const struct ofp11_flow_mod *ofm;
-        enum ofperr error;
 
         ofm = ofpbuf_pull(&b, sizeof *ofm);
 
@@ -1626,12 +1542,13 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
             && ofm->out_group != htonl(OFPG_ANY)) {
             return OFPERR_OFPFMFC_UNKNOWN;
         }
-        fm->flags = ntohs(ofm->flags);
+        raw_flags = ofm->flags;
     } else {
+        uint16_t command;
+
         if (raw == OFPRAW_OFPT10_FLOW_MOD) {
             /* Standard OpenFlow 1.0 flow_mod. */
             const struct ofp10_flow_mod *ofm;
-            enum ofperr error;
 
             /* Get the ofp10_flow_mod. */
             ofm = ofpbuf_pull(&b, sizeof *ofm);
@@ -1661,11 +1578,10 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
             fm->hard_timeout = ntohs(ofm->hard_timeout);
             fm->buffer_id = ntohl(ofm->buffer_id);
             fm->out_port = u16_to_ofp(ntohs(ofm->out_port));
-            fm->flags = ntohs(ofm->flags);
+            raw_flags = ofm->flags;
         } else if (raw == OFPRAW_NXT_FLOW_MOD) {
             /* Nicira extended flow_mod. */
             const struct nx_flow_mod *nfm;
-            enum ofperr error;
 
             /* Dissect the message. */
             nfm = ofpbuf_pull(&b, sizeof *nfm);
@@ -1692,21 +1608,9 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
             fm->hard_timeout = ntohs(nfm->hard_timeout);
             fm->buffer_id = ntohl(nfm->buffer_id);
             fm->out_port = u16_to_ofp(ntohs(nfm->out_port));
-            fm->flags = ntohs(nfm->flags);
+            raw_flags = nfm->flags;
         } else {
             NOT_REACHED();
-        }
-
-        if (fm->flags & OFPFF10_EMERG) {
-            /* We do not support the OpenFlow 1.0 emergency flow cache, which
-             * is not required in OpenFlow 1.0.1 and removed from OpenFlow 1.1.
-             *
-             * OpenFlow 1.0 specifies the error code to use when idle_timeout
-             * or hard_timeout is nonzero.  Otherwise, there is no good error
-             * code, so just state that the flow table is full. */
-            return (fm->hard_timeout || fm->idle_timeout
-                    ? OFPERR_OFPFMFC_BAD_EMERG_TIMEOUT
-                    : OFPERR_OFPFMFC_TABLE_FULL);
         }
 
         fm->modify_cookie = fm->new_cookie != htonll(UINT64_MAX);
@@ -1721,6 +1625,24 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
 
     fm->ofpacts = ofpacts->data;
     fm->ofpacts_len = ofpacts->size;
+
+    error = ofputil_decode_flow_mod_flags(raw_flags, fm->command,
+                                          oh->version, &fm->flags);
+    if (error) {
+        return error;
+    }
+
+    if (fm->flags & OFPUTIL_FF_EMERG) {
+        /* We do not support the OpenFlow 1.0 emergency flow cache, which
+         * is not required in OpenFlow 1.0.1 and removed from OpenFlow 1.1.
+         *
+         * OpenFlow 1.0 specifies the error code to use when idle_timeout
+         * or hard_timeout is nonzero.  Otherwise, there is no good error
+         * code, so just state that the flow table is full. */
+        return (fm->hard_timeout || fm->idle_timeout
+                ? OFPERR_OFPFMFC_BAD_EMERG_TIMEOUT
+                : OFPERR_OFPFMFC_TABLE_FULL);
+    }
 
     return 0;
 }
@@ -2105,6 +2027,8 @@ struct ofpbuf *
 ofputil_encode_flow_mod(const struct ofputil_flow_mod *fm,
                         enum ofputil_protocol protocol)
 {
+    enum ofp_version version = ofputil_protocol_to_ofp_version(protocol);
+    ovs_be16 raw_flags = ofputil_encode_flow_mod_flags(fm->flags, version);
     struct ofpbuf *msg;
 
     switch (protocol) {
@@ -2115,9 +2039,7 @@ ofputil_encode_flow_mod(const struct ofputil_flow_mod *fm,
         int tailroom;
 
         tailroom = ofputil_match_typical_len(protocol) + fm->ofpacts_len;
-        msg = ofpraw_alloc(OFPRAW_OFPT11_FLOW_MOD,
-                           ofputil_protocol_to_ofp_version(protocol),
-                           tailroom);
+        msg = ofpraw_alloc(OFPRAW_OFPT11_FLOW_MOD, version, tailroom);
         ofm = ofpbuf_put_zeros(msg, sizeof *ofm);
         if ((protocol == OFPUTIL_P_OF11_STD
              && (fm->command == OFPFC_MODIFY ||
@@ -2137,7 +2059,7 @@ ofputil_encode_flow_mod(const struct ofputil_flow_mod *fm,
         ofm->buffer_id = htonl(fm->buffer_id);
         ofm->out_port = ofputil_port_to_ofp11(fm->out_port);
         ofm->out_group = htonl(OFPG11_ANY);
-        ofm->flags = htons(fm->flags);
+        ofm->flags = raw_flags;
         ofputil_put_ofp11_match(msg, &fm->match, protocol);
         ofpacts_put_openflow11_instructions(fm->ofpacts, fm->ofpacts_len, msg);
         break;
@@ -2158,7 +2080,7 @@ ofputil_encode_flow_mod(const struct ofputil_flow_mod *fm,
         ofm->priority = htons(fm->priority);
         ofm->buffer_id = htonl(fm->buffer_id);
         ofm->out_port = htons(ofp_to_u16(fm->out_port));
-        ofm->flags = htons(fm->flags);
+        ofm->flags = raw_flags;
         ofpacts_put_openflow10(fm->ofpacts, fm->ofpacts_len, msg);
         break;
     }
@@ -2180,7 +2102,7 @@ ofputil_encode_flow_mod(const struct ofputil_flow_mod *fm,
         nfm->priority = htons(fm->priority);
         nfm->buffer_id = htonl(fm->buffer_id);
         nfm->out_port = htons(ofp_to_u16(fm->out_port));
-        nfm->flags = htons(fm->flags);
+        nfm->flags = raw_flags;
         nfm->match_len = htons(match_len);
         ofpacts_put_openflow10(fm->ofpacts, fm->ofpacts_len, msg);
         break;
@@ -2192,39 +2114,6 @@ ofputil_encode_flow_mod(const struct ofputil_flow_mod *fm,
 
     ofpmsg_update_length(msg);
     return msg;
-}
-
-/* Returns a bitmask with a 1-bit for each protocol that could be used to
- * send all of the 'n_fm's flow table modification requests in 'fms', and a
- * 0-bit for each protocol that is inadequate.
- *
- * (The return value will have at least one 1-bit.) */
-enum ofputil_protocol
-ofputil_flow_mod_usable_protocols(const struct ofputil_flow_mod *fms,
-                                  size_t n_fms)
-{
-    enum ofputil_protocol usable_protocols;
-    size_t i;
-
-    usable_protocols = OFPUTIL_P_ANY;
-    for (i = 0; i < n_fms; i++) {
-        const struct ofputil_flow_mod *fm = &fms[i];
-
-        usable_protocols &= ofputil_usable_protocols(&fm->match);
-        if (fm->table_id != 0xff) {
-            usable_protocols &= OFPUTIL_P_TID;
-        }
-
-        /* Matching of the cookie is only supported through NXM or OF1.1+. */
-        if (fm->cookie_mask != htonll(0)) {
-            usable_protocols &= (OFPUTIL_P_OF10_NXM_ANY
-                                 | OFPUTIL_P_OF11_STD
-                                 | OFPUTIL_P_OF12_OXM
-                                 | OFPUTIL_P_OF13_OXM);
-        }
-    }
-
-    return usable_protocols;
 }
 
 static enum ofperr
@@ -2402,24 +2291,6 @@ ofputil_encode_flow_stats_request(const struct ofputil_flow_stats_request *fsr,
     return msg;
 }
 
-/* Returns a bitmask with a 1-bit for each protocol that could be used to
- * accurately encode 'fsr', and a 0-bit for each protocol that is inadequate.
- *
- * (The return value will have at least one 1-bit.) */
-enum ofputil_protocol
-ofputil_flow_stats_request_usable_protocols(
-    const struct ofputil_flow_stats_request *fsr)
-{
-    enum ofputil_protocol usable_protocols;
-
-    usable_protocols = ofputil_usable_protocols(&fsr->match);
-    if (fsr->cookie_mask != htonll(0)) {
-        usable_protocols &= OFPUTIL_P_OF10_NXM_ANY | OFPUTIL_P_OF12_OXM
-            | OFPUTIL_P_OF13_OXM;
-    }
-    return usable_protocols;
-}
-
 /* Converts an OFPST_FLOW or NXST_FLOW reply in 'msg' into an abstract
  * ofputil_flow_stats in 'fs'.
  *
@@ -2446,6 +2317,7 @@ ofputil_decode_flow_stats_reply(struct ofputil_flow_stats *fs,
                                 bool flow_age_extension,
                                 struct ofpbuf *ofpacts)
 {
+    const struct ofp_header *oh;
     enum ofperr error;
     enum ofpraw raw;
 
@@ -2455,6 +2327,7 @@ ofputil_decode_flow_stats_reply(struct ofputil_flow_stats *fs,
     if (error) {
         return error;
     }
+    oh = msg->l2;
 
     if (!msg->size) {
         return EOF;
@@ -2495,7 +2368,15 @@ ofputil_decode_flow_stats_reply(struct ofputil_flow_stats *fs,
         fs->duration_nsec = ntohl(ofs->duration_nsec);
         fs->idle_timeout = ntohs(ofs->idle_timeout);
         fs->hard_timeout = ntohs(ofs->hard_timeout);
-        fs->flags = (raw == OFPRAW_OFPST13_FLOW_REPLY) ? ntohs(ofs->flags) : 0;
+        if (raw == OFPRAW_OFPST13_FLOW_REPLY) {
+            error = ofputil_decode_flow_mod_flags(ofs->flags, -1, oh->version,
+                                                  &fs->flags);
+            if (error) {
+                return error;
+            }
+        } else {
+            fs->flags = 0;
+        }
         fs->idle_age = -1;
         fs->hard_age = -1;
         fs->cookie = ofs->cookie;
@@ -2616,6 +2497,7 @@ ofputil_append_flow_stats_reply(const struct ofputil_flow_stats *fs,
 
     ofpraw_decode_partial(&raw, reply->data, reply->size);
     if (raw == OFPRAW_OFPST11_FLOW_REPLY || raw == OFPRAW_OFPST13_FLOW_REPLY) {
+        const struct ofp_header *oh = reply->data;
         struct ofp11_flow_stats *ofs;
 
         ofpbuf_put_uninit(reply, sizeof *ofs);
@@ -2632,7 +2514,11 @@ ofputil_append_flow_stats_reply(const struct ofputil_flow_stats *fs,
         ofs->priority = htons(fs->priority);
         ofs->idle_timeout = htons(fs->idle_timeout);
         ofs->hard_timeout = htons(fs->hard_timeout);
-        ofs->flags = (raw == OFPRAW_OFPST13_FLOW_REPLY) ? htons(fs->flags) : 0;
+        if (raw == OFPRAW_OFPST13_FLOW_REPLY) {
+            ofs->flags = ofputil_encode_flow_mod_flags(fs->flags, oh->version);
+        } else {
+            ofs->flags = 0;
+        }
         memset(ofs->pad2, 0, sizeof ofs->pad2);
         ofs->cookie = fs->cookie;
         ofs->packet_count = htonll(unknown_to_zero(fs->packet_count));
