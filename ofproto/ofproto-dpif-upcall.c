@@ -55,6 +55,8 @@ struct handler {
     struct list upcalls OVS_GUARDED;
     size_t n_upcalls OVS_GUARDED;
 
+    size_t n_new_upcalls;              /* Only changed by the dispatcher. */
+
     pthread_cond_t wake_cond;          /* Wakes 'thread' while holding
                                           'mutex'. */
 };
@@ -345,6 +347,37 @@ flow_miss_batch_destroy(struct flow_miss_batch *fmb)
     free(fmb);
 }
 
+/* Discards any flow miss batches queued up in 'udpif' for 'ofproto' (because
+ * 'ofproto' is being destroyed).
+ *
+ * 'ofproto''s xports must already have been removed, otherwise new flow miss
+ * batches could still end up getting queued. */
+void
+flow_miss_batch_ofproto_destroyed(struct udpif *udpif,
+                                  const struct ofproto_dpif *ofproto)
+{
+    struct flow_miss_batch *fmb, *next_fmb;
+
+    ovs_mutex_lock(&udpif->fmb_mutex);
+    LIST_FOR_EACH_SAFE (fmb, next_fmb, list_node, &udpif->fmbs) {
+        struct flow_miss *miss, *next_miss;
+
+        HMAP_FOR_EACH_SAFE (miss, next_miss, hmap_node, &fmb->misses) {
+            if (miss->ofproto == ofproto) {
+                hmap_remove(&fmb->misses, &miss->hmap_node);
+                miss_destroy(miss);
+            }
+        }
+
+        if (hmap_is_empty(&fmb->misses)) {
+            list_remove(&fmb->list_node);
+            flow_miss_batch_destroy(fmb);
+            udpif->n_fmbs--;
+        }
+    }
+    ovs_mutex_unlock(&udpif->fmb_mutex);
+}
+
 /* Retreives the next drop key which ofproto-dpif needs to process.  The caller
  * is responsible for destroying it with drop_key_destroy(). */
 struct drop_key *
@@ -515,6 +548,10 @@ static void
 recv_upcalls(struct udpif *udpif)
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(60, 60);
+    size_t n_udpif_new_upcalls = 0;
+    struct handler *handler;
+    int n;
+
     for (;;) {
         struct upcall *upcall;
         int error;
@@ -535,7 +572,6 @@ recv_upcalls(struct udpif *udpif)
         } else if (upcall->type == MISS_UPCALL) {
             struct dpif_upcall *dupcall = &upcall->dpif_upcall;
             uint32_t hash = udpif->secret;
-            struct handler *handler;
             struct nlattr *nla;
             size_t n_bytes, left;
 
@@ -561,8 +597,11 @@ recv_upcalls(struct udpif *udpif)
             ovs_mutex_lock(&handler->mutex);
             if (handler->n_upcalls < MAX_QUEUE_LENGTH) {
                 list_push_back(&handler->upcalls, &upcall->list_node);
-                handler->n_upcalls++;
-                xpthread_cond_signal(&handler->wake_cond);
+                handler->n_new_upcalls = ++handler->n_upcalls;
+
+                if (handler->n_new_upcalls >= FLOW_MISS_MAX_BATCH) {
+                    xpthread_cond_signal(&handler->wake_cond);
+                }
                 ovs_mutex_unlock(&handler->mutex);
                 if (!VLOG_DROP_DBG(&rl)) {
                     struct ds ds = DS_EMPTY_INITIALIZER;
@@ -581,16 +620,31 @@ recv_upcalls(struct udpif *udpif)
         } else {
             ovs_mutex_lock(&udpif->upcall_mutex);
             if (udpif->n_upcalls < MAX_QUEUE_LENGTH) {
-                udpif->n_upcalls++;
+                n_udpif_new_upcalls = ++udpif->n_upcalls;
                 list_push_back(&udpif->upcalls, &upcall->list_node);
                 ovs_mutex_unlock(&udpif->upcall_mutex);
-                seq_change(udpif->wait_seq);
+
+                if (n_udpif_new_upcalls >= FLOW_MISS_MAX_BATCH) {
+                    seq_change(udpif->wait_seq);
+                }
             } else {
                 ovs_mutex_unlock(&udpif->upcall_mutex);
                 COVERAGE_INC(upcall_queue_overflow);
                 upcall_destroy(upcall);
             }
         }
+    }
+    for (n = 0; n < udpif->n_handlers; ++n) {
+        handler = &udpif->handlers[n];
+        if (handler->n_new_upcalls) {
+            handler->n_new_upcalls = 0;
+            ovs_mutex_lock(&handler->mutex);
+            xpthread_cond_signal(&handler->wake_cond);
+            ovs_mutex_unlock(&handler->mutex);
+        }
+    }
+    if (n_udpif_new_upcalls) {
+        seq_change(udpif->wait_seq);
     }
 }
 
@@ -630,7 +684,7 @@ execute_flow_miss(struct flow_miss *miss, struct dpif_op *ops, size_t *n_ops)
 
     flow_wildcards_init_catchall(&wc);
     rule_dpif_lookup(ofproto, &miss->flow, &wc, &rule);
-    rule_credit_stats(rule, &miss->stats);
+    rule_dpif_credit_stats(rule, &miss->stats);
     xlate_in_init(&xin, ofproto, &miss->flow, rule, miss->stats.tcp_flags,
                   NULL);
     xin.may_learn = true;
@@ -638,7 +692,7 @@ execute_flow_miss(struct flow_miss *miss, struct dpif_op *ops, size_t *n_ops)
     xlate_actions(&xin, &miss->xout);
     flow_wildcards_or(&miss->xout.wc, &miss->xout.wc, &wc);
 
-    if (rule->up.cr.priority == FAIL_OPEN_PRIORITY) {
+    if (rule_dpif_fail_open(rule)) {
         LIST_FOR_EACH (packet, list_node, &miss->packets) {
             struct ofputil_packet_in *pin;
 
@@ -671,7 +725,7 @@ execute_flow_miss(struct flow_miss *miss, struct dpif_op *ops, size_t *n_ops)
             xlate_actions_for_side_effects(&xin);
         }
     }
-    rule_release(rule);
+    rule_dpif_release(rule);
 
     if (miss->xout.odp_actions.size) {
         LIST_FOR_EACH (packet, list_node, &miss->packets) {

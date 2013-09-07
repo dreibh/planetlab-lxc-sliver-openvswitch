@@ -25,32 +25,6 @@
 #include <net/route.h>
 #include <net/xfrm.h>
 
-
-#ifndef HAVE_NLA_NUL_STRING
-static inline int CHECK_NUL_STRING(struct nlattr *attr, int maxlen)
-{
-	char *s;
-	int len;
-	if (!attr)
-		return 0;
-
-	len = nla_len(attr);
-	if (len >= maxlen)
-		return -EINVAL;
-
-	s = nla_data(attr);
-	if (s[len - 1] != '\0')
-		return -EINVAL;
-
-	return 0;
-}
-#else
-static inline int CHECK_NUL_STRING(struct nlattr *attr, int maxlen)
-{
-	return 0;
-}
-#endif  /* !HAVE_NLA_NUL_STRING */
-
 static inline void skb_clear_rxhash(struct sk_buff *skb)
 {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)
@@ -58,53 +32,11 @@ static inline void skb_clear_rxhash(struct sk_buff *skb)
 #endif
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
-#define GENL_SOCK(net) (genl_sock)
-#define SET_NETNSOK
-#else
-#define GENL_SOCK(net) ((net)->genl_sock)
-#define SET_NETNSOK    .netnsok = true,
-#endif
-
 #ifdef HAVE_PARALLEL_OPS
 #define SET_PARALLEL_OPS	.parallel_ops = true,
 #else
 #define SET_PARALLEL_OPS
 #endif
-
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
-#ifdef CONFIG_NETFILTER
-static inline u32 skb_get_mark(struct sk_buff *skb)
-{
-	return skb->nfmark;
-}
-
-static inline void skb_set_mark(struct sk_buff *skb, u32 mark)
-{
-	skb->nfmark = mark;
-}
-#else /* CONFIG_NETFILTER */
-static inline u32 skb_get_mark(struct sk_buff *skb)
-{
-	return 0;
-}
-
-static inline void skb_set_mark(struct sk_buff *skb, u32 mark)
-{
-}
-#endif
-#else /* before 2.6.20 */
-static inline u32 skb_get_mark(struct sk_buff *skb)
-{
-	return skb->mark;
-}
-
-static inline void skb_set_mark(struct sk_buff *skb, u32 mark)
-{
-	skb->mark = mark;
-}
-#endif /* after 2.6.20 */
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)
 #define rt_dst(rt) (rt->dst)
@@ -130,13 +62,8 @@ static inline struct rtable *find_route(struct net *net,
 	struct flowi fl = { .nl_u = { .ip4_u = {
 					.daddr = daddr,
 					.saddr = *saddr,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
-					.fwmark = skb_mark,
-#endif
 					.tos   = RT_TOS(tos) } },
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,20)
 					.mark = skb_mark,
-#endif
 					.proto = ipproto };
 
 	if (unlikely(ip_route_output_key(net, &rt, &fl)))

@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2011 Nicira, Inc.
- * Copyright (c) 2012 Cisco Systems, Inc.
+ * Copyright (c) 2013 Nicira, Inc.
+ * Copyright (c) 2013 Cisco Systems, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -20,7 +20,6 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
 
 #include <linux/in.h>
 #include <linux/ip.h>
@@ -44,15 +43,13 @@
 #include "datapath.h"
 #include "vport.h"
 
-#define OVS_VXLAN_RCV_PRIORITY		8
-
 /**
  * struct vxlan_port - Keeps track of open UDP ports
- * @vh: vxlan_handler created for the port.
+ * @vs: vxlan_sock created for the port.
  * @name: vport name.
  */
 struct vxlan_port {
-	struct vxlan_handler *vh;
+	struct vxlan_sock *vs;
 	char name[IFNAMSIZ];
 };
 
@@ -62,11 +59,11 @@ static inline struct vxlan_port *vxlan_vport(const struct vport *vport)
 }
 
 /* Called with rcu_read_lock and BH disabled. */
-static int vxlan_rcv(struct vxlan_handler *vh, struct sk_buff *skb, __be32 vx_vni)
+static void vxlan_rcv(struct vxlan_sock *vs, struct sk_buff *skb, __be32 vx_vni)
 {
-	struct vport *vport = vh->data;
-	struct iphdr *iph;
 	struct ovs_key_ipv4_tunnel tun_key;
+	struct vport *vport = vs->data;
+	struct iphdr *iph;
 	__be64 key;
 
 	/* Save outer tunnel values */
@@ -75,13 +72,12 @@ static int vxlan_rcv(struct vxlan_handler *vh, struct sk_buff *skb, __be32 vx_vn
 	ovs_flow_tun_key_init(&tun_key, iph, key, TUNNEL_KEY);
 
 	ovs_vport_receive(vport, skb, &tun_key);
-	return PACKET_RCVD;
 }
 
 static int vxlan_get_options(const struct vport *vport, struct sk_buff *skb)
 {
 	struct vxlan_port *vxlan_port = vxlan_vport(vport);
-	__be16 dst_port = inet_sport(vxlan_port->vh->vs->sock->sk);
+	__be16 dst_port = inet_sport(vxlan_port->vs->sock->sk);
 
 	if (nla_put_u16(skb, OVS_TUNNEL_ATTR_DST_PORT, ntohs(dst_port)))
 		return -EMSGSIZE;
@@ -92,7 +88,7 @@ static void vxlan_tnl_destroy(struct vport *vport)
 {
 	struct vxlan_port *vxlan_port = vxlan_vport(vport);
 
-	vxlan_handler_put(vxlan_port->vh);
+	vxlan_sock_release(vxlan_port->vs);
 
 	ovs_vport_deferred_free(vport);
 }
@@ -102,7 +98,7 @@ static struct vport *vxlan_tnl_create(const struct vport_parms *parms)
 	struct net *net = ovs_dp_get_net(parms->dp);
 	struct nlattr *options = parms->options;
 	struct vxlan_port *vxlan_port;
-	struct vxlan_handler *vh;
+	struct vxlan_sock *vs;
 	struct vport *vport;
 	struct nlattr *a;
 	u16 dst_port;
@@ -129,13 +125,12 @@ static struct vport *vxlan_tnl_create(const struct vport_parms *parms)
 	vxlan_port = vxlan_vport(vport);
 	strncpy(vxlan_port->name, parms->name, IFNAMSIZ);
 
-	vh = vxlan_handler_add(net, htons(dst_port), vxlan_rcv,
-			       vport, OVS_VXLAN_RCV_PRIORITY, true);
-	if (IS_ERR(vh)) {
+	vs = vxlan_sock_add(net, htons(dst_port), vxlan_rcv, vport, true);
+	if (IS_ERR(vs)) {
 		ovs_vport_free(vport);
-		return (void *)vh;
+		return (void *)vs;
 	}
-	vxlan_port->vh = vh;
+	vxlan_port->vs = vs;
 
 	return vport;
 
@@ -146,7 +141,7 @@ error:
 static int vxlan_tnl_send(struct vport *vport, struct sk_buff *skb)
 {
 	struct vxlan_port *vxlan_port = vxlan_vport(vport);
-	__be16 dst_port = inet_sport(vxlan_port->vh->vs->sock->sk);
+	__be16 dst_port = inet_sport(vxlan_port->vs->sock->sk);
 	struct net *net = ovs_dp_get_net(vport->dp);
 	struct rtable *rt;
 	__be16 src_port;
@@ -161,8 +156,6 @@ static int vxlan_tnl_send(struct vport *vport, struct sk_buff *skb)
 		goto error;
 	}
 
-	forward_ip_summed(skb, true);
-
 	/* Route lookup */
 	saddr = OVS_CB(skb)->tun_key->ipv4_src;
 	rt = find_route(ovs_dp_get_net(vport->dp),
@@ -170,7 +163,7 @@ static int vxlan_tnl_send(struct vport *vport, struct sk_buff *skb)
 			OVS_CB(skb)->tun_key->ipv4_dst,
 			IPPROTO_UDP,
 			OVS_CB(skb)->tun_key->ipv4_tos,
-			skb_get_mark(skb));
+			skb->mark);
 	if (IS_ERR(rt)) {
 		err = PTR_ERR(rt);
 		goto error;
@@ -184,7 +177,7 @@ static int vxlan_tnl_send(struct vport *vport, struct sk_buff *skb)
 	inet_get_local_port_range(&port_min, &port_max);
 	src_port = vxlan_src_port(port_min, port_max, skb);
 
-	err = vxlan_xmit_skb(net, vxlan_port->vh, rt, skb,
+	err = vxlan_xmit_skb(net, vxlan_port->vs, rt, skb,
 			     saddr, OVS_CB(skb)->tun_key->ipv4_dst,
 			     OVS_CB(skb)->tun_key->ipv4_tos,
 			     OVS_CB(skb)->tun_key->ipv4_ttl, df,
@@ -210,6 +203,3 @@ const struct vport_ops ovs_vxlan_vport_ops = {
 	.get_options	= vxlan_get_options,
 	.send		= vxlan_tnl_send,
 };
-#else
-#warning VXLAN tunneling will not be available on kernels before 2.6.26
-#endif /* Linux kernel < 2.6.26 */

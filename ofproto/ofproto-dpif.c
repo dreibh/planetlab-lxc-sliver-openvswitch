@@ -83,7 +83,29 @@ BUILD_ASSERT_DECL(N_TABLES >= 2 && N_TABLES <= 255);
 struct flow_miss;
 struct facet;
 
+struct rule_dpif {
+    struct rule up;
+
+    /* These statistics:
+     *
+     *   - Do include packets and bytes from facets that have been deleted or
+     *     whose own statistics have been folded into the rule.
+     *
+     *   - Do include packets and bytes sent "by hand" that were accounted to
+     *     the rule without any facet being involved (this is a rare corner
+     *     case in rule_execute()).
+     *
+     *   - Do not include packet or bytes that can be obtained from any facet's
+     *     packet_count or byte_count member or that can be obtained from the
+     *     datapath by, e.g., dpif_flow_get() for any subfacet.
+     */
+    struct ovs_mutex stats_mutex;
+    uint64_t packet_count OVS_GUARDED;  /* Number of packets received. */
+    uint64_t byte_count OVS_GUARDED;    /* Number of bytes received. */
+};
+
 static void rule_get_stats(struct rule *, uint64_t *packets, uint64_t *bytes);
+static struct rule_dpif *rule_dpif_cast(const struct rule *);
 
 struct ofbundle {
     struct hmap_node hmap_node; /* In struct ofproto's "bundles" hmap. */
@@ -205,8 +227,7 @@ static void subfacet_uninstall(struct subfacet *);
  * Flow expiration works in terms of subfacets, so a facet must have at
  * least one subfacet or it will never expire, leaking memory. */
 struct facet {
-    /* Owners. */
-    struct hmap_node hmap_node;  /* In owning ofproto's 'facets' hmap. */
+    /* Owner. */
     struct ofproto_dpif *ofproto;
 
     /* Owned data. */
@@ -822,7 +843,7 @@ type_run(const char *type)
             HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
                 int stp_port = ofport->stp_port
                     ? stp_port_no(ofport->stp_port)
-                    : 0;
+                    : -1;
                 xlate_ofport_set(ofproto, ofport->bundle, ofport,
                                  ofport->up.ofp_port, ofport->odp_port,
                                  ofport->up.netdev, ofport->cfm,
@@ -1359,7 +1380,7 @@ add_internal_flow(struct ofproto_dpif *ofproto, int id,
 
     if (rule_dpif_lookup_in_table(ofproto, &fm.match.flow, NULL, TBL_INTERNAL,
                                   rulep)) {
-        ovs_rwlock_unlock(&(*rulep)->up.evict);
+        rule_dpif_release(*rulep);
     } else {
         NOT_REACHED();
     }
@@ -1421,12 +1442,23 @@ destruct(struct ofproto *ofproto_)
     struct rule_dpif *rule, *next_rule;
     struct ofputil_packet_in *pin, *next_pin;
     struct ofputil_flow_mod *fm, *next_fm;
+    struct facet *facet, *next_facet;
+    struct cls_cursor cursor;
     struct oftable *table;
+
+    ovs_rwlock_rdlock(&ofproto->facets.rwlock);
+    cls_cursor_init(&cursor, &ofproto->facets, NULL);
+    ovs_rwlock_unlock(&ofproto->facets.rwlock);
+    CLS_CURSOR_FOR_EACH_SAFE (facet, next_facet, cr, &cursor) {
+        facet_remove(facet);
+    }
 
     ofproto->backer->need_revalidate = REV_RECONFIGURE;
     ovs_rwlock_wrlock(&xlate_rwlock);
     xlate_remove_ofproto(ofproto);
     ovs_rwlock_unlock(&xlate_rwlock);
+
+    flow_miss_batch_ofproto_destroyed(ofproto->backer->udpif, ofproto);
 
     hmap_remove(&all_ofproto_dpifs, &ofproto->all_ofproto_dpifs_node);
     complete_operations(ofproto);
@@ -1500,14 +1532,9 @@ run_fast(struct ofproto *ofproto_)
     }
 
     ovs_mutex_lock(&ofproto->flow_mod_mutex);
-    if (ofproto->n_flow_mods) {
-        flow_mods = ofproto->flow_mods;
-        list_moved(&flow_mods);
-        list_init(&ofproto->flow_mods);
-        ofproto->n_flow_mods = 0;
-    } else {
-        list_init(&flow_mods);
-    }
+    list_move(&flow_mods, &ofproto->flow_mods);
+    list_init(&ofproto->flow_mods);
+    ofproto->n_flow_mods = 0;
     ovs_mutex_unlock(&ofproto->flow_mod_mutex);
 
     LIST_FOR_EACH_SAFE (fm, next_fm, list_node, &flow_mods) {
@@ -1523,14 +1550,9 @@ run_fast(struct ofproto *ofproto_)
     }
 
     ovs_mutex_lock(&ofproto->pin_mutex);
-    if (ofproto->n_pins) {
-        pins = ofproto->pins;
-        list_moved(&pins);
-        list_init(&ofproto->pins);
-        ofproto->n_pins = 0;
-    } else {
-        list_init(&pins);
-    }
+    list_move(&pins, &ofproto->pins);
+    list_init(&ofproto->pins);
+    ofproto->n_pins = 0;
     ovs_mutex_unlock(&ofproto->pin_mutex);
 
     LIST_FOR_EACH_SAFE (pin, next_pin, list_node, &pins) {
@@ -3109,7 +3131,7 @@ port_del(struct ofproto *ofproto_, ofp_port_t ofp_port)
     sset_find_and_delete(&ofproto->ghost_ports,
                          netdev_get_name(ofport->up.netdev));
     ofproto->backer->need_revalidate = REV_RECONFIGURE;
-    if (!ofport->is_tunnel) {
+    if (!ofport->is_tunnel && !netdev_vport_is_patch(ofport->up.netdev)) {
         error = dpif_port_del(ofproto->backer->dpif, ofport->odp_port);
         if (!error) {
             /* The caller is going to close ofport->up.netdev.  If this is a
@@ -3856,7 +3878,7 @@ subfacet_max_idle(const struct dpif_backer *backer)
      * pass made by update_stats(), because the former function never looks at
      * uninstallable subfacets.
      */
-    enum { BUCKET_WIDTH = ROUND_UP(100, TIME_UPDATE_INTERVAL) };
+    enum { BUCKET_WIDTH = 100 };
     enum { N_BUCKETS = 5000 / BUCKET_WIDTH };
     int buckets[N_BUCKETS] = { 0 };
     int total, subtotal, bucket;
@@ -4179,7 +4201,7 @@ facet_is_controller_flow(struct facet *facet)
         is_controller = ofpacts_len > 0
             && ofpacts->type == OFPACT_CONTROLLER
             && ofpact_next(ofpacts) >= ofpact_end(ofpacts, ofpacts_len);
-        rule_release(rule);
+        rule_dpif_release(rule);
         return is_controller;
     }
     return false;
@@ -4273,7 +4295,7 @@ facet_check_consistency(struct facet *facet)
     rule_dpif_lookup(facet->ofproto, &facet->flow, NULL, &rule);
     xlate_in_init(&xin, facet->ofproto, &facet->flow, rule, 0, NULL);
     xlate_actions(&xin, &xout);
-    rule_release(rule);
+    rule_dpif_release(rule);
 
     ok = ofpbuf_equal(&facet->xout.odp_actions, &xout.odp_actions)
         && facet->xout.slow == xout.slow;
@@ -4371,7 +4393,7 @@ facet_revalidate(struct facet *facet)
         || memcmp(&facet->xout.wc, &xout.wc, sizeof xout.wc)) {
         facet_remove(facet);
         xlate_out_uninit(&xout);
-        rule_release(new_rule);
+        rule_dpif_release(new_rule);
         return false;
     }
 
@@ -4403,7 +4425,7 @@ facet_revalidate(struct facet *facet)
     facet->used = MAX(facet->used, new_rule->up.created);
 
     xlate_out_uninit(&xout);
-    rule_release(new_rule);
+    rule_dpif_release(new_rule);
     return true;
 }
 
@@ -4431,12 +4453,12 @@ flow_push_stats(struct ofproto_dpif *ofproto, struct flow *flow,
     }
 
     rule_dpif_lookup(ofproto, flow, NULL, &rule);
-    rule_credit_stats(rule, stats);
+    rule_dpif_credit_stats(rule, stats);
     xlate_in_init(&xin, ofproto, flow, rule, stats->tcp_flags, NULL);
     xin.resubmit_stats = stats;
     xin.may_learn = may_learn;
     xlate_actions_for_side_effects(&xin);
-    rule_release(rule);
+    rule_dpif_release(rule);
 }
 
 static void
@@ -4502,13 +4524,41 @@ push_all_stats(void)
 }
 
 void
-rule_credit_stats(struct rule_dpif *rule, const struct dpif_flow_stats *stats)
+rule_dpif_credit_stats(struct rule_dpif *rule,
+                       const struct dpif_flow_stats *stats)
 {
     ovs_mutex_lock(&rule->stats_mutex);
     rule->packet_count += stats->n_packets;
     rule->byte_count += stats->n_bytes;
-    ofproto_rule_update_used(&rule->up, stats->used);
+    rule->up.used = MAX(rule->up.used, stats->used);
     ovs_mutex_unlock(&rule->stats_mutex);
+}
+
+bool
+rule_dpif_fail_open(const struct rule_dpif *rule)
+{
+    return rule->up.cr.priority == FAIL_OPEN_PRIORITY;
+}
+
+ovs_be64
+rule_dpif_get_flow_cookie(const struct rule_dpif *rule)
+{
+    return rule->up.flow_cookie;
+}
+
+void
+rule_dpif_reduce_timeouts(struct rule_dpif *rule, uint16_t idle_timeout,
+                     uint16_t hard_timeout)
+{
+    ofproto_rule_reduce_timeouts(&rule->up, idle_timeout, hard_timeout);
+}
+
+void
+rule_dpif_get_actions(const struct rule_dpif *rule,
+                      const struct ofpact **ofpacts, size_t *ofpacts_len)
+{
+    *ofpacts = rule->up.ofpacts;
+    *ofpacts_len = rule->up.ofpacts_len;
 }
 
 /* Subfacets. */
@@ -4778,16 +4828,15 @@ rule_dpif_lookup(struct ofproto_dpif *ofproto, const struct flow *flow,
                      flow->in_port.ofp_port);
     }
 
-    *rule = choose_miss_rule(port ? port->up.pp.config : 0, ofproto->miss_rule,
-                             ofproto->no_packet_in_rule);
-    ovs_rwlock_rdlock(&(*rule)->up.evict);
+    choose_miss_rule(port ? port->up.pp.config : 0, ofproto->miss_rule,
+                     ofproto->no_packet_in_rule, rule);
 }
 
 bool
 rule_dpif_lookup_in_table(struct ofproto_dpif *ofproto,
                           const struct flow *flow, struct flow_wildcards *wc,
                           uint8_t table_id, struct rule_dpif **rule)
-    OVS_TRY_RDLOCK(true, (*rule)->up.evict)
+    OVS_TRY_RDLOCK(true, (*rule)->up.rwlock)
 {
     struct cls_rule *cls_rule;
     struct classifier *cls;
@@ -4822,7 +4871,7 @@ rule_dpif_lookup_in_table(struct ofproto_dpif *ofproto,
     }
 
     *rule = rule_dpif_cast(rule_from_cls_rule(cls_rule));
-    if (*rule && ovs_rwlock_tryrdlock(&(*rule)->up.evict)) {
+    if (*rule && ovs_rwlock_tryrdlock(&(*rule)->up.rwlock)) {
         /* The rule is in the process of being removed.  Best we can do is
          * pretend it isn't there. */
         *rule = NULL;
@@ -4835,19 +4884,21 @@ rule_dpif_lookup_in_table(struct ofproto_dpif *ofproto,
 /* Given a port configuration (specified as zero if there's no port), chooses
  * which of 'miss_rule' and 'no_packet_in_rule' should be used in case of a
  * flow table miss. */
-struct rule_dpif *
+void
 choose_miss_rule(enum ofputil_port_config config, struct rule_dpif *miss_rule,
-                 struct rule_dpif *no_packet_in_rule)
+                 struct rule_dpif *no_packet_in_rule, struct rule_dpif **rule)
+    OVS_NO_THREAD_SAFETY_ANALYSIS
 {
-    return config & OFPUTIL_PC_NO_PACKET_IN ? no_packet_in_rule : miss_rule;
+    *rule = config & OFPUTIL_PC_NO_PACKET_IN ? no_packet_in_rule : miss_rule;
+    ovs_rwlock_rdlock(&(*rule)->up.rwlock);
 }
 
 void
-rule_release(struct rule_dpif *rule)
+rule_dpif_release(struct rule_dpif *rule)
     OVS_NO_THREAD_SAFETY_ANALYSIS
 {
     if (rule) {
-        ovs_rwlock_unlock(&rule->up.evict);
+        ovs_rwlock_unlock(&rule->up.rwlock);
     }
 }
 
@@ -4864,6 +4915,11 @@ complete_operation(struct rule_dpif *rule)
     } else {
         ofoperation_complete(rule->up.pending, 0);
     }
+}
+
+static struct rule_dpif *rule_dpif_cast(const struct rule *rule)
+{
+    return rule ? CONTAINER_OF(rule, struct rule_dpif, up) : NULL;
 }
 
 static struct rule *
@@ -4942,7 +4998,7 @@ rule_dpif_execute(struct rule_dpif *rule, const struct flow *flow,
     struct xlate_in xin;
 
     dpif_flow_stats_extract(flow, packet, time_msec(), &stats);
-    rule_credit_stats(rule, &stats);
+    rule_dpif_credit_stats(rule, &stats);
 
     xlate_in_init(&xin, ofproto, flow, rule, stats.tcp_flags, packet);
     xin.resubmit_stats = &stats;
@@ -5563,7 +5619,7 @@ ofproto_trace(struct ofproto_dpif *ofproto, const struct flow *flow,
         xlate_out_uninit(&trace.xout);
     }
 
-    rule_release(rule);
+    rule_dpif_release(rule);
 }
 
 static void
@@ -6394,4 +6450,10 @@ const struct ofproto_class ofproto_dpif_class = {
     NULL,                       /* meter_set */
     NULL,                       /* meter_get */
     NULL,                       /* meter_del */
+    NULL,                       /* group_alloc */
+    NULL,                       /* group_construct */
+    NULL,                       /* group_destruct */
+    NULL,                       /* group_dealloc */
+    NULL,                       /* group_modify */
+    NULL,                       /* group_get_stats */
 };

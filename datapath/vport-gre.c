@@ -129,8 +129,6 @@ static int __send(struct vport *vport, struct sk_buff *skb,
 	__be32 saddr;
 	int err;
 
-	forward_ip_summed(skb, true);
-
 	/* Route lookup */
 	saddr = OVS_CB(skb)->tun_key->ipv4_src;
 	rt = find_route(ovs_dp_get_net(vport->dp),
@@ -138,7 +136,7 @@ static int __send(struct vport *vport, struct sk_buff *skb,
 			OVS_CB(skb)->tun_key->ipv4_dst,
 			IPPROTO_GRE,
 			OVS_CB(skb)->tun_key->ipv4_tos,
-			skb_get_mark(skb));
+			skb->mark);
 	if (IS_ERR(rt)) {
 		err = PTR_ERR(rt);
 		goto error;
@@ -158,9 +156,14 @@ static int __send(struct vport *vport, struct sk_buff *skb,
 			goto err_free_rt;
 	}
 
-	if (unlikely(vlan_deaccel_tag(skb))) {
-		err = -ENOMEM;
-		goto err_free_rt;
+	if (vlan_tx_tag_present(skb)) {
+		if (unlikely(!__vlan_put_tag(skb,
+					     skb->vlan_proto,
+					     vlan_tx_tag_get(skb)))) {
+			err = -ENOMEM;
+			goto err_free_rt;
+		}
+		vlan_set_tci(skb, 0);
 	}
 
 	/* Push Tunnel header. */

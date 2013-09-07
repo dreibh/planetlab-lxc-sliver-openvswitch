@@ -27,7 +27,7 @@ A: Open vSwitch is a production quality open source software switch
 Q: What virtualization platforms can use Open vSwitch?
 
 A: Open vSwitch can currently run on any Linux-based virtualization
-   platform (kernel 2.6.18 and newer), including: KVM, VirtualBox, Xen,
+   platform (kernel 2.6.32 and newer), including: KVM, VirtualBox, Xen,
    Xen Cloud Platform, XenServer. As of Linux 3.3 it is part of the
    mainline kernel.  The bulk of the code is written in platform-
    independent C and is easily ported to other environments.  We welcome
@@ -148,13 +148,13 @@ A: The following table lists the Linux kernel versions against which the
        1.9.x      2.6.18 to 3.8
        1.10.x     2.6.18 to 3.8
        1.11.x     2.6.18 to 3.8
-       1.12.x     2.6.18 to 3.10
+       2.x        2.6.32 to 3.10
 
    Open vSwitch userspace should also work with the Linux kernel module
    built into Linux 3.3 and later.
 
    Open vSwitch userspace is not sensitive to the Linux kernel version.
-   It should build against almost any kernel, certainly against 2.6.18
+   It should build against almost any kernel, certainly against 2.6.32
    and later.
 
 Q: What Linux kernel versions does IPFIX flow monitoring work with?
@@ -249,6 +249,40 @@ A: The following commands configure br0 with eth0 and tap0 as trunk
    To later disable mirroring, run:
 
        ovs-vsctl clear bridge br0 mirrors
+
+Q: Does Open vSwitch support configuring a port in promiscuous mode?
+
+A: Yes.  How you configure it depends on what you mean by "promiscuous
+   mode":
+
+      - Conventionally, "promiscuous mode" is a feature of a network
+        interface card.  Ordinarily, a NIC passes to the CPU only the
+        packets actually destined to its host machine.  It discards
+        the rest to avoid wasting memory and CPU cycles.  When
+        promiscuous mode is enabled, however, it passes every packet
+        to the CPU.  On an old-style shared-media or hub-based
+        network, this allows the host to spy on all packets on the
+        network.  But in the switched networks that are almost
+        everywhere these days, promiscuous mode doesn't have much
+        effect, because few packets not destined to a host are
+        delivered to the host's NIC.
+
+        This form of promiscuous mode is configured in the guest OS of
+        the VMs on your bridge, e.g. with "ifconfig".
+
+      - The VMware vSwitch uses a different definition of "promiscuous
+        mode".  When you configure promiscuous mode on a VMware vNIC,
+        the vSwitch sends a copy of every packet received by the
+        vSwitch to that vNIC.  That has a much bigger effect than just
+        enabling promiscuous mode in a guest OS.  Rather than getting
+        a few stray packets for which the switch does not yet know the
+        correct destination, the vNIC gets every packet.  The effect
+        is similar to replacing the vSwitch by a virtual hub.
+
+        This "promiscuous mode" is what switches normally call "port
+        mirroring" or "SPAN".  For information on how to configure
+        SPAN, see "How do I configure a port as a SPAN port, that is,
+        enable mirroring of all traffic to that port?"
 
 Q: How do I configure a VLAN as an RSPAN VLAN, that is, enable
    mirroring of all traffic to that VLAN?

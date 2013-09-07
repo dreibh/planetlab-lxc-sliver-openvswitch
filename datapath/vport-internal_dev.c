@@ -29,7 +29,6 @@
 #include <net/dst.h>
 #include <net/xfrm.h>
 
-#include "checksum.h"
 #include "datapath.h"
 #include "vlan.h"
 #include "vport-internal_dev.h"
@@ -41,9 +40,6 @@
 
 struct internal_dev {
 	struct vport *vport;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
-	struct net_device_stats stats;
-#endif
 };
 
 static struct internal_dev *internal_dev_priv(struct net_device *netdev)
@@ -59,11 +55,7 @@ static struct rtnl_link_stats64 *internal_dev_get_stats(struct net_device *netde
 #else
 static struct net_device_stats *internal_dev_sys_stats(struct net_device *netdev)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
-	struct net_device_stats *stats = &internal_dev_priv(netdev)->stats;
-#else
 	struct net_device_stats *stats = &netdev->stats;
-#endif
 #endif
 	struct vport *vport = ovs_internal_dev_get_vport(netdev);
 	struct ovs_vport_stats vport_stats;
@@ -87,13 +79,6 @@ static struct net_device_stats *internal_dev_sys_stats(struct net_device *netdev
 /* Called with rcu_read_lock_bh. */
 static int internal_dev_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
-	if (unlikely(compute_ip_summed(skb, true))) {
-		kfree_skb(skb);
-		return 0;
-	}
-
-	vlan_copy_skb_tci(skb);
-
 	rcu_read_lock();
 	ovs_vport_receive(internal_dev_priv(netdev)->vport, skb, NULL);
 	rcu_read_unlock();
@@ -187,10 +172,8 @@ static void do_setup(struct net_device *netdev)
 	netdev->features = NETIF_F_LLTX | NETIF_F_SG | NETIF_F_FRAGLIST |
 			   NETIF_F_HIGHDMA | NETIF_F_HW_CSUM | NETIF_F_TSO;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
 	netdev->vlan_features = netdev->features;
 	netdev->features |= NETIF_F_HW_VLAN_CTAG_TX;
-#endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)
 	netdev->hw_features = netdev->features & ~NETIF_F_LLTX;
@@ -269,8 +252,19 @@ static int internal_dev_recv(struct vport *vport, struct sk_buff *skb)
 	int len;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,37)
-	if (unlikely(vlan_deaccel_tag(skb)))
-		return 0;
+	if (vlan_tx_tag_present(skb)) {
+		if (unlikely(!__vlan_put_tag(skb,
+					     skb->vlan_proto,
+					     vlan_tx_tag_get(skb))))
+			return 0;
+
+		if (skb->ip_summed == CHECKSUM_COMPLETE)
+			skb->csum = csum_add(skb->csum,
+					     csum_partial(skb->data + (2 * ETH_ALEN),
+							  VLAN_HLEN, 0));
+
+		vlan_set_tci(skb, 0);
+	}
 #endif
 
 	len = skb->len;
@@ -283,13 +277,8 @@ static int internal_dev_recv(struct vport *vport, struct sk_buff *skb)
 	skb->pkt_type = PACKET_HOST;
 	skb->protocol = eth_type_trans(skb, netdev);
 	skb_postpull_rcsum(skb, eth_hdr(skb), ETH_HLEN);
-	forward_ip_summed(skb, false);
 
 	netif_rx(skb);
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,29)
-	netdev->last_rx = jiffies;
-#endif
 
 	return len;
 }

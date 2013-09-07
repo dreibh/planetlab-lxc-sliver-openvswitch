@@ -29,7 +29,6 @@
 
 #include <net/llc.h>
 
-#include "checksum.h"
 #include "datapath.h"
 #include "vlan.h"
 #include "vport-internal_dev.h"
@@ -80,7 +79,7 @@ static struct sk_buff *netdev_frame_hook(struct sk_buff *skb)
 
 	return NULL;
 }
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,22)
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32)
 /*
  * Used as br_handle_frame_hook.  (Cannot run bridge at the same time, even on
  * different set of devices!)
@@ -91,17 +90,6 @@ static struct sk_buff *netdev_frame_hook(struct net_bridge_port *p,
 {
 	netdev_port_receive((struct vport *)p, skb);
 	return NULL;
-}
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-/*
- * Used as br_handle_frame_hook.  (Cannot run bridge at the same time, even on
- * different set of devices!)
- */
-/* Called with rcu_read_lock and bottom-halves disabled. */
-static int netdev_frame_hook(struct net_bridge_port *p, struct sk_buff **pskb)
-{
-	netdev_port_receive((struct vport *)p, *pskb);
-	return 1;
 }
 #else
 #error
@@ -186,9 +174,6 @@ static struct vport *netdev_create(const struct vport_parms *parms)
 		goto error_master_upper_dev_unlink;
 
 	dev_set_promiscuity(netdev_vport->dev, 1);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
-	dev_disable_lro(netdev_vport->dev);
-#endif
 	netdev_vport->dev->priv_flags |= IFF_OVS_DATAPATH;
 	rtnl_unlock();
 
@@ -254,13 +239,8 @@ static void netdev_port_receive(struct vport *vport, struct sk_buff *skb)
 	if (unlikely(!skb))
 		return;
 
-	if (unlikely(compute_ip_summed(skb, false)))
-		goto error;
-
 	skb_push(skb, ETH_HLEN);
 	ovs_skb_postpush_rcsum(skb, skb->data, ETH_HLEN);
-
-	vlan_copy_skb_tci(skb);
 
 	ovs_vport_receive(vport, skb, NULL);
 	return;
@@ -306,7 +286,6 @@ static int netdev_send(struct vport *vport, struct sk_buff *skb)
 	}
 
 	skb->dev = netdev_vport->dev;
-	forward_ip_summed(skb, true);
 
 	if (vlan_tx_tag_present(skb) && !dev_supports_vlan_tx(skb->dev)) {
 		int features;

@@ -121,7 +121,7 @@ struct xport {
     struct xport *peer;              /* Patch port peer or null. */
 
     enum ofputil_port_config config; /* OpenFlow port configuration. */
-    int stp_port_no;                 /* STP port number or 0 if not in use. */
+    int stp_port_no;                 /* STP port number or -1 if not in use. */
 
     struct hmap skb_priorities;      /* Map of 'skb_priority_to_dscp's. */
 
@@ -621,7 +621,7 @@ xport_lookup(const struct ofport_dpif *ofport)
 static struct stp_port *
 xport_get_stp_port(const struct xport *xport)
 {
-    return xport->xbridge->stp && xport->stp_port_no
+    return xport->xbridge->stp && xport->stp_port_no != -1
         ? stp_get_port(xport->xbridge->stp, xport->stp_port_no)
         : NULL;
 }
@@ -1224,6 +1224,7 @@ xlate_normal(struct xlate_ctx *ctx)
     struct xbundle *in_xbundle;
     struct xport *in_port;
     struct mac_entry *mac;
+    void *mac_port;
     uint16_t vlan;
     uint16_t vid;
 
@@ -1286,8 +1287,11 @@ xlate_normal(struct xlate_ctx *ctx)
     /* Determine output bundle. */
     ovs_rwlock_rdlock(&ctx->xbridge->ml->rwlock);
     mac = mac_learning_lookup(ctx->xbridge->ml, flow->dl_dst, vlan);
-    if (mac) {
-        struct xbundle *mac_xbundle = xbundle_lookup(mac->port.p);
+    mac_port = mac ? mac->port.p : NULL;
+    ovs_rwlock_unlock(&ctx->xbridge->ml->rwlock);
+
+    if (mac_port) {
+        struct xbundle *mac_xbundle = xbundle_lookup(mac_port);
         if (mac_xbundle && mac_xbundle != in_xbundle) {
             xlate_report(ctx, "forwarding to learned port");
             output_normal(ctx, mac_xbundle, vlan);
@@ -1310,7 +1314,6 @@ xlate_normal(struct xlate_ctx *ctx)
         }
         ctx->xout->nf_output_iface = NF_OUT_FLOOD;
     }
-    ovs_rwlock_unlock(&ctx->xbridge->ml->rwlock);
 }
 
 /* Compose SAMPLE action for sFlow or IPFIX.  The given probability is
@@ -1665,21 +1668,24 @@ compose_output_action(struct xlate_ctx *ctx, ofp_port_t ofp_port)
 
 static void
 xlate_recursively(struct xlate_ctx *ctx, struct rule_dpif *rule)
-    OVS_RELEASES(rule->up.evict)
+    OVS_RELEASES(rule)
 {
     struct rule_dpif *old_rule = ctx->rule;
+    const struct ofpact *ofpacts;
+    size_t ofpacts_len;
 
     if (ctx->xin->resubmit_stats) {
-        rule_credit_stats(rule, ctx->xin->resubmit_stats);
+        rule_dpif_credit_stats(rule, ctx->xin->resubmit_stats);
     }
 
     ctx->recurse++;
     ctx->rule = rule;
-    do_xlate_actions(rule->up.ofpacts, rule->up.ofpacts_len, ctx);
+    rule_dpif_get_actions(rule, &ofpacts, &ofpacts_len);
+    do_xlate_actions(ofpacts, ofpacts_len, ctx);
     ctx->rule = old_rule;
     ctx->recurse--;
 
-    rule_release(rule);
+    rule_dpif_release(rule);
 }
 
 static void
@@ -1719,10 +1725,9 @@ xlate_table_action(struct xlate_ctx *ctx,
              * OFPTC_TABLE_MISS_DROP
              * When OF1.0, OFPTC_TABLE_MISS_CONTINUE is used. What to do? */
             xport = get_ofp_port(ctx->xbridge, ctx->xin->flow.in_port.ofp_port);
-            rule = choose_miss_rule(xport ? xport->config : 0,
-                                    ctx->xbridge->miss_rule,
-                                    ctx->xbridge->no_packet_in_rule);
-            ovs_rwlock_rdlock(&rule->up.evict);
+            choose_miss_rule(xport ? xport->config : 0,
+                             ctx->xbridge->miss_rule,
+                             ctx->xbridge->no_packet_in_rule, &rule);
             xlate_recursively(ctx, rule);
         }
 
@@ -1808,7 +1813,7 @@ execute_controller_action(struct xlate_ctx *ctx, int len,
     pin->reason = reason;
     pin->controller_id = controller_id;
     pin->table_id = ctx->table_id;
-    pin->cookie = ctx->rule ? ctx->rule->up.flow_cookie : 0;
+    pin->cookie = ctx->rule ? rule_dpif_get_flow_cookie(ctx->rule) : 0;
 
     pin->send_len = len;
     flow_get_metadata(&ctx->xin->flow, &pin->fmd);
@@ -2116,8 +2121,8 @@ xlate_fin_timeout(struct xlate_ctx *ctx,
                   const struct ofpact_fin_timeout *oft)
 {
     if (ctx->xin->tcp_flags & (TCP_FIN | TCP_RST) && ctx->rule) {
-        ofproto_rule_reduce_timeouts(&ctx->rule->up, oft->fin_idle_timeout,
-                                     oft->fin_hard_timeout);
+        rule_dpif_reduce_timeouts(ctx->rule, oft->fin_idle_timeout,
+                                  oft->fin_hard_timeout);
     }
 }
 
@@ -2179,6 +2184,10 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
         case OFPACT_OUTPUT:
             xlate_output_action(ctx, ofpact_get_OUTPUT(a)->port,
                                 ofpact_get_OUTPUT(a)->max_len, true);
+            break;
+
+        case OFPACT_GROUP:
+            /* XXX not yet implemented */
             break;
 
         case OFPACT_CONTROLLER:
@@ -2595,8 +2604,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
         ofpacts = xin->ofpacts;
         ofpacts_len = xin->ofpacts_len;
     } else if (xin->rule) {
-        ofpacts = xin->rule->up.ofpacts;
-        ofpacts_len = xin->rule->up.ofpacts_len;
+        rule_dpif_get_actions(xin->rule, &ofpacts, &ofpacts_len);
     } else {
         NOT_REACHED();
     }

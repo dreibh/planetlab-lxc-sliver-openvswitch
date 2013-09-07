@@ -54,17 +54,11 @@
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
 
-#include "checksum.h"
 #include "datapath.h"
 #include "flow.h"
 #include "vlan.h"
 #include "vport-internal_dev.h"
 #include "vport-netdev.h"
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18) || \
-    LINUX_VERSION_CODE >= KERNEL_VERSION(3,11,0)
-#error Kernels before 2.6.18 or after 3.9 are not supported by this version of Open vSwitch.
-#endif
 
 #define REHASH_FLOW_INTERVAL (10 * 60 * HZ)
 static void rehash_flow_table(struct work_struct *work);
@@ -278,7 +272,7 @@ static struct genl_family dp_packet_genl_family = {
 	.name = OVS_PACKET_FAMILY,
 	.version = OVS_PACKET_VERSION,
 	.maxattr = OVS_PACKET_ATTR_MAX,
-	 SET_NETNSOK
+	.netnsok = true,
 	 SET_PARALLEL_OPS
 };
 
@@ -299,8 +293,6 @@ int ovs_dp_upcall(struct datapath *dp, struct sk_buff *skb,
 		err = -ENODEV;
 		goto err;
 	}
-
-	forward_ip_summed(skb, true);
 
 	if (!skb_is_gso(skb))
 		err = queue_userspace_packet(ovs_dp_get_net(dp), dp_ifindex, skb, upcall_info);
@@ -419,10 +411,12 @@ static int queue_userspace_packet(struct net *net, int dp_ifindex,
 		nskb = skb_clone(skb, GFP_ATOMIC);
 		if (!nskb)
 			return -ENOMEM;
-		
-		err = vlan_deaccel_tag(nskb);
-		if (err)
-			return err;
+
+		nskb = __vlan_put_tag(nskb, nskb->vlan_proto, vlan_tx_tag_get(nskb));
+		if (!nskb)
+			return -ENOMEM;
+
+		vlan_set_tci(nskb, 0);
 
 		skb = nskb;
 	}
@@ -662,14 +656,8 @@ static int validate_set(const struct nlattr *a,
 	int err;
 
 	case OVS_KEY_ATTR_PRIORITY:
-	case OVS_KEY_ATTR_ETHERNET:
-		break;
-
 	case OVS_KEY_ATTR_SKB_MARK:
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20) && !defined(CONFIG_NETFILTER)
-		if (nla_get_u32(ovs_key) != 0)
-			return -EINVAL;
-#endif
+	case OVS_KEY_ATTR_ETHERNET:
 		break;
 
 	case OVS_KEY_ATTR_TUNNEL:
@@ -932,7 +920,7 @@ static int ovs_packet_cmd_execute(struct sk_buff *skb, struct genl_info *info)
 	OVS_CB(packet)->flow = flow;
 	OVS_CB(packet)->pkt_key = &flow->key;
 	packet->priority = flow->key.phy.priority;
-	skb_set_mark(packet, flow->key.phy.skb_mark);
+	packet->mark = flow->key.phy.skb_mark;
 
 	rcu_read_lock();
 	dp = get_dp(sock_net(skb->sk), ovs_header->dp_ifindex);
@@ -959,11 +947,7 @@ err:
 }
 
 static const struct nla_policy packet_policy[OVS_PACKET_ATTR_MAX + 1] = {
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,18)
 	[OVS_PACKET_ATTR_PACKET] = { .len = ETH_HLEN },
-#else
-	[OVS_PACKET_ATTR_PACKET] = { .minlen = ETH_HLEN },
-#endif
 	[OVS_PACKET_ATTR_KEY] = { .type = NLA_NESTED },
 	[OVS_PACKET_ATTR_ACTIONS] = { .type = NLA_NESTED },
 };
@@ -1015,7 +999,7 @@ static struct genl_family dp_flow_genl_family = {
 	.name = OVS_FLOW_FAMILY,
 	.version = OVS_FLOW_VERSION,
 	.maxattr = OVS_FLOW_ATTR_MAX,
-	 SET_NETNSOK
+	.netnsok = true,
 	 SET_PARALLEL_OPS
 };
 
@@ -1399,7 +1383,7 @@ static int ovs_flow_cmd_new_or_set(struct sk_buff *skb, struct genl_info *info)
 	if (!IS_ERR(reply))
 		ovs_notify(reply, info, &ovs_dp_flow_multicast_group);
 	else
-		netlink_set_err(GENL_SOCK(sock_net(skb->sk)), 0,
+		netlink_set_err(sock_net(skb->sk)->genl_sock, 0,
 				ovs_dp_flow_multicast_group.id,	PTR_ERR(reply));
 	return 0;
 
@@ -1583,9 +1567,7 @@ static struct genl_ops dp_flow_genl_ops[] = {
 };
 
 static const struct nla_policy datapath_policy[OVS_DP_ATTR_MAX + 1] = {
-#ifdef HAVE_NLA_NUL_STRING
 	[OVS_DP_ATTR_NAME] = { .type = NLA_NUL_STRING, .len = IFNAMSIZ - 1 },
-#endif
 	[OVS_DP_ATTR_UPCALL_PID] = { .type = NLA_U32 },
 };
 
@@ -1595,7 +1577,7 @@ static struct genl_family dp_datapath_genl_family = {
 	.name = OVS_DATAPATH_FAMILY,
 	.version = OVS_DATAPATH_VERSION,
 	.maxattr = OVS_DP_ATTR_MAX,
-	 SET_NETNSOK
+	.netnsok = true,
 	 SET_PARALLEL_OPS
 };
 
@@ -1663,11 +1645,6 @@ static struct sk_buff *ovs_dp_cmd_build_info(struct datapath *dp, u32 portid,
 	return skb;
 }
 
-static int ovs_dp_cmd_validate(struct nlattr *a[OVS_DP_ATTR_MAX + 1])
-{
-	return CHECK_NUL_STRING(a[OVS_DP_ATTR_NAME], IFNAMSIZ - 1);
-}
-
 /* Called with ovs_mutex. */
 static struct datapath *lookup_datapath(struct net *net,
 					struct ovs_header *ovs_header,
@@ -1700,10 +1677,6 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
 
 	err = -EINVAL;
 	if (!a[OVS_DP_ATTR_NAME] || !a[OVS_DP_ATTR_UPCALL_PID])
-		goto err;
-
-	err = ovs_dp_cmd_validate(a);
-	if (err)
 		goto err;
 
 	ovs_lock();
@@ -1815,10 +1788,6 @@ static int ovs_dp_cmd_del(struct sk_buff *skb, struct genl_info *info)
 	struct datapath *dp;
 	int err;
 
-	err = ovs_dp_cmd_validate(info->attrs);
-	if (err)
-		return err;
-
 	ovs_lock();
 	dp = lookup_datapath(sock_net(skb->sk), info->userhdr, info->attrs);
 	err = PTR_ERR(dp);
@@ -1848,10 +1817,6 @@ static int ovs_dp_cmd_set(struct sk_buff *skb, struct genl_info *info)
 	struct datapath *dp;
 	int err;
 
-	err = ovs_dp_cmd_validate(info->attrs);
-	if (err)
-		return err;
-
 	ovs_lock();
 	dp = lookup_datapath(sock_net(skb->sk), info->userhdr, info->attrs);
 	err = PTR_ERR(dp);
@@ -1862,7 +1827,7 @@ static int ovs_dp_cmd_set(struct sk_buff *skb, struct genl_info *info)
 				      info->snd_seq, OVS_DP_CMD_NEW);
 	if (IS_ERR(reply)) {
 		err = PTR_ERR(reply);
-		netlink_set_err(GENL_SOCK(sock_net(skb->sk)), 0,
+		netlink_set_err(sock_net(skb->sk)->genl_sock, 0,
 				ovs_dp_datapath_multicast_group.id, err);
 		err = 0;
 		goto unlock;
@@ -1882,10 +1847,6 @@ static int ovs_dp_cmd_get(struct sk_buff *skb, struct genl_info *info)
 	struct sk_buff *reply;
 	struct datapath *dp;
 	int err;
-
-	err = ovs_dp_cmd_validate(info->attrs);
-	if (err)
-		return err;
 
 	ovs_lock();
 	dp = lookup_datapath(sock_net(skb->sk), info->userhdr, info->attrs);
@@ -1957,12 +1918,8 @@ static struct genl_ops dp_datapath_genl_ops[] = {
 };
 
 static const struct nla_policy vport_policy[OVS_VPORT_ATTR_MAX + 1] = {
-#ifdef HAVE_NLA_NUL_STRING
 	[OVS_VPORT_ATTR_NAME] = { .type = NLA_NUL_STRING, .len = IFNAMSIZ - 1 },
 	[OVS_VPORT_ATTR_STATS] = { .len = sizeof(struct ovs_vport_stats) },
-#else
-	[OVS_VPORT_ATTR_STATS] = { .minlen = sizeof(struct ovs_vport_stats) },
-#endif
 	[OVS_VPORT_ATTR_PORT_NO] = { .type = NLA_U32 },
 	[OVS_VPORT_ATTR_TYPE] = { .type = NLA_U32 },
 	[OVS_VPORT_ATTR_UPCALL_PID] = { .type = NLA_U32 },
@@ -1975,7 +1932,7 @@ static struct genl_family dp_vport_genl_family = {
 	.name = OVS_VPORT_FAMILY,
 	.version = OVS_VPORT_VERSION,
 	.maxattr = OVS_VPORT_ATTR_MAX,
-	 SET_NETNSOK
+	.netnsok = true,
 	 SET_PARALLEL_OPS
 };
 
@@ -2039,11 +1996,6 @@ struct sk_buff *ovs_vport_cmd_build_info(struct vport *vport, u32 portid,
 	return skb;
 }
 
-static int ovs_vport_cmd_validate(struct nlattr *a[OVS_VPORT_ATTR_MAX + 1])
-{
-	return CHECK_NUL_STRING(a[OVS_VPORT_ATTR_NAME], IFNAMSIZ - 1);
-}
-
 /* Called with ovs_mutex or RCU read lock. */
 static struct vport *lookup_vport(struct net *net,
 				  struct ovs_header *ovs_header,
@@ -2092,10 +2044,6 @@ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
 	err = -EINVAL;
 	if (!a[OVS_VPORT_ATTR_NAME] || !a[OVS_VPORT_ATTR_TYPE] ||
 	    !a[OVS_VPORT_ATTR_UPCALL_PID])
-		goto exit;
-
-	err = ovs_vport_cmd_validate(a);
-	if (err)
 		goto exit;
 
 	ovs_lock();
@@ -2166,10 +2114,6 @@ static int ovs_vport_cmd_set(struct sk_buff *skb, struct genl_info *info)
 	struct vport *vport;
 	int err;
 
-	err = ovs_vport_cmd_validate(a);
-	if (err)
-		goto exit;
-
 	ovs_lock();
 	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
 	err = PTR_ERR(vport);
@@ -2212,7 +2156,6 @@ exit_free:
 	kfree_skb(reply);
 exit_unlock:
 	ovs_unlock();
-exit:
 	return err;
 }
 
@@ -2222,10 +2165,6 @@ static int ovs_vport_cmd_del(struct sk_buff *skb, struct genl_info *info)
 	struct sk_buff *reply;
 	struct vport *vport;
 	int err;
-
-	err = ovs_vport_cmd_validate(a);
-	if (err)
-		goto exit;
 
 	ovs_lock();
 	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
@@ -2251,7 +2190,6 @@ static int ovs_vport_cmd_del(struct sk_buff *skb, struct genl_info *info)
 
 exit_unlock:
 	ovs_unlock();
-exit:
 	return err;
 }
 
@@ -2262,10 +2200,6 @@ static int ovs_vport_cmd_get(struct sk_buff *skb, struct genl_info *info)
 	struct sk_buff *reply;
 	struct vport *vport;
 	int err;
-
-	err = ovs_vport_cmd_validate(a);
-	if (err)
-		goto exit;
 
 	rcu_read_lock();
 	vport = lookup_vport(sock_net(skb->sk), ovs_header, a);
@@ -2285,7 +2219,6 @@ static int ovs_vport_cmd_get(struct sk_buff *skb, struct genl_info *info)
 
 exit_unlock:
 	rcu_read_unlock();
-exit:
 	return err;
 }
 

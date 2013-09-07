@@ -134,14 +134,16 @@ AC_DEFUN([OVS_CHECK_LINUX], [
     AC_MSG_RESULT([$kversion])
 
     if test "$version" -ge 3; then
-       : # Linux 3.x
-    elif test "$version" = 2 && test "$patchlevel" -ge 6; then
-       : # Linux 2.6.x
-    else
-       if test "$KBUILD" = "$KSRC"; then
-         AC_ERROR([Linux kernel in $KBUILD is version $kversion, but version 2.6 or later is required])
+       if test "$version" = 3 && test "$patchlevel" -le 10; then
+          : # Linux 3.x
        else
-         AC_ERROR([Linux kernel in build tree $KBUILD (source tree $KSRC) is version $kversion, but version 2.6 or later is required])
+         AC_ERROR([Linux kernel in $KBUILD is version $kversion, but version newer than 3.10.x is not supported])
+       fi
+    else
+       if test "$version" -le 1 || test "$patchlevel" -le 5 || test "$sublevel" -le 31; then
+         AC_ERROR([Linux kernel in $KBUILD is version $kversion, but version 2.6.32 or later is required])
+       else
+         : # Linux 2.6.x
        fi
     fi
     if (test ! -e "$KBUILD"/include/linux/version.h && \
@@ -258,9 +260,6 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
   OVS_GREP_IFELSE([$KSRC/include/linux/skbuff.h], [skb_reset_mac_len])
   OVS_GREP_IFELSE([$KSRC/include/linux/skbuff.h], [skb_unclone])
 
-  OVS_GREP_IFELSE([$KSRC/include/linux/string.h], [kmemdup], [],
-                  [OVS_GREP_IFELSE([$KSRC/include/linux/slab.h], [kmemdup])])
-
   OVS_GREP_IFELSE([$KSRC/include/linux/types.h], [bool],
                   [OVS_DEFINE([HAVE_BOOL_TYPE])])
   OVS_GREP_IFELSE([$KSRC/include/linux/types.h], [__wsum],
@@ -272,7 +271,6 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
   OVS_GREP_IFELSE([$KSRC/include/net/checksum.h], [csum_unfold])
 
   OVS_GREP_IFELSE([$KSRC/include/net/genetlink.h], [parallel_ops])
-  OVS_GREP_IFELSE([$KSRC/include/net/netlink.h], [NLA_NUL_STRING])
   OVS_GREP_IFELSE([$KSRC/include/net/netlink.h], [nla_get_be16])
   OVS_GREP_IFELSE([$KSRC/include/net/netlink.h], [nla_put_be16])
   OVS_GREP_IFELSE([$KSRC/include/net/netlink.h], [nla_put_be32])

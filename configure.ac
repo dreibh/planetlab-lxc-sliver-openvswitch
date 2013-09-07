@@ -13,7 +13,7 @@
 # limitations under the License.
 
 AC_PREREQ(2.64)
-AC_INIT(openvswitch, 1.12.90, ovs-bugs@openvswitch.org)
+AC_INIT(openvswitch, 2.0.90, ovs-bugs@openvswitch.org)
 AC_CONFIG_SRCDIR([datapath/datapath.c])
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_AUX_DIR([build-aux])
@@ -80,7 +80,6 @@ OVS_CHECK_LINKER_SECTIONS
 OVS_CHECK_XENSERVER_VERSION
 OVS_CHECK_GROFF
 OVS_CHECK_GNU_MAKE
-OVS_CHECK_CACHE_TIME
 OVS_CHECK_TLS
 OVS_CHECK_GCC4_ATOMICS
 OVS_CHECK_ATOMIC_ALWAYS_LOCK_FREE(1)

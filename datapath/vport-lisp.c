@@ -20,7 +20,6 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
 
 #include <linux/in.h>
 #include <linux/ip.h>
@@ -239,11 +238,6 @@ static void ovs_tnl_rcv(struct vport *vport, struct sk_buff *skb,
 	secpath_reset(skb);
 	vlan_set_tci(skb, 0);
 
-	if (unlikely(compute_ip_summed(skb, false))) {
-		kfree_skb(skb);
-		return;
-	}
-
 	ovs_vport_receive(vport, skb, tun_key);
 }
 
@@ -442,9 +436,6 @@ static struct sk_buff *handle_offloads(struct sk_buff *skb)
 {
 	int err;
 
-	forward_ip_summed(skb, true);
-
-
 	if (skb_is_gso(skb)) {
 		struct sk_buff *nskb;
 		char cb[sizeof(skb->cb)];
@@ -463,7 +454,7 @@ static struct sk_buff *handle_offloads(struct sk_buff *skb)
 			memcpy(nskb->cb, cb, sizeof(cb));
 			nskb = nskb->next;
 		}
-	} else if (get_ip_summed(skb) == OVS_CSUM_PARTIAL) {
+	} else if (skb->ip_summed == CHECKSUM_PARTIAL) {
 		/* Pages aren't locked and could change at any time.
 		 * If this happens after we compute the checksum, the
 		 * checksum will be wrong.  We linearize now to avoid
@@ -480,8 +471,7 @@ static struct sk_buff *handle_offloads(struct sk_buff *skb)
 			goto error;
 	}
 
-	set_ip_summed(skb, OVS_CSUM_NONE);
-
+	skb->ip_summed = CHECKSUM_NONE;
 	return skb;
 
 error:
@@ -508,7 +498,7 @@ static int ovs_tnl_send(struct vport *vport, struct sk_buff *skb,
 			OVS_CB(skb)->tun_key->ipv4_dst,
 			ipproto,
 			OVS_CB(skb)->tun_key->ipv4_tos,
-			skb_get_mark(skb));
+			skb->mark);
 	if (IS_ERR(rt)) {
 		err = PTR_ERR(rt);
 		goto error;
@@ -552,8 +542,14 @@ static int ovs_tnl_send(struct vport *vport, struct sk_buff *skb,
 
 		skb->next = NULL;
 
-		if (unlikely(vlan_deaccel_tag(skb)))
-			goto next;
+		if (vlan_tx_tag_present(skb)) {
+			if (unlikely(!__vlan_put_tag(skb,
+							skb->vlan_proto,
+							vlan_tx_tag_get(skb))))
+				goto next;
+
+			vlan_set_tci(skb, 0);
+		}
 
 		frag_len = skb->len;
 		skb_push(skb, tunnel_hlen);
@@ -646,6 +642,3 @@ const struct vport_ops ovs_lisp_vport_ops = {
 	.get_options	= lisp_get_options,
 	.send		= lisp_tnl_send,
 };
-#else
-#warning LISP tunneling will not be available on kernels before 2.6.26
-#endif /* Linux kernel < 2.6.26 */
