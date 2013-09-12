@@ -415,6 +415,7 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
     struct dp_netdev_port *port;
     struct netdev *netdev;
     struct netdev_rx *rx;
+    enum netdev_flags flags;
     const char *open_type;
     int mtu;
     int error;
@@ -427,8 +428,14 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
     if (error) {
         return error;
     }
-    /* XXX reject loopback devices */
     /* XXX reject non-Ethernet devices */
+
+    netdev_get_flags(netdev, &flags);
+    if (flags & NETDEV_LOOPBACK) {
+        VLOG_ERR("%s: cannot add a loopback device", devname);
+        netdev_close(netdev);
+        return EINVAL;
+    }
 
     error = netdev_rx_open(netdev, &rx);
     if (error

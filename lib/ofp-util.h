@@ -227,12 +227,20 @@ struct ofpbuf *ofputil_make_flow_mod_table_id(bool flow_mod_table_id);
 
 /* Protocol-independent flow_mod flags. */
 enum ofputil_flow_mod_flags {
+    /* Flags that are maintained with a flow as part of its state.
+     *
+     * (OFPUTIL_FF_EMERG would be here too, if OVS supported it.) */
     OFPUTIL_FF_SEND_FLOW_REM = 1 << 0, /* All versions. */
-    OFPUTIL_FF_CHECK_OVERLAP = 1 << 1, /* All versions. */
-    OFPUTIL_FF_EMERG         = 1 << 2, /* OpenFlow 1.0 only. */
-    OFPUTIL_FF_RESET_COUNTS  = 1 << 3, /* OpenFlow 1.2+. */
-    OFPUTIL_FF_NO_PKT_COUNTS = 1 << 4, /* OpenFlow 1.3+. */
-    OFPUTIL_FF_NO_BYT_COUNTS = 1 << 5  /* OpenFlow 1.3+. */
+    OFPUTIL_FF_NO_PKT_COUNTS = 1 << 1, /* OpenFlow 1.3+. */
+    OFPUTIL_FF_NO_BYT_COUNTS = 1 << 2, /* OpenFlow 1.3+. */
+#define OFPUTIL_FF_STATE (OFPUTIL_FF_SEND_FLOW_REM      \
+                          | OFPUTIL_FF_NO_PKT_COUNTS    \
+                          | OFPUTIL_FF_NO_BYT_COUNTS)
+
+    /* Flags that affect flow_mod behavior but are not part of flow state. */
+    OFPUTIL_FF_CHECK_OVERLAP = 1 << 3, /* All versions. */
+    OFPUTIL_FF_EMERG         = 1 << 4, /* OpenFlow 1.0 only. */
+    OFPUTIL_FF_RESET_COUNTS  = 1 << 5, /* OpenFlow 1.2+. */
 };
 
 /* Protocol-independent flow_mod.
@@ -563,6 +571,17 @@ struct ofputil_port_mod {
 enum ofperr ofputil_decode_port_mod(const struct ofp_header *,
                                     struct ofputil_port_mod *);
 struct ofpbuf *ofputil_encode_port_mod(const struct ofputil_port_mod *,
+                                       enum ofputil_protocol);
+
+/* Abstract ofp_table_mod. */
+struct ofputil_table_mod {
+    uint8_t table_id;         /* ID of the table, 0xff indicates all tables. */
+    uint32_t config;
+};
+
+enum ofperr ofputil_decode_table_mod(const struct ofp_header *,
+                                    struct ofputil_table_mod *);
+struct ofpbuf *ofputil_encode_table_mod(const struct ofputil_table_mod *,
                                        enum ofputil_protocol);
 
 /* Meter band configuration for all supported band types. */

@@ -2,6 +2,7 @@ The following people, in alphabetical order, have either authored or
 signed off on commits in the Open vSwitch version control repository.
 
 Aaron Rosen             arosen@clemson.edu
+Alexandru Copot         alex.mihai.c@gmail.com
 Alexey I. Froloff       raorn@altlinux.org
 Alex Wang               alexw@nicira.com
 Andrew Evans            aevans@nicira.com
@@ -44,7 +45,7 @@ Ian Campbell            Ian.Campbell@citrix.com
 Isaku Yamahata          yamahata@valinux.co.jp
 James P.                roampune@gmail.com
 James Page              james.page@ubuntu.com
-Jarno Rajahalme         jarno.rajahalme@nsn.com
+Jarno Rajahalme         jrajahalme@nicira.com
 Jean Tourrilhes         jt@hpl.hp.com
 Jeremy Stribling        strib@nicira.com
 Jesse Gross             jesse@nicira.com

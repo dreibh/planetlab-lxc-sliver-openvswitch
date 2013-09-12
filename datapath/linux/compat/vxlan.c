@@ -209,7 +209,7 @@ static int handle_offloads(struct sk_buff *skb)
 	return 0;
 }
 
-int vxlan_xmit_skb(struct net *net, struct vxlan_sock *vs,
+int vxlan_xmit_skb(struct vxlan_sock *vs,
 		   struct rtable *rt, struct sk_buff *skb,
 		   __be32 src, __be32 dst, __u8 tos, __u8 ttl, __be16 df,
 		   __be16 src_port, __be16 dst_port, __be32 vni)
@@ -259,8 +259,7 @@ int vxlan_xmit_skb(struct net *net, struct vxlan_sock *vs,
 	if (err)
 		return err;
 
-	return iptunnel_xmit(net, rt, skb, src, dst,
-			IPPROTO_UDP, tos, ttl, df);
+	return iptunnel_xmit(rt, skb, src, dst, IPPROTO_UDP, tos, ttl, df);
 }
 
 static void rcu_free_vs(struct rcu_head *rcu)
@@ -362,7 +361,7 @@ void vxlan_sock_release(struct vxlan_sock *vs)
 	hlist_del_rcu(&vs->hlist);
 	spin_unlock(&vn->sock_lock);
 
-	queue_work(&vs->del_work);
+	queue_work(system_wq, &vs->del_work);
 }
 
 static int vxlan_init_net(struct net *net)
