@@ -42,12 +42,12 @@ VLOG_DEFINE_THIS_MODULE(timeval);
 struct clock {
     clockid_t id;               /* CLOCK_MONOTONIC or CLOCK_REALTIME. */
 
-    /* Features for use by unit tests.  Protected by 'rwlock'. */
-    struct ovs_rwlock rwlock;
-    struct timespec warp;       /* Offset added for unit tests. */
-    bool stopped;               /* Disables real-time updates if true.  */
-
-    struct timespec cache;      /* Last time read from kernel. */
+    /* Features for use by unit tests.  Protected by 'mutex'. */
+    struct ovs_mutex mutex;
+    atomic_bool slow_path;             /* True if warped or stopped. */
+    struct timespec warp OVS_GUARDED;  /* Offset added for unit tests. */
+    bool stopped OVS_GUARDED;          /* Disable real-time updates if true. */
+    struct timespec cache OVS_GUARDED; /* Last time read from kernel. */
 };
 
 /* Our clocks. */
@@ -76,7 +76,8 @@ init_clock(struct clock *c, clockid_t id)
 {
     memset(c, 0, sizeof *c);
     c->id = id;
-    ovs_rwlock_init(&c->rwlock);
+    ovs_mutex_init(&c->mutex);
+    atomic_init(&c->slow_path, false);
     xclock_gettime(c->id, &c->cache);
 }
 
@@ -105,14 +106,28 @@ time_init(void)
 static void
 time_timespec__(struct clock *c, struct timespec *ts)
 {
+    bool slow_path;
+
     time_init();
 
-    if (!c->stopped) {
+    atomic_read_explicit(&c->slow_path, &slow_path, memory_order_relaxed);
+    if (!slow_path) {
         xclock_gettime(c->id, ts);
     } else {
-        ovs_rwlock_rdlock(&c->rwlock);
-        timespec_add(ts, &c->cache, &c->warp);
-        ovs_rwlock_unlock(&c->rwlock);
+        struct timespec warp;
+        struct timespec cache;
+        bool stopped;
+
+        ovs_mutex_lock(&c->mutex);
+        stopped = c->stopped;
+        warp = c->warp;
+        cache = c->cache;
+        ovs_mutex_unlock(&c->mutex);
+
+        if (!stopped) {
+            xclock_gettime(c->id, &cache);
+        }
+        timespec_add(ts, &cache, &warp);
     }
 }
 
@@ -320,14 +335,24 @@ timespec_add(struct timespec *sum,
     *sum = tmp;
 }
 
+static bool
+is_warped(const struct clock *c)
+{
+    bool warped;
+
+    ovs_mutex_lock(&c->mutex);
+    warped = monotonic_clock.warp.tv_sec || monotonic_clock.warp.tv_nsec;
+    ovs_mutex_unlock(&c->mutex);
+
+    return warped;
+}
+
 static void
 log_poll_interval(long long int last_wakeup)
 {
     long long int interval = time_msec() - last_wakeup;
 
-    if (interval >= 1000
-        && !monotonic_clock.warp.tv_sec
-        && !monotonic_clock.warp.tv_nsec) {
+    if (interval >= 1000 && !is_warped(&monotonic_clock)) {
         const struct rusage *last_rusage = get_recent_rusage();
         struct rusage rusage;
 
@@ -451,10 +476,11 @@ timeval_stop_cb(struct unixctl_conn *conn,
                  int argc OVS_UNUSED, const char *argv[] OVS_UNUSED,
                  void *aux OVS_UNUSED)
 {
-    ovs_rwlock_wrlock(&monotonic_clock.rwlock);
+    ovs_mutex_lock(&monotonic_clock.mutex);
+    atomic_store(&monotonic_clock.slow_path, true);
     monotonic_clock.stopped = true;
     xclock_gettime(monotonic_clock.id, &monotonic_clock.cache);
-    ovs_rwlock_unlock(&monotonic_clock.rwlock);
+    ovs_mutex_unlock(&monotonic_clock.mutex);
 
     unixctl_command_reply(conn, NULL);
 }
@@ -480,9 +506,10 @@ timeval_warp_cb(struct unixctl_conn *conn,
     ts.tv_sec = msecs / 1000;
     ts.tv_nsec = (msecs % 1000) * 1000 * 1000;
 
-    ovs_rwlock_wrlock(&monotonic_clock.rwlock);
+    ovs_mutex_lock(&monotonic_clock.mutex);
+    atomic_store(&monotonic_clock.slow_path, true);
     timespec_add(&monotonic_clock.warp, &monotonic_clock.warp, &ts);
-    ovs_rwlock_unlock(&monotonic_clock.rwlock);
+    ovs_mutex_unlock(&monotonic_clock.mutex);
 
     unixctl_command_reply(conn, "warped");
 }
@@ -493,4 +520,50 @@ timeval_dummy_register(void)
     unixctl_command_register("time/stop", "", 0, 0, timeval_stop_cb, NULL);
     unixctl_command_register("time/warp", "MSECS", 1, 1,
                              timeval_warp_cb, NULL);
+}
+
+
+
+/* strftime() with an extension for high-resolution timestamps.  Any '#'s in
+ * 'format' will be replaced by subseconds, e.g. use "%S.###" to obtain results
+ * like "01.123".  */
+size_t
+strftime_msec(char *s, size_t max, const char *format,
+              const struct tm_msec *tm)
+{
+    size_t n;
+
+    n = strftime(s, max, format, &tm->tm);
+    if (n) {
+        char decimals[4];
+        char *p;
+
+        sprintf(decimals, "%03d", tm->msec);
+        for (p = strchr(s, '#'); p; p = strchr(p, '#')) {
+            char *d = decimals;
+            while (*p == '#')  {
+                *p++ = *d ? *d++ : '0';
+            }
+        }
+    }
+
+    return n;
+}
+
+struct tm_msec *
+localtime_msec(long long int now, struct tm_msec *result)
+{
+  time_t now_sec = now / 1000;
+  localtime_r(&now_sec, &result->tm);
+  result->msec = now % 1000;
+  return result;
+}
+
+struct tm_msec *
+gmtime_msec(long long int now, struct tm_msec *result)
+{
+  time_t now_sec = now / 1000;
+  gmtime_r(&now_sec, &result->tm);
+  result->msec = now % 1000;
+  return result;
 }

@@ -46,12 +46,15 @@
 extern "C" {
 #endif
 
+/* Needed only for the lock annotation in struct classifier. */
+extern struct ovs_mutex ofproto_mutex;
+
 /* A flow classifier. */
 struct classifier {
     int n_rules;                /* Total number of rules. */
     struct hmap tables;         /* Contains "struct cls_table"s.  */
     struct list tables_priority; /* Tables in descending priority order */
-    struct ovs_rwlock rwlock;
+    struct ovs_rwlock rwlock OVS_ACQ_AFTER(ofproto_mutex);
 };
 
 /* A set of rules that all have the same fields wildcarded. */
@@ -140,7 +143,7 @@ struct cls_cursor {
 void cls_cursor_init(struct cls_cursor *cursor, const struct classifier *cls,
                      const struct cls_rule *match) OVS_REQ_RDLOCK(cls->rwlock);
 struct cls_rule *cls_cursor_first(struct cls_cursor *cursor);
-struct cls_rule *cls_cursor_next(struct cls_cursor *cursor, struct cls_rule *);
+struct cls_rule *cls_cursor_next(struct cls_cursor *cursor, const struct cls_rule *);
 
 #define CLS_CURSOR_FOR_EACH(RULE, MEMBER, CURSOR)                       \
     for (ASSIGN_CONTAINER(RULE, cls_cursor_first(CURSOR), MEMBER);      \

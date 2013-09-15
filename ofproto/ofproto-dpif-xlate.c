@@ -44,6 +44,7 @@
 #include "ofproto/ofproto-dpif-mirror.h"
 #include "ofproto/ofproto-dpif-sflow.h"
 #include "ofproto/ofproto-dpif.h"
+#include "ofproto/ofproto-provider.h"
 #include "tunnel.h"
 #include "vlog.h"
 
@@ -1668,11 +1669,9 @@ compose_output_action(struct xlate_ctx *ctx, ofp_port_t ofp_port)
 
 static void
 xlate_recursively(struct xlate_ctx *ctx, struct rule_dpif *rule)
-    OVS_RELEASES(rule)
 {
     struct rule_dpif *old_rule = ctx->rule;
-    const struct ofpact *ofpacts;
-    size_t ofpacts_len;
+    struct rule_actions *actions;
 
     if (ctx->xin->resubmit_stats) {
         rule_dpif_credit_stats(rule, ctx->xin->resubmit_stats);
@@ -1680,12 +1679,11 @@ xlate_recursively(struct xlate_ctx *ctx, struct rule_dpif *rule)
 
     ctx->recurse++;
     ctx->rule = rule;
-    rule_dpif_get_actions(rule, &ofpacts, &ofpacts_len);
-    do_xlate_actions(ofpacts, ofpacts_len, ctx);
+    actions = rule_dpif_get_actions(rule);
+    do_xlate_actions(actions->ofpacts, actions->ofpacts_len, ctx);
+    rule_actions_unref(actions);
     ctx->rule = old_rule;
     ctx->recurse--;
-
-    rule_dpif_release(rule);
 }
 
 static void
@@ -1696,7 +1694,6 @@ xlate_table_action(struct xlate_ctx *ctx,
         struct rule_dpif *rule;
         ofp_port_t old_in_port = ctx->xin->flow.in_port.ofp_port;
         uint8_t old_table_id = ctx->table_id;
-        bool got_rule;
 
         ctx->table_id = table_id;
 
@@ -1704,18 +1701,16 @@ xlate_table_action(struct xlate_ctx *ctx,
          * original input port (otherwise OFPP_NORMAL and OFPP_IN_PORT will
          * have surprising behavior). */
         ctx->xin->flow.in_port.ofp_port = in_port;
-        got_rule = rule_dpif_lookup_in_table(ctx->xbridge->ofproto,
-                                             &ctx->xin->flow, &ctx->xout->wc,
-                                             table_id, &rule);
+        rule_dpif_lookup_in_table(ctx->xbridge->ofproto,
+                                  &ctx->xin->flow, &ctx->xout->wc,
+                                  table_id, &rule);
         ctx->xin->flow.in_port.ofp_port = old_in_port;
 
         if (ctx->xin->resubmit_hook) {
             ctx->xin->resubmit_hook(ctx->xin, rule, ctx->recurse);
         }
 
-        if (got_rule) {
-            xlate_recursively(ctx, rule);
-        } else if (may_packet_in) {
+        if (!rule && may_packet_in) {
             struct xport *xport;
 
             /* XXX
@@ -1728,7 +1723,10 @@ xlate_table_action(struct xlate_ctx *ctx,
             choose_miss_rule(xport ? xport->config : 0,
                              ctx->xbridge->miss_rule,
                              ctx->xbridge->no_packet_in_rule, &rule);
+        }
+        if (rule) {
             xlate_recursively(ctx, rule);
+            rule_dpif_unref(rule);
         }
 
         ctx->table_id = old_table_id;
@@ -2098,7 +2096,8 @@ static void
 xlate_learn_action(struct xlate_ctx *ctx,
                    const struct ofpact_learn *learn)
 {
-    struct ofputil_flow_mod *fm;
+    uint64_t ofpacts_stub[1024 / 8];
+    struct ofputil_flow_mod fm;
     struct ofpbuf ofpacts;
 
     ctx->xout->has_learn = true;
@@ -2109,11 +2108,10 @@ xlate_learn_action(struct xlate_ctx *ctx,
         return;
     }
 
-    fm = xmalloc(sizeof *fm);
-    ofpbuf_init(&ofpacts, 0);
-    learn_execute(learn, &ctx->xin->flow, fm, &ofpacts);
-
-    ofproto_dpif_flow_mod(ctx->xbridge->ofproto, fm);
+    ofpbuf_use_stub(&ofpacts, ofpacts_stub, sizeof ofpacts_stub);
+    learn_execute(learn, &ctx->xin->flow, &fm, &ofpacts);
+    ofproto_dpif_flow_mod(ctx->xbridge->ofproto, &fm);
+    ofpbuf_uninit(&ofpacts);
 }
 
 static void
@@ -2528,6 +2526,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
     struct flow_wildcards *wc = &xout->wc;
     struct flow *flow = &xin->flow;
 
+    struct rule_actions *actions = NULL;
     enum slow_path_reason special;
     const struct ofpact *ofpacts;
     struct xport *in_port;
@@ -2604,7 +2603,9 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
         ofpacts = xin->ofpacts;
         ofpacts_len = xin->ofpacts_len;
     } else if (xin->rule) {
-        rule_dpif_get_actions(xin->rule, &ofpacts, &ofpacts_len);
+        actions = rule_dpif_get_actions(xin->rule);
+        ofpacts = actions->ofpacts;
+        ofpacts_len = actions->ofpacts_len;
     } else {
         NOT_REACHED();
     }
@@ -2690,4 +2691,6 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
 
 out:
     ovs_rwlock_unlock(&xlate_rwlock);
+
+    rule_actions_unref(actions);
 }

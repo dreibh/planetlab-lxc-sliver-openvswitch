@@ -271,6 +271,7 @@ void
 connmgr_run(struct connmgr *mgr,
             bool (*handle_openflow)(struct ofconn *,
                                     const struct ofpbuf *ofp_msg))
+    OVS_EXCLUDED(ofproto_mutex)
 {
     struct ofconn *ofconn, *next_ofconn;
     struct ofservice *ofservice;
@@ -1667,6 +1668,7 @@ connmgr_has_in_band(struct connmgr *mgr)
  * In-band control has more sophisticated code that manages flows itself. */
 void
 connmgr_flushed(struct connmgr *mgr)
+    OVS_EXCLUDED(ofproto_mutex)
 {
     if (mgr->fail_open) {
         fail_open_flushed(mgr->fail_open);
@@ -1833,6 +1835,7 @@ ofmonitor_report(struct connmgr *mgr, struct rule *rule,
                  enum nx_flow_update_event event,
                  enum ofp_flow_removed_reason reason,
                  const struct ofconn *abbrev_ofconn, ovs_be32 abbrev_xid)
+    OVS_REQUIRES(ofproto_mutex)
 {
     enum nx_flow_monitor_flags update;
     struct ofconn *ofconn;
@@ -1897,14 +1900,14 @@ ofmonitor_report(struct connmgr *mgr, struct rule *rule,
                 fu.match = &match;
                 fu.priority = rule->cr.priority;
 
-                ovs_mutex_lock(&rule->timeout_mutex);
+                ovs_mutex_lock(&rule->mutex);
                 fu.idle_timeout = rule->idle_timeout;
                 fu.hard_timeout = rule->hard_timeout;
-                ovs_mutex_unlock(&rule->timeout_mutex);
+                ovs_mutex_unlock(&rule->mutex);
 
                 if (flags & NXFMF_ACTIONS) {
-                    fu.ofpacts = rule->ofpacts;
-                    fu.ofpacts_len = rule->ofpacts_len;
+                    fu.ofpacts = rule->actions->ofpacts;
+                    fu.ofpacts_len = rule->actions->ofpacts_len;
                 } else {
                     fu.ofpacts = NULL;
                     fu.ofpacts_len = 0;
@@ -1951,12 +1954,12 @@ ofmonitor_flush(struct connmgr *mgr)
 static void
 ofmonitor_resume(struct ofconn *ofconn)
 {
+    struct rule_collection rules;
     struct ofpbuf *resumed;
     struct ofmonitor *m;
-    struct list rules;
     struct list msgs;
 
-    list_init(&rules);
+    rule_collection_init(&rules);
     HMAP_FOR_EACH (m, ofconn_node, &ofconn->monitors) {
         ofmonitor_collect_resume_rules(m, ofconn->monitor_paused, &rules);
     }
