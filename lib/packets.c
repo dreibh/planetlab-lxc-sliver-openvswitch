@@ -218,32 +218,6 @@ eth_pop_vlan(struct ofpbuf *packet)
     }
 }
 
-/* Return depth of mpls stack.
- *
- * 'packet->l2_5' should initially point to 'packet''s outer-most MPLS header
- * or may be NULL if there are no MPLS headers. */
-uint16_t
-eth_mpls_depth(const struct ofpbuf *packet)
-{
-    struct mpls_hdr *mh = packet->l2_5;
-    uint16_t depth;
-
-    if (!mh) {
-        return 0;
-    }
-
-    depth = 0;
-    while (packet->size >= ((char *)mh - (char *)packet->data) + sizeof *mh) {
-        depth++;
-        if (mh->mpls_lse & htonl(MPLS_BOS_MASK)) {
-            break;
-        }
-        mh++;
-    }
-
-    return depth;
-}
-
 /* Set ethertype of the packet. */
 void
 set_ethertype(struct ofpbuf *packet, ovs_be16 eth_type)
@@ -459,7 +433,7 @@ void
 ip_format_masked(ovs_be32 ip, ovs_be32 mask, struct ds *s)
 {
     ds_put_format(s, IP_FMT, IP_ARGS(ip));
-    if (mask != htonl(UINT32_MAX)) {
+    if (mask != OVS_BE32_MAX) {
         if (ip_is_cidr(mask)) {
             ds_put_format(s, "/%d", ip_count_cidr_bits(mask));
         } else {

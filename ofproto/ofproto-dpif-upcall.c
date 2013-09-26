@@ -254,7 +254,7 @@ udpif_revalidate(struct udpif *udpif)
     udpif_drop_key_clear(udpif);
 }
 
-/* Retreives the next upcall which ofproto-dpif is responsible for handling.
+/* Retrieves the next upcall which ofproto-dpif is responsible for handling.
  * The caller is responsible for destroying the returned upcall with
  * upcall_destroy(). */
 struct upcall *
@@ -274,7 +274,7 @@ upcall_destroy(struct upcall *upcall)
     }
 }
 
-/* Retreives the next batch of processed flow misses for 'udpif' to install.
+/* Retrieves the next batch of processed flow misses for 'udpif' to install.
  * The caller is responsible for destroying it with flow_miss_batch_destroy().
  */
 struct flow_miss_batch *
@@ -309,6 +309,7 @@ void
 flow_miss_batch_destroy(struct flow_miss_batch *fmb)
 {
     struct flow_miss *miss, *next;
+    struct upcall *upcall, *next_upcall;
 
     if (!fmb) {
         return;
@@ -319,11 +320,16 @@ flow_miss_batch_destroy(struct flow_miss_batch *fmb)
         miss_destroy(miss);
     }
 
+    LIST_FOR_EACH_SAFE (upcall, next_upcall, list_node, &fmb->upcalls) {
+        list_remove(&upcall->list_node);
+        upcall_destroy(upcall);
+    }
+
     hmap_destroy(&fmb->misses);
     free(fmb);
 }
 
-/* Retreives the next drop key which ofproto-dpif needs to process.  The caller
+/* Retrieves the next drop key which ofproto-dpif needs to process.  The caller
  * is responsible for destroying it with drop_key_destroy(). */
 struct drop_key *
 drop_key_next(struct udpif *udpif)
@@ -332,7 +338,7 @@ drop_key_next(struct udpif *udpif)
     return next ? CONTAINER_OF(next, struct drop_key, list_node) : NULL;
 }
 
-/* Destorys and deallocates 'drop_key'. */
+/* Destroys and deallocates 'drop_key'. */
 void
 drop_key_destroy(struct drop_key *drop_key)
 {
@@ -375,17 +381,17 @@ udpif_dispatcher(void *arg)
     return NULL;
 }
 
-/* The miss handler thread is responsible for processing miss upcalls retreived
+/* The miss handler thread is responsible for processing miss upcalls retrieved
  * by the dispatcher thread.  Once finished it passes the processed miss
  * upcalls to ofproto-dpif where they're installed in the datapath. */
 static void *
 udpif_miss_handler(void *arg)
 {
-    struct list misses = LIST_INITIALIZER(&misses);
     struct handler *handler = arg;
 
     set_subprogram_name("miss_handler");
     for (;;) {
+        struct list misses = LIST_INITIALIZER(&misses);
         size_t i;
 
         ovs_mutex_lock(&handler->mutex);
@@ -416,12 +422,6 @@ udpif_miss_handler(void *arg)
 static void
 miss_destroy(struct flow_miss *miss)
 {
-    struct upcall *upcall, *next;
-
-    LIST_FOR_EACH_SAFE (upcall, next, list_node, &miss->upcalls) {
-        list_remove(&upcall->list_node);
-        upcall_destroy(upcall);
-    }
     xlate_out_uninit(&miss->xout);
 }
 
@@ -598,74 +598,173 @@ flow_miss_find(struct hmap *todo, const struct ofproto_dpif *ofproto,
     return NULL;
 }
 
-/* Executes flow miss 'miss'.  May add any required datapath operations
- * to 'ops', incrementing '*n_ops' for each new op. */
 static void
-execute_flow_miss(struct flow_miss *miss, struct dpif_op *ops, size_t *n_ops)
+handle_miss_upcalls(struct udpif *udpif, struct list *upcalls)
 {
-    struct ofproto_dpif *ofproto = miss->ofproto;
-    struct flow_wildcards wc;
-    struct rule_dpif *rule;
-    struct ofpbuf *packet;
-    struct xlate_in xin;
+    struct dpif_op *opsp[FLOW_MISS_MAX_BATCH];
+    struct dpif_op ops[FLOW_MISS_MAX_BATCH];
+    struct upcall *upcall, *next;
+    struct flow_miss_batch *fmb;
+    size_t n_misses, n_ops, i;
+    struct flow_miss *miss;
+    unsigned int reval_seq;
+    bool fail_open;
 
-    memset(&miss->stats, 0, sizeof miss->stats);
-    miss->stats.used = time_msec();
-    LIST_FOR_EACH (packet, list_node, &miss->packets) {
-        miss->stats.tcp_flags |= packet_get_tcp_flags(packet, &miss->flow);
-        miss->stats.n_bytes += packet->size;
-        miss->stats.n_packets++;
-    }
+    /* Extract the flow from each upcall.  Construct in fmb->misses a hash
+     * table that maps each unique flow to a 'struct flow_miss'.
+     *
+     * Most commonly there is a single packet per flow_miss, but there are
+     * several reasons why there might be more than one, e.g.:
+     *
+     *   - The dpif packet interface does not support TSO (or UFO, etc.), so a
+     *     large packet sent to userspace is split into a sequence of smaller
+     *     ones.
+     *
+     *   - A stream of quickly arriving packets in an established "slow-pathed"
+     *     flow.
+     *
+     *   - Rarely, a stream of quickly arriving packets in a flow not yet
+     *     established.  (This is rare because most protocols do not send
+     *     multiple back-to-back packets before receiving a reply from the
+     *     other end of the connection, which gives OVS a chance to set up a
+     *     datapath flow.)
+     */
+    fmb = xmalloc(sizeof *fmb);
+    atomic_read(&udpif->reval_seq, &fmb->reval_seq);
+    hmap_init(&fmb->misses);
+    list_init(&fmb->upcalls);
+    n_misses = 0;
+    LIST_FOR_EACH_SAFE (upcall, next, list_node, upcalls) {
+        struct dpif_upcall *dupcall = &upcall->dpif_upcall;
+        struct ofpbuf *packet = dupcall->packet;
+        struct flow_miss *miss = &fmb->miss_buf[n_misses];
+        struct flow_miss *existing_miss;
+        struct ofproto_dpif *ofproto;
+        odp_port_t odp_in_port;
+        struct flow flow;
+        int error;
 
-    flow_wildcards_init_catchall(&wc);
-    rule_dpif_lookup(ofproto, &miss->flow, &wc, &rule);
-    rule_dpif_credit_stats(rule, &miss->stats);
-    xlate_in_init(&xin, ofproto, &miss->flow, rule, miss->stats.tcp_flags,
-                  NULL);
-    xin.may_learn = true;
-    xin.resubmit_stats = &miss->stats;
-    xlate_actions(&xin, &miss->xout);
-    flow_wildcards_or(&miss->xout.wc, &miss->xout.wc, &wc);
+        error = xlate_receive(udpif->backer, packet, dupcall->key,
+                              dupcall->key_len, &flow, &miss->key_fitness,
+                              &ofproto, &odp_in_port);
 
-    if (rule_dpif_fail_open(rule)) {
-        LIST_FOR_EACH (packet, list_node, &miss->packets) {
-            struct ofputil_packet_in *pin;
+        if (!error) {
+            uint32_t hash;
 
-            /* Extra-special case for fail-open mode.
-             *
-             * We are in fail-open mode and the packet matched the fail-open
-             * rule, but we are connected to a controller too.  We should send
-             * the packet up to the controller in the hope that it will try to
-             * set up a flow and thereby allow us to exit fail-open.
-             *
-             * See the top-level comment in fail-open.c for more information. */
-            pin = xmalloc(sizeof(*pin));
-            pin->packet = xmemdup(packet->data, packet->size);
-            pin->packet_len = packet->size;
-            pin->reason = OFPR_NO_MATCH;
-            pin->controller_id = 0;
-            pin->table_id = 0;
-            pin->cookie = 0;
-            pin->send_len = 0; /* Not used for flow table misses. */
-            flow_get_metadata(&miss->flow, &pin->fmd);
-            ofproto_dpif_send_packet_in(ofproto, pin);
+            flow_extract(packet, flow.skb_priority, flow.pkt_mark,
+                         &flow.tunnel, &flow.in_port, &miss->flow);
+
+            hash = flow_hash(&miss->flow, 0);
+            existing_miss = flow_miss_find(&fmb->misses, ofproto, &miss->flow,
+                                           hash);
+            if (!existing_miss) {
+                hmap_insert(&fmb->misses, &miss->hmap_node, hash);
+                miss->ofproto = ofproto;
+                miss->key = dupcall->key;
+                miss->key_len = dupcall->key_len;
+                miss->upcall_type = dupcall->type;
+                miss->stats.n_packets = 0;
+                miss->stats.n_bytes = 0;
+                miss->stats.used = time_msec();
+                miss->stats.tcp_flags = 0;
+
+                n_misses++;
+            } else {
+                miss = existing_miss;
+            }
+            miss->stats.tcp_flags |= packet_get_tcp_flags(packet, &miss->flow);
+            miss->stats.n_bytes += packet->size;
+            miss->stats.n_packets++;
+
+            upcall->flow_miss = miss;
+        } else {
+            if (error == ENODEV) {
+                struct drop_key *drop_key;
+
+                /* Received packet on datapath port for which we couldn't
+                 * associate an ofproto.  This can happen if a port is removed
+                 * while traffic is being received.  Print a rate-limited
+                 * message in case it happens frequently.  Install a drop flow
+                 * so that future packets of the flow are inexpensively dropped
+                 * in the kernel. */
+                VLOG_INFO_RL(&rl, "received packet on unassociated datapath "
+                             "port %"PRIu32, odp_in_port);
+
+                drop_key = xmalloc(sizeof *drop_key);
+                drop_key->key = xmemdup(dupcall->key, dupcall->key_len);
+                drop_key->key_len = dupcall->key_len;
+
+                if (guarded_list_push_back(&udpif->drop_keys,
+                                           &drop_key->list_node,
+                                           MAX_QUEUE_LENGTH)) {
+                    seq_change(udpif->wait_seq);
+                } else {
+                    COVERAGE_INC(drop_queue_overflow);
+                    drop_key_destroy(drop_key);
+                }
+            }
+            list_remove(&upcall->list_node);
+            upcall_destroy(upcall);
         }
     }
 
-    if (miss->xout.slow) {
-        LIST_FOR_EACH (packet, list_node, &miss->packets) {
+    /* Initialize each 'struct flow_miss's ->xout.
+     *
+     * We do this per-flow_miss rather than per-packet because, most commonly,
+     * all the packets in a flow can use the same translation.
+     *
+     * We can't do this in the previous loop because we need the TCP flags for
+     * all the packets in each miss. */
+    fail_open = false;
+    HMAP_FOR_EACH (miss, hmap_node, &fmb->misses) {
+        struct flow_wildcards wc;
+        struct rule_dpif *rule;
+        struct xlate_in xin;
+
+        flow_wildcards_init_catchall(&wc);
+        rule_dpif_lookup(miss->ofproto, &miss->flow, &wc, &rule);
+        if (rule_dpif_fail_open(rule)) {
+            fail_open = true;
+        }
+        rule_dpif_credit_stats(rule, &miss->stats);
+        xlate_in_init(&xin, miss->ofproto, &miss->flow, rule,
+                      miss->stats.tcp_flags, NULL);
+        xin.may_learn = true;
+        xin.resubmit_stats = &miss->stats;
+        xlate_actions(&xin, &miss->xout);
+        flow_wildcards_or(&miss->xout.wc, &miss->xout.wc, &wc);
+        rule_dpif_unref(rule);
+    }
+
+    /* Now handle the packets individually in order of arrival.  In the common
+     * case each packet of a miss can share the same actions, but slow-pathed
+     * packets need to be translated individually:
+     *
+     *   - For SLOW_CFM, SLOW_LACP, SLOW_STP, and SLOW_BFD, translation is what
+     *     processes received packets for these protocols.
+     *
+     *   - For SLOW_CONTROLLER, translation sends the packet to the OpenFlow
+     *     controller.
+     *
+     * The loop fills 'ops' with an array of operations to execute in the
+     * datapath. */
+    n_ops = 0;
+    LIST_FOR_EACH (upcall, list_node, upcalls) {
+        struct flow_miss *miss = upcall->flow_miss;
+        struct ofpbuf *packet = upcall->dpif_upcall.packet;
+
+        if (miss->xout.slow) {
+            struct rule_dpif *rule;
             struct xlate_in xin;
 
+            rule_dpif_lookup(miss->ofproto, &miss->flow, NULL, &rule);
             xlate_in_init(&xin, miss->ofproto, &miss->flow, rule, 0, packet);
             xlate_actions_for_side_effects(&xin);
+            rule_dpif_unref(rule);
         }
-    }
-    rule_dpif_unref(rule);
 
-    if (miss->xout.odp_actions.size) {
-        LIST_FOR_EACH (packet, list_node, &miss->packets) {
-            struct dpif_op *op = &ops[*n_ops];
-            struct dpif_execute *execute = &op->u.execute;
+        if (miss->xout.odp_actions.size) {
+            struct dpif_op *op;
 
             if (miss->flow.in_port.ofp_port
                 != vsp_realdev_to_vlandev(miss->ofproto,
@@ -680,123 +779,49 @@ execute_flow_miss(struct flow_miss *miss, struct dpif_op *ops, size_t *n_ops)
                 eth_pop_vlan(packet);
             }
 
+            op = &ops[n_ops++];
             op->type = DPIF_OP_EXECUTE;
-            execute->key = miss->key;
-            execute->key_len = miss->key_len;
-            execute->packet = packet;
-            execute->actions = miss->xout.odp_actions.data;
-            execute->actions_len = miss->xout.odp_actions.size;
-
-            (*n_ops)++;
+            op->u.execute.key = miss->key;
+            op->u.execute.key_len = miss->key_len;
+            op->u.execute.packet = packet;
+            op->u.execute.actions = miss->xout.odp_actions.data;
+            op->u.execute.actions_len = miss->xout.odp_actions.size;
         }
     }
-}
-
-static void
-handle_miss_upcalls(struct udpif *udpif, struct list *upcalls)
-{
-    struct dpif_op *opsp[FLOW_MISS_MAX_BATCH];
-    struct dpif_op ops[FLOW_MISS_MAX_BATCH];
-    struct upcall *upcall, *next;
-    struct flow_miss_batch *fmb;
-    size_t n_upcalls, n_ops, i;
-    struct flow_miss *miss;
-    unsigned int reval_seq;
-
-    /* Construct the to-do list.
-     *
-     * This just amounts to extracting the flow from each packet and sticking
-     * the packets that have the same flow in the same "flow_miss" structure so
-     * that we can process them together. */
-    fmb = xmalloc(sizeof *fmb);
-    atomic_read(&udpif->reval_seq, &fmb->reval_seq);
-    hmap_init(&fmb->misses);
-    n_upcalls = 0;
-    LIST_FOR_EACH_SAFE (upcall, next, list_node, upcalls) {
-        struct dpif_upcall *dupcall = &upcall->dpif_upcall;
-        struct flow_miss *miss = &fmb->miss_buf[n_upcalls];
-        struct flow_miss *existing_miss;
-        struct ofproto_dpif *ofproto;
-        odp_port_t odp_in_port;
-        struct flow flow;
-        uint32_t hash;
-        int error;
-
-        error = xlate_receive(udpif->backer, dupcall->packet, dupcall->key,
-                              dupcall->key_len, &flow, &miss->key_fitness,
-                              &ofproto, &odp_in_port);
-
-        if (error == ENODEV) {
-            struct drop_key *drop_key;
-
-            /* Received packet on datapath port for which we couldn't
-             * associate an ofproto.  This can happen if a port is removed
-             * while traffic is being received.  Print a rate-limited message
-             * in case it happens frequently.  Install a drop flow so
-             * that future packets of the flow are inexpensively dropped
-             * in the kernel. */
-            VLOG_INFO_RL(&rl, "received packet on unassociated datapath port "
-                              "%"PRIu32, odp_in_port);
-
-            drop_key = xmalloc(sizeof *drop_key);
-            drop_key->key = xmemdup(dupcall->key, dupcall->key_len);
-            drop_key->key_len = dupcall->key_len;
-
-            if (guarded_list_push_back(&udpif->drop_keys, &drop_key->list_node,
-                                       MAX_QUEUE_LENGTH)) {
-                seq_change(udpif->wait_seq);
-            } else {
-                COVERAGE_INC(drop_queue_overflow);
-                drop_key_destroy(drop_key);
-            }
-            continue;
-        } else if (error) {
-            continue;
-        }
-
-        flow_extract(dupcall->packet, flow.skb_priority, flow.pkt_mark,
-                     &flow.tunnel, &flow.in_port, &miss->flow);
-
-        /* Add other packets to a to-do list. */
-        hash = flow_hash(&miss->flow, 0);
-        existing_miss = flow_miss_find(&fmb->misses, ofproto, &miss->flow, hash);
-        if (!existing_miss) {
-            hmap_insert(&fmb->misses, &miss->hmap_node, hash);
-            miss->ofproto = ofproto;
-            miss->key = dupcall->key;
-            miss->key_len = dupcall->key_len;
-            miss->upcall_type = dupcall->type;
-            list_init(&miss->packets);
-            list_init(&miss->upcalls);
-
-            n_upcalls++;
-        } else {
-            miss = existing_miss;
-        }
-        list_push_back(&miss->packets, &dupcall->packet->list_node);
-
-        list_remove(&upcall->list_node);
-        list_push_back(&miss->upcalls, &upcall->list_node);
-    }
-
-    LIST_FOR_EACH_SAFE (upcall, next, list_node, upcalls) {
-        list_remove(&upcall->list_node);
-        upcall_destroy(upcall);
-    }
-
-    /* Process each element in the to-do list, constructing the set of
-     * operations to batch. */
-    n_ops = 0;
-    HMAP_FOR_EACH (miss, hmap_node, &fmb->misses) {
-        execute_flow_miss(miss, ops, &n_ops);
-    }
-    ovs_assert(n_ops <= ARRAY_SIZE(ops));
 
     /* Execute batch. */
     for (i = 0; i < n_ops; i++) {
         opsp[i] = &ops[i];
     }
     dpif_operate(udpif->dpif, opsp, n_ops);
+
+    /* Special case for fail-open mode.
+     *
+     * If we are in fail-open mode, but we are connected to a controller too,
+     * then we should send the packet up to the controller in the hope that it
+     * will try to set up a flow and thereby allow us to exit fail-open.
+     *
+     * See the top-level comment in fail-open.c for more information. */
+    if (fail_open) {
+        LIST_FOR_EACH (upcall, list_node, upcalls) {
+            struct flow_miss *miss = upcall->flow_miss;
+            struct ofpbuf *packet = upcall->dpif_upcall.packet;
+            struct ofputil_packet_in *pin;
+
+            pin = xmalloc(sizeof *pin);
+            pin->packet = xmemdup(packet->data, packet->size);
+            pin->packet_len = packet->size;
+            pin->reason = OFPR_NO_MATCH;
+            pin->controller_id = 0;
+            pin->table_id = 0;
+            pin->cookie = 0;
+            pin->send_len = 0; /* Not used for flow table misses. */
+            flow_get_metadata(&miss->flow, &pin->fmd);
+            ofproto_dpif_send_packet_in(miss->ofproto, pin);
+        }
+    }
+
+    list_move(&fmb->upcalls, upcalls);
 
     atomic_read(&udpif->reval_seq, &reval_seq);
     if (reval_seq != fmb->reval_seq) {

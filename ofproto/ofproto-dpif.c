@@ -175,7 +175,6 @@ struct subfacet {
     struct facet *facet;        /* Owning facet. */
     struct dpif_backer *backer; /* Owning backer. */
 
-    enum odp_key_fitness key_fitness;
     struct nlattr *key;
     int key_len;
 
@@ -1079,8 +1078,6 @@ dealloc(struct ofproto *ofproto_)
 static void
 close_dpif_backer(struct dpif_backer *backer)
 {
-    struct shash_node *node;
-
     ovs_assert(backer->refcount > 0);
 
     if (--backer->refcount) {
@@ -1090,13 +1087,13 @@ close_dpif_backer(struct dpif_backer *backer)
     drop_key_clear(backer);
     hmap_destroy(&backer->drop_keys);
 
+    udpif_destroy(backer->udpif);
+
     simap_destroy(&backer->tnl_backers);
     ovs_rwlock_destroy(&backer->odp_to_ofport_lock);
     hmap_destroy(&backer->odp_to_ofport_map);
-    node = shash_find(&all_dpif_backers, backer->type);
+    shash_find_and_delete(&all_dpif_backers, backer->type);
     free(backer->type);
-    shash_delete(&all_dpif_backers, node);
-    udpif_destroy(backer->udpif);
     dpif_close(backer->dpif);
 
     ovs_assert(hmap_is_empty(&backer->subfacets));
@@ -3244,7 +3241,7 @@ flow_miss_should_make_facet(struct flow_miss *miss)
 
     hash = flow_hash_in_wildcards(&miss->flow, &miss->xout.wc, 0);
     return governor_should_install_flow(backer->governor, hash,
-                                        list_size(&miss->packets));
+                                        miss->stats.n_packets);
 }
 
 /* Handles 'miss', which matches 'facet'.  May add any required datapath
@@ -3322,7 +3319,7 @@ handle_flow_miss(struct flow_miss *miss, struct flow_miss_op *ops,
 {
     struct facet *facet;
 
-    miss->ofproto->n_missed += list_size(&miss->packets);
+    miss->ofproto->n_missed += miss->stats.n_packets;
 
     facet = facet_lookup_valid(miss->ofproto, &miss->flow);
     if (!facet) {
@@ -4502,7 +4499,6 @@ static struct subfacet *
 subfacet_create(struct facet *facet, struct flow_miss *miss)
 {
     struct dpif_backer *backer = miss->ofproto->backer;
-    enum odp_key_fitness key_fitness = miss->key_fitness;
     const struct nlattr *key = miss->key;
     size_t key_len = miss->key_len;
     uint32_t key_hash;
@@ -4530,7 +4526,6 @@ subfacet_create(struct facet *facet, struct flow_miss *miss)
     hmap_insert(&backer->subfacets, &subfacet->hmap_node, key_hash);
     list_push_back(&facet->subfacets, &subfacet->list_node);
     subfacet->facet = facet;
-    subfacet->key_fitness = key_fitness;
     subfacet->key = xmemdup(key, key_len);
     subfacet->key_len = key_len;
     subfacet->used = miss->stats.used;

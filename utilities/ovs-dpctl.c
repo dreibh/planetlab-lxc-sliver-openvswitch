@@ -60,10 +60,7 @@ static bool zero_statistics;
 /* --may-create: Allow mod-flows command to create a new flow? */
 static bool may_create;
 
-/* -m, --more: Output verbosity.
- *
- * So far only undocumented commands honor this option, so we don't document
- * the option itself. */
+/* -m, --more: Increase output verbosity. */
 static int verbosity;
 
 static const struct command *get_all_commands(void);
@@ -170,14 +167,16 @@ usage(void)
            "  dump-dps                 display names of all datapaths\n"
            "  show                     show basic info on all datapaths\n"
            "  show DP...               show basic info on each DP\n"
-           "  dump-flows DP            display flows in DP\n"
-           "  add-flow DP FLOW ACTIONS add FLOW with ACTIONS to DP\n"
-           "  mod-flow DP FLOW ACTIONS change FLOW actions to ACTIONS in DP\n"
-           "  del-flow DP FLOW         delete FLOW from DP\n"
-           "  del-flows DP             delete all flows from DP\n"
+           "  dump-flows [DP]          display flows in DP\n"
+           "  add-flow [DP] FLOW ACTIONS add FLOW with ACTIONS to DP\n"
+           "  mod-flow [DP] FLOW ACTIONS change FLOW actions to ACTIONS in DP\n"
+           "  del-flow [DP] FLOW         delete FLOW from DP\n"
+           "  del-flows [DP]             delete all flows from DP\n"
            "Each IFACE on add-dp, add-if, and set-if may be followed by\n"
            "comma-separated options.  See ovs-dpctl(8) for syntax, or the\n"
-           "Interface table in ovs-vswitchd.conf.db(5) for an options list.\n",
+           "Interface table in ovs-vswitchd.conf.db(5) for an options list.\n"
+           "For COMMAND dump-flows, add-flow, mod-flow, del-flow and\n"
+           "del-flows, DP is optional if there is only one datapath.\n",
            program_name, program_name);
     vlog_usage();
     printf("\nOptions for show and mod-flow:\n"
@@ -858,7 +857,7 @@ dpctl_del_flow(int argc, char *argv[])
     ofpbuf_init(&mask, 0);
     run(odp_flow_from_string(key_s, NULL, &key, &mask), "parsing flow key");
 
-    dp_name = argc == 2 ? xstrdup(argv[1]) : get_one_dp();
+    dp_name = argc == 3 ? xstrdup(argv[1]) : get_one_dp();
     run(parsed_dpif_open(dp_name, false, &dpif), "opening datapath");
     free(dp_name);
 
@@ -1063,6 +1062,7 @@ dpctl_normalize_actions(int argc, char *argv[])
     ofpbuf_init(&odp_actions, 0);
     run(odp_actions_from_string(argv[2], &port_names, &odp_actions),
         "odp_actions_from_string");
+    simap_destroy(&port_names);
 
     if (verbosity) {
         ds_clear(&s);

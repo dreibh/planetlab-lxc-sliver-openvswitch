@@ -415,10 +415,11 @@ struct rule_actions {
      * lifetime.  */
     struct ofpact *ofpacts;     /* Sequence of "struct ofpacts". */
     unsigned int ofpacts_len;   /* Size of 'ofpacts', in bytes. */
-    uint32_t meter_id;          /* Non-zero OF meter_id, or zero. */
+    uint32_t provider_meter_id; /* Datapath meter_id, or UINT32_MAX. */
 };
 
-struct rule_actions *rule_actions_create(const struct ofpact *, size_t);
+struct rule_actions *rule_actions_create(const struct ofproto *,
+                                         const struct ofpact *, size_t);
 void rule_actions_ref(struct rule_actions *);
 void rule_actions_unref(struct rule_actions *);
 
@@ -1648,10 +1649,9 @@ struct ofproto_class {
      * implementation.
      *
      * If '*id' is a value other than UINT32_MAX, modifies the existing meter
-     * with that meter provider ID to have configuration 'config'.  On failure,
-     * the existing meter configuration is left intact.  Regardless of success,
-     * any change to '*id' updates the provider meter id used for this
-     * meter. */
+     * with that meter provider ID to have configuration 'config', while
+     * leaving '*id' unchanged.  On failure, the existing meter configuration
+     * is left intact. */
     enum ofperr (*meter_set)(struct ofproto *ofproto, ofproto_meter_id *id,
                              const struct ofputil_meter_config *config);
 
