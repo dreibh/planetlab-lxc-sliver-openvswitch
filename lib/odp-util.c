@@ -51,7 +51,8 @@ static const char *delimiters = ", \t\r\n";
 static int parse_odp_key_mask_attr(const char *, const struct simap *port_names,
                               struct ofpbuf *, struct ofpbuf *);
 static void format_odp_key_attr(const struct nlattr *a,
-                                const struct nlattr *ma, struct ds *ds,
+                                const struct nlattr *ma,
+                                const struct hmap *portno_names, struct ds *ds,
                                 bool verbose);
 
 /* Returns one the following for the action with the given OVS_ACTION_ATTR_*
@@ -401,7 +402,7 @@ format_odp_action(struct ds *ds, const struct nlattr *a)
         break;
     case OVS_ACTION_ATTR_SET:
         ds_put_cstr(ds, "set(");
-        format_odp_key_attr(nl_attr_get(a), NULL, ds, true);
+        format_odp_key_attr(nl_attr_get(a), NULL, NULL, ds, true);
         ds_put_cstr(ds, ")");
         break;
     case OVS_ACTION_ATTR_PUSH_VLAN:
@@ -935,10 +936,49 @@ odp_mask_attr_is_exact(const struct nlattr *ma)
     return is_exact;
 }
 
+void
+odp_portno_names_set(struct hmap *portno_names, odp_port_t port_no,
+                     char *port_name)
+{
+    struct odp_portno_names *odp_portno_names;
+
+    odp_portno_names = xmalloc(sizeof *odp_portno_names);
+    odp_portno_names->port_no = port_no;
+    odp_portno_names->name = xstrdup(port_name);
+    hmap_insert(portno_names, &odp_portno_names->hmap_node,
+                hash_odp_port(port_no));
+}
+
+static char *
+odp_portno_names_get(const struct hmap *portno_names, odp_port_t port_no)
+{
+    struct odp_portno_names *odp_portno_names;
+
+    HMAP_FOR_EACH_IN_BUCKET (odp_portno_names, hmap_node,
+                             hash_odp_port(port_no), portno_names) {
+        if (odp_portno_names->port_no == port_no) {
+            return odp_portno_names->name;
+        }
+    }
+    return NULL;
+}
+
+void
+odp_portno_names_destroy(struct hmap *portno_names)
+{
+    struct odp_portno_names *odp_portno_names, *odp_portno_names_next;
+    HMAP_FOR_EACH_SAFE (odp_portno_names, odp_portno_names_next,
+                        hmap_node, portno_names) {
+        hmap_remove(portno_names, &odp_portno_names->hmap_node);
+        free(odp_portno_names->name);
+        free(odp_portno_names);
+    }
+}
 
 static void
 format_odp_key_attr(const struct nlattr *a, const struct nlattr *ma,
-                    struct ds *ds, bool verbose)
+                    const struct hmap *portno_names, struct ds *ds,
+                    bool verbose)
 {
     struct flow_tnl tun_key;
     enum ovs_key_attr attr = nl_attr_type(a);
@@ -981,10 +1021,11 @@ format_odp_key_attr(const struct nlattr *a, const struct nlattr *ma,
     case OVS_KEY_ATTR_ENCAP:
         if (ma && nl_attr_get_size(ma) && nl_attr_get_size(a)) {
             odp_flow_format(nl_attr_get(a), nl_attr_get_size(a),
-                            nl_attr_get(ma), nl_attr_get_size(ma), ds, verbose);
-        } else if (nl_attr_get_size(a)) {
-            odp_flow_format(nl_attr_get(a), nl_attr_get_size(a), NULL, 0, ds,
+                            nl_attr_get(ma), nl_attr_get_size(ma), NULL, ds,
                             verbose);
+        } else if (nl_attr_get_size(a)) {
+            odp_flow_format(nl_attr_get(a), nl_attr_get_size(a), NULL, 0, NULL,
+                            ds, verbose);
         }
         break;
 
@@ -1038,9 +1079,19 @@ format_odp_key_attr(const struct nlattr *a, const struct nlattr *ma,
         break;
 
     case OVS_KEY_ATTR_IN_PORT:
-        ds_put_format(ds, "%"PRIu32, nl_attr_get_u32(a));
-        if (!is_exact) {
-            ds_put_format(ds, "/%#"PRIx32, nl_attr_get_u32(ma));
+        if (portno_names && verbose && is_exact) {
+            char *name = odp_portno_names_get(portno_names,
+                            u32_to_odp(nl_attr_get_u32(a)));
+            if (name) {
+                ds_put_format(ds, "%s", name);
+            } else {
+                ds_put_format(ds, "%"PRIu32, nl_attr_get_u32(a));
+            }
+        } else {
+            ds_put_format(ds, "%"PRIu32, nl_attr_get_u32(a));
+            if (!is_exact) {
+                ds_put_format(ds, "/%#"PRIx32, nl_attr_get_u32(ma));
+            }
         }
         break;
 
@@ -1364,7 +1415,7 @@ generate_all_wildcard_mask(struct ofpbuf *ofp, const struct nlattr *key)
 void
 odp_flow_format(const struct nlattr *key, size_t key_len,
                 const struct nlattr *mask, size_t mask_len,
-                struct ds *ds, bool verbose)
+                const struct hmap *portno_names, struct ds *ds, bool verbose)
 {
     if (key_len) {
         const struct nlattr *a;
@@ -1398,7 +1449,7 @@ odp_flow_format(const struct nlattr *key, size_t key_len,
                 if (!first_field) {
                     ds_put_char(ds, ',');
                 }
-                format_odp_key_attr(a, ma, ds, verbose);
+                format_odp_key_attr(a, ma, portno_names, ds, verbose);
                 first_field = false;
             }
             ofpbuf_clear(&ofp);
@@ -1435,7 +1486,7 @@ void
 odp_flow_key_format(const struct nlattr *key,
                     size_t key_len, struct ds *ds)
 {
-    odp_flow_format(key, key_len, NULL, 0, ds, true);
+    odp_flow_format(key, key_len, NULL, 0, NULL, ds, true);
 }
 
 static void
@@ -2503,9 +2554,7 @@ odp_flow_key_from_flow__(struct ofpbuf *buf, const struct flow *data,
         arp_key->arp_op = htons(data->nw_proto);
         memcpy(arp_key->arp_sha, data->arp_sha, ETH_ADDR_LEN);
         memcpy(arp_key->arp_tha, data->arp_tha, ETH_ADDR_LEN);
-    }
-
-    if (flow->mpls_depth) {
+    } else if (eth_type_mpls(flow->dl_type)) {
         struct ovs_key_mpls *mpls_key;
 
         mpls_key = nl_msg_put_unspec_uninit(buf, OVS_KEY_ATTR_MPLS,
@@ -2798,7 +2847,6 @@ parse_l2_5_onward(const struct nlattr *attrs[OVS_KEY_ATTR_MAX + 1],
 	        return ODP_FIT_TOO_LITTLE;
 	    }
 	    flow->mpls_lse = nl_attr_get_be32(attrs[OVS_KEY_ATTR_MPLS]);
-	    flow->mpls_depth++;
         } else if (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_MPLS)) {
             flow->mpls_lse = nl_attr_get_be32(attrs[OVS_KEY_ATTR_MPLS]);
 
@@ -2806,10 +2854,6 @@ parse_l2_5_onward(const struct nlattr *attrs[OVS_KEY_ATTR_MAX + 1],
                 return ODP_FIT_ERROR;
             }
             expected_attrs |= (UINT64_C(1) << OVS_KEY_ATTR_MPLS);
-            if (flow->mpls_lse) {
-                /* XXX Is this needed? */
-                flow->mpls_depth = 0xffff;
-            }
         }
         goto done;
     } else if (src_flow->dl_type == htons(ETH_TYPE_IP)) {
@@ -3325,10 +3369,10 @@ commit_set_ether_addr_action(const struct flow *flow, struct flow *base,
 }
 
 static void
-commit_vlan_action(const struct flow *flow, struct flow *base,
+commit_vlan_action(ovs_be16 vlan_tci, struct flow *base,
                    struct ofpbuf *odp_actions, struct flow_wildcards *wc)
 {
-    if (base->vlan_tci == flow->vlan_tci) {
+    if (base->vlan_tci == vlan_tci) {
         return;
     }
 
@@ -3338,61 +3382,57 @@ commit_vlan_action(const struct flow *flow, struct flow *base,
         nl_msg_put_flag(odp_actions, OVS_ACTION_ATTR_POP_VLAN);
     }
 
-    if (flow->vlan_tci & htons(VLAN_CFI)) {
+    if (vlan_tci & htons(VLAN_CFI)) {
         struct ovs_action_push_vlan vlan;
 
         vlan.vlan_tpid = htons(ETH_TYPE_VLAN);
-        vlan.vlan_tci = flow->vlan_tci;
+        vlan.vlan_tci = vlan_tci;
         nl_msg_put_unspec(odp_actions, OVS_ACTION_ATTR_PUSH_VLAN,
                           &vlan, sizeof vlan);
     }
-    base->vlan_tci = flow->vlan_tci;
+    base->vlan_tci = vlan_tci;
 }
 
 static void
 commit_mpls_action(const struct flow *flow, struct flow *base,
-                   struct ofpbuf *odp_actions, struct flow_wildcards *wc)
+                   struct ofpbuf *odp_actions, struct flow_wildcards *wc,
+                   int *mpls_depth_delta)
 {
-    if (flow->mpls_lse == base->mpls_lse &&
-        flow->mpls_depth == base->mpls_depth) {
+    if (flow->mpls_lse == base->mpls_lse && !*mpls_depth_delta) {
         return;
     }
 
     memset(&wc->masks.mpls_lse, 0xff, sizeof wc->masks.mpls_lse);
 
-    if (flow->mpls_depth < base->mpls_depth) {
-        if (base->mpls_depth - flow->mpls_depth > 1) {
-            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(10, 10);
-            VLOG_WARN_RL(&rl, "Multiple mpls_pop actions reduced to "
-                         " a single mpls_pop action");
-        }
-
+    switch (*mpls_depth_delta) {
+    case -1:
         nl_msg_put_be16(odp_actions, OVS_ACTION_ATTR_POP_MPLS, flow->dl_type);
-    } else if (flow->mpls_depth > base->mpls_depth) {
+        break;
+    case 1: {
         struct ovs_action_push_mpls *mpls;
-
-        if (flow->mpls_depth - base->mpls_depth > 1) {
-            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(10, 10);
-            VLOG_WARN_RL(&rl, "Multiple mpls_push actions reduced to "
-                         " a single mpls_push action");
-        }
 
         mpls = nl_msg_put_unspec_uninit(odp_actions, OVS_ACTION_ATTR_PUSH_MPLS,
                                         sizeof *mpls);
         memset(mpls, 0, sizeof *mpls);
         mpls->mpls_ethertype = flow->dl_type;
         mpls->mpls_lse = flow->mpls_lse;
-    } else {
+        break;
+    }
+    case 0: {
         struct ovs_key_mpls mpls_key;
 
         mpls_key.mpls_lse = flow->mpls_lse;
         commit_set_action(odp_actions, OVS_KEY_ATTR_MPLS,
                           &mpls_key, sizeof(mpls_key));
+        break;
+    }
+    default:
+        NOT_REACHED();
     }
 
     base->dl_type = flow->dl_type;
     base->mpls_lse = flow->mpls_lse;
-    base->mpls_depth = flow->mpls_depth;
+    *mpls_depth_delta = 0;
 }
 
 static void
@@ -3563,17 +3603,18 @@ commit_set_pkt_mark_action(const struct flow *flow, struct flow *base,
  * used as part of the action. */
 void
 commit_odp_actions(const struct flow *flow, struct flow *base,
-                   struct ofpbuf *odp_actions, struct flow_wildcards *wc)
+                   struct ofpbuf *odp_actions, struct flow_wildcards *wc,
+                   int *mpls_depth_delta)
 {
     commit_set_ether_addr_action(flow, base, odp_actions, wc);
-    commit_vlan_action(flow, base, odp_actions, wc);
+    commit_vlan_action(flow->vlan_tci, base, odp_actions, wc);
     commit_set_nw_action(flow, base, odp_actions, wc);
     commit_set_port_action(flow, base, odp_actions, wc);
     /* Committing MPLS actions should occur after committing nw and port
      * actions. This is because committing MPLS actions may alter a packet so
      * that it is no longer IP and thus nw and port actions are no longer valid.
      */
-    commit_mpls_action(flow, base, odp_actions, wc);
+    commit_mpls_action(flow, base, odp_actions, wc, mpls_depth_delta);
     commit_set_priority_action(flow, base, odp_actions, wc);
     commit_set_pkt_mark_action(flow, base, odp_actions, wc);
 }

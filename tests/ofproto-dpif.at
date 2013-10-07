@@ -268,6 +268,7 @@ cookie=0x8 table=6 in_port=85 actions=mod_tp_src:85,controller,resubmit(86,7)
 cookie=0x9 table=7 in_port=86 actions=mod_tp_dst:86,controller,controller
 cookie=0xa dl_src=40:44:44:44:44:41 actions=mod_vlan_vid:99,mod_vlan_pcp:1,controller
 cookie=0xa dl_src=40:44:44:44:44:42 actions=push_mpls:0x8847,load:10->OXM_OF_MPLS_LABEL[[]],load:3->OXM_OF_MPLS_TC[[]],controller
+cookie=0xa dl_src=41:44:44:44:44:42 actions=push_mpls:0x8847,load:10->OXM_OF_MPLS_LABEL[[]],load:3->OXM_OF_MPLS_TC[[]],pop_mpls:0x0800,controller
 cookie=0xa dl_src=40:44:44:44:44:43 actions=push_mpls:0x8847,load:10->OXM_OF_MPLS_LABEL[[]],load:3->OXM_OF_MPLS_TC[[]],controller
 cookie=0xa dl_src=40:44:44:44:44:44 actions=push_mpls:0x8847,load:10->OXM_OF_MPLS_LABEL[[]],load:3->OXM_OF_MPLS_TC[[]],controller
 cookie=0xa dl_src=40:44:44:44:44:45 actions=push_mpls:0x8847,load:10->OXM_OF_MPLS_LABEL[[]],load:3->OXM_OF_MPLS_TC[[]],dec_mpls_ttl,controller
@@ -378,6 +379,26 @@ mpls,metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:42,dl_dst=50:54:
 dnl
 NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=64 in_port=1 (via action) data_len=64 (unbuffered)
 mpls,metadata=0,in_port=0,vlan_tci=0x0000,dl_src=40:44:44:44:44:42,dl_dst=50:54:00:00:00:07,mpls_label=10,mpls_tc=3,mpls_ttl=64,mpls_bos=1
+])
+
+dnl Modified MPLS controller action.
+AT_CHECK([ovs-ofctl monitor br0 65534 -P nxm --detach --pidfile 2> ofctl_monitor.log])
+
+for i in 1 2 3; do
+    ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=41:44:44:44:44:42,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=6,tos=0,ttl=64,frag=no)'
+done
+OVS_WAIT_UNTIL([test `wc -l < ofctl_monitor.log` -ge 6])
+ovs-appctl -t ovs-ofctl exit
+
+AT_CHECK([cat ofctl_monitor.log], [0], [dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=60 in_port=1 (via action) data_len=60 (unbuffered)
+tcp,metadata=0,in_port=0,vlan_tci=0x0000,dl_src=41:44:44:44:44:42,dl_dst=50:54:00:00:00:07,nw_src=192.168.0.1,nw_dst=192.168.0.2,nw_tos=0,nw_ecn=0,nw_ttl=64 tcp_csum:0
+dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=60 in_port=1 (via action) data_len=60 (unbuffered)
+tcp,metadata=0,in_port=0,vlan_tci=0x0000,dl_src=41:44:44:44:44:42,dl_dst=50:54:00:00:00:07,nw_src=192.168.0.1,nw_dst=192.168.0.2,nw_tos=0,nw_ecn=0,nw_ttl=64 tcp_csum:0
+dnl
+NXT_PACKET_IN (xid=0x0): cookie=0xa total_len=60 in_port=1 (via action) data_len=60 (unbuffered)
+tcp,metadata=0,in_port=0,vlan_tci=0x0000,dl_src=41:44:44:44:44:42,dl_dst=50:54:00:00:00:07,nw_src=192.168.0.1,nw_dst=192.168.0.2,nw_tos=0,nw_ecn=0,nw_ttl=64 tcp_csum:0
 ])
 
 dnl Modified MPLS controller action.
@@ -703,6 +724,7 @@ AT_CHECK([ovs-ofctl dump-flows br0 | ofctl_strip | sort], [0], [dnl
  cookie=0xa, n_packets=3, n_bytes=180, dl_src=40:44:44:44:44:46 actions=push_mpls:0x8847,load:0xa->OXM_OF_MPLS_LABEL[[]],load:0x3->OXM_OF_MPLS_TC[[]],set_mpls_ttl(10),CONTROLLER:65535
  cookie=0xa, n_packets=3, n_bytes=180, dl_src=40:44:44:44:44:47 actions=push_mpls:0x8847,load:0xa->OXM_OF_MPLS_LABEL[[]],load:0x3->OXM_OF_MPLS_TC[[]],dec_mpls_ttl,set_mpls_ttl(10),CONTROLLER:65535
  cookie=0xa, n_packets=3, n_bytes=180, dl_src=40:44:44:44:44:48 actions=push_mpls:0x8847,load:0xa->OXM_OF_MPLS_LABEL[[]],load:0x3->OXM_OF_MPLS_TC[[]],set_mpls_ttl(10),dec_mpls_ttl,CONTROLLER:65535
+ cookie=0xa, n_packets=3, n_bytes=180, dl_src=41:44:44:44:44:42 actions=push_mpls:0x8847,load:0xa->OXM_OF_MPLS_LABEL[[]],load:0x3->OXM_OF_MPLS_TC[[]],pop_mpls:0x0800,CONTROLLER:65535
  cookie=0xb, n_packets=3, n_bytes=180, mpls,dl_src=50:55:55:55:55:55 actions=load:0x3e8->OXM_OF_MPLS_LABEL[[]],CONTROLLER:65535
  cookie=0xc, n_packets=3, n_bytes=180, dl_src=70:77:77:77:77:77 actions=push_mpls:0x8848,load:0x3e8->OXM_OF_MPLS_LABEL[[]],load:0x7->OXM_OF_MPLS_TC[[]],CONTROLLER:65535
  cookie=0xd, n_packets=3, n_bytes=186, dl_src=60:66:66:66:66:66 actions=pop_mpls:0x0800,CONTROLLER:65535
@@ -1139,8 +1161,15 @@ in_port=2 actions=output:1
 ])
 AT_CHECK([ovs-ofctl add-flows br0 flows.txt])
 
-odp_flow="in_port(1)"
+odp_flow="in_port(p1)"
 br_flow="in_port=1"
+# Test command: ofproto/trace odp_flow with in_port as a name.
+AT_CHECK([ovs-appctl ofproto/trace "$odp_flow"], [0], [stdout])
+AT_CHECK([tail -1 stdout], [0], [dnl
+Datapath actions: 2
+])
+
+odp_flow="in_port(1)"
 # Test command: ofproto/trace odp_flow
 AT_CHECK([ovs-appctl ofproto/trace "$odp_flow"], [0], [stdout])
 AT_CHECK([tail -1 stdout], [0], [dnl
@@ -1285,7 +1314,7 @@ m4_foreach(
 [AT_CHECK([ovs-appctl ofproto/trace wrong_name "$odp_flow" option],
   [2], [], [stderr])
 AT_CHECK([tail -2 stderr], [0], [dnl
-Cannot find datapath of this name
+Cannot find the datapath
 ovs-appctl: ovs-vswitchd: server returned an error
 ])])
 
@@ -1298,7 +1327,7 @@ m4_foreach(
 [AT_CHECK([ovs-appctl ofproto/trace "" "$odp_flow" option],
   [2], [], [stderr])
 AT_CHECK([tail -2 stderr], [0], [dnl
-Cannot find datapath of this name
+Cannot find the datapath
 ovs-appctl: ovs-vswitchd: server returned an error
 ])])
 
@@ -1311,7 +1340,7 @@ m4_foreach(
 [AT_CHECK([ovs-appctl ofproto/trace ovs-system "$odp_flow" option],
   [2], [], [stderr])
 AT_CHECK([tail -2 stderr], [0], [dnl
-Cannot find datapath of this name
+Cannot find the datapath
 ovs-appctl: ovs-vswitchd: server returned an error
 ])])
 
@@ -1324,7 +1353,7 @@ m4_foreach(
 [AT_CHECK([ovs-appctl ofproto/trace br0 "$odp_flow" option],
   [2], [], [stderr])
 AT_CHECK([tail -2 stderr], [0], [dnl
-Cannot find datapath of this name
+Cannot find the datapath
 ovs-appctl: ovs-vswitchd: server returned an error
 ])])
 
@@ -2108,7 +2137,6 @@ ADD_OF_PORTS([br1], [3])
 AT_CHECK([ovs-appctl dpif/show], [0], [dnl
 dummy@ovs-dummy: hit:0 missed:0
 	flows: cur: 0, avg: 0, max: 0, life span: 0ms
-	overall avg: add rate: 0.000/min, del rate: 0.000/min
 	br0: hit:0 missed:0
 		br0 65534/100: (dummy)
 		p1 1/1: (dummy)
@@ -2201,7 +2229,6 @@ warped
 AT_CHECK([ovs-appctl dpif/show], [0], [dnl
 dummy@ovs-dummy: hit:13 missed:2
 	flows: cur: 2, avg: 1, max: 2, life span: 1250ms
-	overall avg: add rate: 0.000/min, del rate: 0.000/min
 	br0: hit:9 missed:1
 		br0 65534/100: (dummy)
 		p2 2/2: (dummy)
@@ -2253,8 +2280,6 @@ AT_CHECK([ovs-appctl time/warp 10000], [0], [warped
 AT_CHECK([ovs-appctl dpif/show | sed 's/ 10[[0-9]]\{3\}(ms)$/ 10000(ms)/'], [0], [dnl
 dummy@ovs-dummy: hit:0 missed:61
 	flows: cur: 0, avg: 0, max: 1, life span: 1666ms
-	hourly avg: add rate: 0.641/min, del rate: 0.641/min
-	overall avg: add rate: 1.000/min, del rate: 1.000/min
 	br0: hit:0 missed:61
 		br0 65534/100: (dummy)
 		p1 1/1: (dummy)
@@ -2815,4 +2840,102 @@ AT_CHECK([ovs-appctl bond/show | sed -n '/^.*may_enable:.*/p'], [0], [dnl
 ])
 
 OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+# Unit test for appctl coverage/show command
+AT_SETUP([ofproto-dpif - coverage/show])
+OVS_VSWITCHD_START
+
+ovs-appctl time/stop
+# before the first 5 seconds, nothing can be calculated but the total count.
+# there should be two unixctl commands received, but the count of the "appctl
+# coverage/show" command is not updated to the total. so there show only 1.
+AT_CHECK([ovs-appctl coverage/show | sed -n '/^unixctl_received.*/p'], [], [dnl
+unixctl_received           0.0/sec     0.000/sec        0.0000/sec   total: 1
+])
+
+ovs-appctl time/warp 5000
+# at first 5 second time instant, should have stats.
+AT_CHECK([ovs-appctl coverage/show | sed -n '/^unixctl_received.*/p'], [], [dnl
+unixctl_received           0.6/sec     0.050/sec        0.0008/sec   total: 3
+])
+
+for i in `seq 0 10`; do ovs-appctl time/warp 5000; done
+# advance to first 1 minute time instant.
+AT_CHECK([ovs-appctl coverage/show | sed -n '/^unixctl_received.*/p'], [], [dnl
+unixctl_received           0.2/sec     0.250/sec        0.0042/sec   total: 15
+])
+
+ovs-appctl time/warp 60000
+# advance to next 1 minute time instant directly, should observe the per-minute
+# rate drop.
+AT_CHECK([ovs-appctl coverage/show | sed -n '/^unixctl_received.*/p'], [], [dnl
+unixctl_received           0.4/sec     0.033/sec        0.0047/sec   total: 17
+])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+AT_BANNER([ofproto-dpif - flow translation resource limits])
+
+AT_SETUP([ofproto-dpif - infinite resubmit])
+OVS_VSWITCHD_START
+AT_CHECK([ovs-ofctl add-flow br0 actions=resubmit:1,resubmit:2,output:3])
+AT_CHECK([ovs-appctl ofproto/trace br0 'eth_dst=ff:ff:ff:ff:ff:ff'],
+  [0], [stdout])
+AT_CHECK([tail -1 stdout], [0], [Datapath actions: drop
+])
+AT_CHECK([grep -c 'resubmit actions recursed over 64 times' ovs-vswitchd.log],
+  [0], [1
+])
+OVS_VSWITCHD_STOP(["/resubmit actions recursed/d"])
+AT_CLEANUP
+
+AT_SETUP([ofproto-dpif - exponential resubmit chain])
+OVS_VSWITCHD_START
+ADD_OF_PORTS([br0], 1)
+(for i in `seq 1 64`; do
+     j=`expr $i + 1`
+     echo "in_port=$i, actions=resubmit:$j, resubmit:$j, local"
+ done
+ echo "in_port=65, actions=local") > flows
+ AT_CHECK([ovs-ofctl add-flows br0 flows])
+AT_CHECK([ovs-appctl ofproto/trace br0 'in_port=1'], [0], [stdout])
+AT_CHECK([grep -c 'over 4096 resubmit actions' ovs-vswitchd.log], [0], [1
+])
+OVS_VSWITCHD_STOP(["/over.*resubmit actions/d"])
+AT_CLEANUP
+
+AT_SETUP([ofproto-dpif - too many output actions])
+OVS_VSWITCHD_START
+ADD_OF_PORTS([br0], 1)
+(for i in `seq 1 12`; do
+     j=`expr $i + 1`
+     echo "in_port=$i, actions=resubmit:$j, resubmit:$j, local"
+ done
+ echo "in_port=13, actions=local,local,local,local,local,local,local,local") > flows
+AT_CHECK([ovs-ofctl add-flows br0 flows])
+AT_CHECK([ovs-appctl ofproto/trace br0 'in_port=1'], [0], [stdout])
+AT_CHECK([grep -c 'resubmits yielded over 64 kB of actions' ovs-vswitchd.log], [0], [1
+])
+AT_CHECK([grep -c 'discarding oversize datapath actions' ovs-vswitchd.log], [0], [1
+])
+OVS_VSWITCHD_STOP(["/resubmits yielded over 64 kB of actions/d
+/discarding oversize datapath actions/d"])
+AT_CLEANUP
+
+AT_SETUP([ofproto-dpif - stack too deep])
+OVS_VSWITCHD_START
+ADD_OF_PORTS([br0], 1)
+(for i in `seq 1 12`; do
+     j=`expr $i + 1`
+     echo "in_port=$i, actions=resubmit:$j, resubmit:$j, local"
+ done
+ push="push:NXM_NX_REG0[[]]"
+ echo "in_port=13, actions=$push,$push,$push,$push,$push,$push,$push,$push") > flows
+ AT_CHECK([ovs-ofctl add-flows br0 flows])
+AT_CHECK([ovs-appctl ofproto/trace br0 'in_port=1'], [0], [stdout])
+AT_CHECK([grep -c 'resubmits yielded over 64 kB of stack' ovs-vswitchd.log], [0], [1
+])
+OVS_VSWITCHD_STOP(["/resubmits yielded over 64 kB of stack/d"])
 AT_CLEANUP

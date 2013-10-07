@@ -21,6 +21,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include "byte-order.h"
 #include "openflow/nicira-ext.h"
 #include "openflow/openflow.h"
 #include "hash.h"
@@ -36,7 +37,7 @@ struct ofpbuf;
 /* This sequence number should be incremented whenever anything involving flows
  * or the wildcarding of flows changes.  This will cause build assertion
  * failures in places which likely need to be updated. */
-#define FLOW_WC_SEQ 20
+#define FLOW_WC_SEQ 21
 
 #define FLOW_N_REGS 8
 BUILD_ASSERT_DECL(FLOW_N_REGS <= NXM_NX_MAX_REGS);
@@ -98,7 +99,6 @@ struct flow {
     union flow_in_port in_port; /* Input port.*/
     uint32_t pkt_mark;          /* Packet mark. */
     ovs_be32 mpls_lse;          /* MPLS label stack entry. */
-    uint16_t mpls_depth;        /* Depth of MPLS stack. */
     ovs_be16 vlan_tci;          /* If 802.1Q, TCI | VLAN_CFI; otherwise 0. */
     ovs_be16 dl_type;           /* Ethernet frame type. */
     ovs_be16 tp_src;            /* TCP/UDP/SCTP source port. */
@@ -111,15 +111,14 @@ struct flow {
     uint8_t arp_tha[6];         /* ARP/ND target hardware address. */
     uint8_t nw_ttl;             /* IP TTL/Hop Limit. */
     uint8_t nw_frag;            /* FLOW_FRAG_* flags. */
-    uint8_t zeros[6];
 };
 BUILD_ASSERT_DECL(sizeof(struct flow) % 4 == 0);
 
 #define FLOW_U32S (sizeof(struct flow) / 4)
 
 /* Remember to update FLOW_WC_SEQ when changing 'struct flow'. */
-BUILD_ASSERT_DECL(sizeof(struct flow) == sizeof(struct flow_tnl) + 160 &&
-                  FLOW_WC_SEQ == 20);
+BUILD_ASSERT_DECL(sizeof(struct flow) == sizeof(struct flow_tnl) + 152 &&
+                  FLOW_WC_SEQ == 21);
 
 /* Represents the metadata fields of struct flow. */
 struct flow_metadata {
@@ -291,7 +290,7 @@ bool flow_equal_except(const struct flow *a, const struct flow *b,
  *
  * The 'map' member holds one bit for each uint32_t in a "struct flow".  Each
  * 0-bit indicates that the corresponding uint32_t is zero, each 1-bit that it
- * is nonzero.
+ * *may* be nonzero.
  *
  * 'values' points to the start of an array that has one element for each 1-bit
  * in 'map'.  The least-numbered 1-bit is in values[0], the next 1-bit is in
@@ -309,9 +308,9 @@ bool flow_equal_except(const struct flow *a, const struct flow *b,
  *       that makes sense.  So far that's only proved useful for
  *       minimask_combine(), but the principle works elsewhere.
  *
- * The implementation maintains and depends on the invariant that every element
- * in 'values' is nonzero; that is, wherever a 1-bit appears in 'map', the
- * corresponding element of 'values' must be nonzero.
+ * Elements in 'values' are allowed to be zero.  This is useful for "struct
+ * minimatch", for which ensuring that the miniflow and minimask members have
+ * same 'map' allows optimization .
  */
 struct miniflow {
     uint32_t *values;
@@ -320,6 +319,8 @@ struct miniflow {
 };
 
 void miniflow_init(struct miniflow *, const struct flow *);
+void miniflow_init_with_minimask(struct miniflow *, const struct flow *,
+                                 const struct minimask *);
 void miniflow_clone(struct miniflow *, const struct miniflow *);
 void miniflow_move(struct miniflow *dst, struct miniflow *);
 void miniflow_destroy(struct miniflow *);
@@ -328,6 +329,7 @@ void miniflow_expand(const struct miniflow *, struct flow *);
 
 uint32_t miniflow_get(const struct miniflow *, unsigned int u32_ofs);
 uint16_t miniflow_get_vid(const struct miniflow *);
+static inline ovs_be64 miniflow_get_metadata(const struct miniflow *);
 
 bool miniflow_equal(const struct miniflow *a, const struct miniflow *b);
 bool miniflow_equal_in_minimask(const struct miniflow *a,
@@ -361,11 +363,36 @@ void minimask_expand(const struct minimask *, struct flow_wildcards *);
 
 uint32_t minimask_get(const struct minimask *, unsigned int u32_ofs);
 uint16_t minimask_get_vid_mask(const struct minimask *);
+static inline ovs_be64 minimask_get_metadata_mask(const struct minimask *);
 
 bool minimask_equal(const struct minimask *a, const struct minimask *b);
 uint32_t minimask_hash(const struct minimask *, uint32_t basis);
 
 bool minimask_has_extra(const struct minimask *, const struct minimask *);
 bool minimask_is_catchall(const struct minimask *);
+
+/* Returns the value of the OpenFlow 1.1+ "metadata" field in 'flow'. */
+static inline ovs_be64
+miniflow_get_metadata(const struct miniflow *flow)
+{
+    enum { MD_OFS = offsetof(struct flow, metadata) };
+    BUILD_ASSERT_DECL(MD_OFS % sizeof(uint32_t) == 0);
+    ovs_be32 hi = (OVS_FORCE ovs_be32) miniflow_get(flow, MD_OFS / 4);
+    ovs_be32 lo = (OVS_FORCE ovs_be32) miniflow_get(flow, MD_OFS / 4 + 1);
+
+    return htonll(((uint64_t) ntohl(hi) << 32) | ntohl(lo));
+}
+
+/* Returns the mask for the OpenFlow 1.1+ "metadata" field in 'mask'.
+ *
+ * The return value is all-1-bits if 'mask' matches on the whole value of the
+ * metadata field, all-0-bits if 'mask' entirely wildcards the metadata field,
+ * or some other value if the metadata field is partially matched, partially
+ * wildcarded. */
+static inline ovs_be64
+minimask_get_metadata_mask(const struct minimask *mask)
+{
+    return miniflow_get_metadata(&mask->masks);
+}
 
 #endif /* flow.h */

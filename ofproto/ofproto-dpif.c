@@ -68,13 +68,14 @@
 VLOG_DEFINE_THIS_MODULE(ofproto_dpif);
 
 COVERAGE_DEFINE(ofproto_dpif_expired);
-COVERAGE_DEFINE(facet_changed_rule);
 COVERAGE_DEFINE(facet_revalidate);
 COVERAGE_DEFINE(facet_unexpected);
-COVERAGE_DEFINE(facet_suppress);
+COVERAGE_DEFINE(facet_create);
+COVERAGE_DEFINE(facet_remove);
+COVERAGE_DEFINE(subfacet_create);
+COVERAGE_DEFINE(subfacet_destroy);
 COVERAGE_DEFINE(subfacet_install_fail);
 COVERAGE_DEFINE(packet_in_overflow);
-COVERAGE_DEFINE(flow_mod_overflow);
 
 /* Number of implemented OpenFlow tables. */
 enum { N_TABLES = 255 };
@@ -437,20 +438,6 @@ struct dpif_backer {
     unsigned avg_n_subfacet;         /* Average number of flows. */
     long long int avg_subfacet_life; /* Average life span of subfacets. */
 
-    /* The average number of subfacets... */
-    struct avg_subfacet_rates hourly;   /* ...over the last hour. */
-    struct avg_subfacet_rates daily;    /* ...over the last day. */
-    struct avg_subfacet_rates lifetime; /* ...over the switch lifetime. */
-    long long int last_minute;          /* Last time 'hourly' was updated. */
-
-    /* Number of subfacets added or deleted since 'last_minute'. */
-    unsigned subfacet_add_count;
-    unsigned subfacet_del_count;
-
-    /* Number of subfacets added or deleted from 'created' to 'last_minute.' */
-    unsigned long long int total_subfacet_add_count;
-    unsigned long long int total_subfacet_del_count;
-
     /* Number of upcall handling threads. */
     unsigned int n_handler_threads;
 };
@@ -459,7 +446,6 @@ struct dpif_backer {
 static struct shash all_dpif_backers = SHASH_INITIALIZER(&all_dpif_backers);
 
 static void drop_key_clear(struct dpif_backer *);
-static void update_moving_averages(struct dpif_backer *backer);
 
 struct ofproto_dpif {
     struct hmap_node all_ofproto_dpifs_node; /* In 'all_ofproto_dpifs'. */
@@ -1217,14 +1203,6 @@ open_dpif_backer(const char *type, struct dpif_backer **backerp)
 
     backer->max_n_subfacet = 0;
     backer->created = time_msec();
-    backer->last_minute = backer->created;
-    memset(&backer->hourly, 0, sizeof backer->hourly);
-    memset(&backer->daily, 0, sizeof backer->daily);
-    memset(&backer->lifetime, 0, sizeof backer->lifetime);
-    backer->subfacet_add_count = 0;
-    backer->subfacet_del_count = 0;
-    backer->total_subfacet_add_count = 0;
-    backer->total_subfacet_del_count = 0;
     backer->avg_n_subfacet = 0;
     backer->avg_subfacet_life = 0;
 
@@ -3428,105 +3406,10 @@ handle_flow_misses(struct dpif_backer *backer, struct flow_miss_batch *fmb)
 }
 
 static void
-handle_sflow_upcall(struct dpif_backer *backer,
-                    const struct dpif_upcall *upcall)
-{
-    struct ofproto_dpif *ofproto;
-    union user_action_cookie cookie;
-    struct flow flow;
-    odp_port_t odp_in_port;
-
-    if (xlate_receive(backer, upcall->packet, upcall->key, upcall->key_len,
-                      &flow, NULL, &ofproto, &odp_in_port)
-        || !ofproto->sflow) {
-        return;
-    }
-
-    memset(&cookie, 0, sizeof cookie);
-    memcpy(&cookie, nl_attr_get(upcall->userdata), sizeof cookie.sflow);
-    dpif_sflow_received(ofproto->sflow, upcall->packet, &flow,
-                        odp_in_port, &cookie);
-}
-
-static void
-handle_flow_sample_upcall(struct dpif_backer *backer,
-                          const struct dpif_upcall *upcall)
-{
-    struct ofproto_dpif *ofproto;
-    union user_action_cookie cookie;
-    struct flow flow;
-
-    if (xlate_receive(backer, upcall->packet, upcall->key, upcall->key_len,
-                      &flow, NULL, &ofproto, NULL)
-        || !ofproto->ipfix) {
-        return;
-    }
-
-    memset(&cookie, 0, sizeof cookie);
-    memcpy(&cookie, nl_attr_get(upcall->userdata), sizeof cookie.flow_sample);
-
-    /* The flow reflects exactly the contents of the packet.  Sample
-     * the packet using it. */
-    dpif_ipfix_flow_sample(ofproto->ipfix, upcall->packet, &flow,
-                           cookie.flow_sample.collector_set_id,
-                           cookie.flow_sample.probability,
-                           cookie.flow_sample.obs_domain_id,
-                           cookie.flow_sample.obs_point_id);
-}
-
-static void
-handle_ipfix_upcall(struct dpif_backer *backer,
-                    const struct dpif_upcall *upcall)
-{
-    struct ofproto_dpif *ofproto;
-    struct flow flow;
-
-    if (xlate_receive(backer, upcall->packet, upcall->key, upcall->key_len,
-                      &flow, NULL, &ofproto, NULL)
-        || !ofproto->ipfix) {
-        return;
-    }
-
-    /* The flow reflects exactly the contents of the packet.  Sample
-     * the packet using it. */
-    dpif_ipfix_bridge_sample(ofproto->ipfix, upcall->packet, &flow);
-}
-
-static void
 handle_upcalls(struct dpif_backer *backer)
 {
     struct flow_miss_batch *fmb;
     int n_processed;
-
-    for (n_processed = 0; n_processed < FLOW_MISS_MAX_BATCH; n_processed++) {
-        struct upcall *upcall = upcall_next(backer->udpif);
-
-        if (!upcall) {
-            break;
-        }
-
-        switch (upcall->type) {
-        case SFLOW_UPCALL:
-            handle_sflow_upcall(backer, &upcall->dpif_upcall);
-            break;
-
-        case FLOW_SAMPLE_UPCALL:
-            handle_flow_sample_upcall(backer, &upcall->dpif_upcall);
-            break;
-
-        case IPFIX_UPCALL:
-            handle_ipfix_upcall(backer, &upcall->dpif_upcall);
-            break;
-
-        case BAD_UPCALL:
-            break;
-
-        case MISS_UPCALL:
-            NOT_REACHED();
-        }
-
-        upcall_destroy(upcall);
-    }
 
     for (n_processed = 0; n_processed < FLOW_MISS_MAX_BATCH; n_processed++) {
         struct drop_key *drop_key = drop_key_next(backer->udpif);
@@ -3739,8 +3622,6 @@ update_stats(struct dpif_backer *backer)
         run_fast_rl();
     }
     dpif_flow_dump_done(&dump);
-
-    update_moving_averages(backer);
 }
 
 /* Calculates and returns the number of milliseconds of idle time after which
@@ -3923,6 +3804,7 @@ facet_create(const struct flow_miss *miss)
     struct facet *facet;
     struct match match;
 
+    COVERAGE_INC(facet_create);
     facet = xzalloc(sizeof *facet);
     facet->ofproto = miss->ofproto;
     facet->used = miss->stats.used;
@@ -3986,6 +3868,7 @@ facet_remove(struct facet *facet)
 {
     struct subfacet *subfacet, *next_subfacet;
 
+    COVERAGE_INC(facet_remove);
     ovs_assert(!list_is_empty(&facet->subfacets));
 
     /* First uninstall all of the subfacets to get final statistics. */
@@ -4523,6 +4406,7 @@ subfacet_create(struct facet *facet, struct flow_miss *miss)
         subfacet = xmalloc(sizeof *subfacet);
     }
 
+    COVERAGE_INC(subfacet_create);
     hmap_insert(&backer->subfacets, &subfacet->hmap_node, key_hash);
     list_push_back(&facet->subfacets, &subfacet->list_node);
     subfacet->facet = facet;
@@ -4535,7 +4419,6 @@ subfacet_create(struct facet *facet, struct flow_miss *miss)
     subfacet->path = SF_NOT_INSTALLED;
     subfacet->backer = backer;
 
-    backer->subfacet_add_count++;
     return subfacet;
 }
 
@@ -4545,11 +4428,8 @@ static void
 subfacet_destroy__(struct subfacet *subfacet)
 {
     struct facet *facet = subfacet->facet;
-    struct ofproto_dpif *ofproto = facet->ofproto;
 
-    /* Update ofproto stats before uninstall the subfacet. */
-    ofproto->backer->subfacet_del_count++;
-
+    COVERAGE_INC(subfacet_destroy);
     subfacet_uninstall(subfacet);
     hmap_remove(&subfacet->backer->subfacets, &subfacet->hmap_node);
     list_remove(&subfacet->list_node);
@@ -5340,12 +5220,13 @@ static void
 ofproto_unixctl_trace(struct unixctl_conn *conn, int argc, const char *argv[],
                       void *aux OVS_UNUSED)
 {
-    const struct dpif_backer *backer;
+    const struct dpif_backer *backer = NULL;
     struct ofproto_dpif *ofproto;
     struct ofpbuf odp_key, odp_mask;
     struct ofpbuf *packet;
     struct ds result;
     struct flow flow;
+    struct simap port_names;
     char *s;
 
     packet = NULL;
@@ -5353,6 +5234,7 @@ ofproto_unixctl_trace(struct unixctl_conn *conn, int argc, const char *argv[],
     ds_init(&result);
     ofpbuf_init(&odp_key, 0);
     ofpbuf_init(&odp_mask, 0);
+    simap_init(&port_names);
 
     /* Handle "-generate" or a hex string as the last argument. */
     if (!strcmp(argv[argc - 1], "-generate")) {
@@ -5369,37 +5251,42 @@ ofproto_unixctl_trace(struct unixctl_conn *conn, int argc, const char *argv[],
         }
     }
 
+    /* odp_flow can have its in_port specified as a name instead of port no.
+     * We do not yet know whether a given flow is a odp_flow or a br_flow.
+     * But, to know whether a flow is odp_flow through odp_flow_from_string(),
+     * we need to create a simap of name to port no. */
+    if (argc == 3) {
+        const char *dp_type;
+        if (!strncmp(argv[1], "ovs-", 4)) {
+            dp_type = argv[1] + 4;
+        } else {
+            dp_type = argv[1];
+        }
+        backer = shash_find_data(&all_dpif_backers, dp_type);
+    } else {
+        struct shash_node *node;
+        if (shash_count(&all_dpif_backers) == 1) {
+            node = shash_first(&all_dpif_backers);
+            backer = node->data;
+        }
+    }
+    if (backer && backer->dpif) {
+        struct dpif_port dpif_port;
+        struct dpif_port_dump port_dump;
+        DPIF_PORT_FOR_EACH (&dpif_port, &port_dump, backer->dpif) {
+            simap_put(&port_names, dpif_port.name,
+                      odp_to_u32(dpif_port.port_no));
+        }
+    }
+
     /* Parse the flow and determine whether a datapath or
      * bridge is specified. If function odp_flow_key_from_string()
      * returns 0, the flow is a odp_flow. If function
      * parse_ofp_exact_flow() returns 0, the flow is a br_flow. */
-    if (!odp_flow_from_string(argv[argc - 1], NULL, &odp_key, &odp_mask)) {
-        /* If the odp_flow is the second argument,
-         * the datapath name is the first argument. */
-        if (argc == 3) {
-            const char *dp_type;
-            if (!strncmp(argv[1], "ovs-", 4)) {
-                dp_type = argv[1] + 4;
-            } else {
-                dp_type = argv[1];
-            }
-            backer = shash_find_data(&all_dpif_backers, dp_type);
-            if (!backer) {
-                unixctl_command_reply_error(conn, "Cannot find datapath "
-                               "of this name");
-                goto exit;
-            }
-        } else {
-            /* No datapath name specified, so there should be only one
-             * datapath. */
-            struct shash_node *node;
-            if (shash_count(&all_dpif_backers) != 1) {
-                unixctl_command_reply_error(conn, "Must specify datapath "
-                         "name, there is more than one type of datapath");
-                goto exit;
-            }
-            node = shash_first(&all_dpif_backers);
-            backer = node->data;
+    if (!odp_flow_from_string(argv[argc - 1], &port_names, &odp_key, &odp_mask)) {
+        if (!backer) {
+            unixctl_command_reply_error(conn, "Cannot find the datapath");
+            goto exit;
         }
 
         if (xlate_receive(backer, NULL, odp_key.data, odp_key.size, &flow,
@@ -5452,6 +5339,7 @@ exit:
     ofpbuf_delete(packet);
     ofpbuf_uninit(&odp_key);
     ofpbuf_uninit(&odp_mask);
+    simap_destroy(&port_names);
 }
 
 static void
@@ -5637,21 +5525,12 @@ ofproto_unixctl_dpif_dump_dps(struct unixctl_conn *conn, int argc OVS_UNUSED,
 }
 
 static void
-show_dp_rates(struct ds *ds, const char *heading,
-              const struct avg_subfacet_rates *rates)
-{
-    ds_put_format(ds, "%s add rate: %5.3f/min, del rate: %5.3f/min\n",
-                  heading, rates->add_rate, rates->del_rate);
-}
-
-static void
 dpif_show_backer(const struct dpif_backer *backer, struct ds *ds)
 {
     const struct shash_node **ofprotos;
     struct ofproto_dpif *ofproto;
     struct shash ofproto_shash;
     uint64_t n_hit, n_missed;
-    long long int minutes;
     size_t i;
 
     n_hit = n_missed = 0;
@@ -5668,15 +5547,6 @@ dpif_show_backer(const struct dpif_backer *backer, struct ds *ds)
                   " life span: %lldms\n", hmap_count(&backer->subfacets),
                   backer->avg_n_subfacet, backer->max_n_subfacet,
                   backer->avg_subfacet_life);
-
-    minutes = (time_msec() - backer->created) / (1000 * 60);
-    if (minutes >= 60) {
-        show_dp_rates(ds, "\thourly avg:", &backer->hourly);
-    }
-    if (minutes >= 60 * 24) {
-        show_dp_rates(ds, "\tdaily avg:",  &backer->daily);
-    }
-    show_dp_rates(ds, "\toverall avg:",  &backer->lifetime);
 
     shash_init(&ofproto_shash);
     ofprotos = get_ofprotos(&ofproto_shash);
@@ -5884,7 +5754,7 @@ ofproto_unixctl_dpif_dump_flows(struct unixctl_conn *conn,
         }
 
         odp_flow_format(subfacet->key, subfacet->key_len,
-                        mask.data, mask.size, &ds, false);
+                        mask.data, mask.size, NULL, &ds, false);
 
         ds_put_format(&ds, ", packets:%"PRIu64", bytes:%"PRIu64", used:",
                       subfacet->dp_packet_count, subfacet->dp_byte_count);
@@ -6227,51 +6097,6 @@ odp_port_to_ofp_port(const struct ofproto_dpif *ofproto, odp_port_t odp_port)
         return port->up.ofp_port;
     } else {
         return OFPP_NONE;
-    }
-}
-
-/* Compute exponentially weighted moving average, adding 'new' as the newest,
- * most heavily weighted element.  'base' designates the rate of decay: after
- * 'base' further updates, 'new''s weight in the EWMA decays to about 1/e
- * (about .37). */
-static void
-exp_mavg(double *avg, int base, double new)
-{
-    *avg = (*avg * (base - 1) + new) / base;
-}
-
-static void
-update_moving_averages(struct dpif_backer *backer)
-{
-    const int min_ms = 60 * 1000; /* milliseconds in one minute. */
-    long long int minutes = (time_msec() - backer->created) / min_ms;
-
-    if (minutes > 0) {
-        backer->lifetime.add_rate = (double) backer->total_subfacet_add_count
-            / minutes;
-        backer->lifetime.del_rate = (double) backer->total_subfacet_del_count
-            / minutes;
-    } else {
-        backer->lifetime.add_rate = 0.0;
-        backer->lifetime.del_rate = 0.0;
-    }
-
-    /* Update hourly averages on the minute boundaries. */
-    if (time_msec() - backer->last_minute >= min_ms) {
-        exp_mavg(&backer->hourly.add_rate, 60, backer->subfacet_add_count);
-        exp_mavg(&backer->hourly.del_rate, 60, backer->subfacet_del_count);
-
-        /* Update daily averages on the hour boundaries. */
-        if ((backer->last_minute - backer->created) / min_ms % 60 == 59) {
-            exp_mavg(&backer->daily.add_rate, 24, backer->hourly.add_rate);
-            exp_mavg(&backer->daily.del_rate, 24, backer->hourly.del_rate);
-        }
-
-        backer->total_subfacet_add_count += backer->subfacet_add_count;
-        backer->total_subfacet_del_count += backer->subfacet_del_count;
-        backer->subfacet_add_count = 0;
-        backer->subfacet_del_count = 0;
-        backer->last_minute += min_ms;
     }
 }
 
