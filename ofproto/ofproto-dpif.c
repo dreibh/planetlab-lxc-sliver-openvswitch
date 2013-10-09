@@ -52,6 +52,7 @@
 #include "ofproto-dpif-governor.h"
 #include "ofproto-dpif-ipfix.h"
 #include "ofproto-dpif-mirror.h"
+#include "ofproto-dpif-monitor.h"
 #include "ofproto-dpif-sflow.h"
 #include "ofproto-dpif-upcall.h"
 #include "ofproto-dpif-xlate.h"
@@ -361,8 +362,6 @@ ofport_dpif_cast(const struct ofport *ofport)
 }
 
 static void port_run(struct ofport_dpif *);
-static void port_run_fast(struct ofport_dpif *);
-static void port_wait(struct ofport_dpif *);
 static int set_bfd(struct ofport *, const struct smap *);
 static int set_cfm(struct ofport *, const struct cfm_settings *);
 static void ofport_update_peer(struct ofport_dpif *);
@@ -470,8 +469,9 @@ struct ofproto_dpif {
     struct classifier facets;     /* Contains 'struct facet's. */
     long long int consistency_rl;
 
-    struct netdev_stats stats; /* To account packets generated and consumed in
-                                * userspace. */
+    struct ovs_mutex stats_mutex;
+    struct netdev_stats stats OVS_GUARDED; /* To account packets generated and
+                                            * consumed in userspace. */
 
     /* Spanning tree. */
     struct stp *stp;
@@ -525,9 +525,6 @@ static int expire(struct dpif_backer *);
 
 /* NetFlow. */
 static void send_netflow_active_timeouts(struct ofproto_dpif *);
-
-/* Utilities. */
-static int send_packet(const struct ofport_dpif *, struct ofpbuf *packet);
 
 /* Global variables. */
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
@@ -1233,6 +1230,7 @@ construct(struct ofproto *ofproto_)
     ofproto->ml = mac_learning_create(MAC_ENTRY_DEFAULT_IDLE_TIME);
     ofproto->mbridge = mbridge_create();
     ofproto->has_bonded_bundles = false;
+    ovs_mutex_init(&ofproto->stats_mutex);
     ovs_mutex_init(&ofproto->vsp_mutex);
 
     classifier_init(&ofproto->facets);
@@ -1420,6 +1418,7 @@ destruct(struct ofproto *ofproto_)
     sset_destroy(&ofproto->ghost_ports);
     sset_destroy(&ofproto->port_poll_set);
 
+    ovs_mutex_destroy(&ofproto->stats_mutex);
     ovs_mutex_destroy(&ofproto->vsp_mutex);
 
     close_dpif_backer(ofproto->backer);
@@ -1430,7 +1429,6 @@ run_fast(struct ofproto *ofproto_)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
     struct ofputil_packet_in *pin, *next_pin;
-    struct ofport_dpif *ofport;
     struct list pins;
 
     /* Do not perform any periodic activity required by 'ofproto' while
@@ -1447,10 +1445,7 @@ run_fast(struct ofproto *ofproto_)
         free(pin);
     }
 
-    HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
-        port_run_fast(ofport);
-    }
-
+    ofproto_dpif_monitor_run_fast();
     return 0;
 }
 
@@ -1491,6 +1486,9 @@ run(struct ofproto *ofproto_)
     if (ofproto->ipfix) {
         dpif_ipfix_run(ofproto->ipfix);
     }
+
+    ofproto_dpif_monitor_run_fast();
+    ofproto_dpif_monitor_run();
 
     HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
         port_run(ofport);
@@ -1536,7 +1534,6 @@ static void
 wait(struct ofproto *ofproto_)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
-    struct ofport_dpif *ofport;
     struct ofbundle *bundle;
 
     if (ofproto_get_flow_restore_wait()) {
@@ -1549,9 +1546,7 @@ wait(struct ofproto *ofproto_)
     if (ofproto->ipfix) {
         dpif_ipfix_wait(ofproto->ipfix);
     }
-    HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
-        port_wait(ofport);
-    }
+    ofproto_dpif_monitor_wait();
     HMAP_FOR_EACH (bundle, hmap_node, &ofproto->bundles) {
         bundle_wait(bundle);
     }
@@ -1814,6 +1809,9 @@ port_modified(struct ofport *port_)
         bfd_set_netdev(port->bfd, port->up.netdev);
     }
 
+    ofproto_dpif_monitor_port_update(port, port->bfd, port->cfm,
+                                     port->up.pp.hw_addr);
+
     if (port->is_tunnel && tnl_port_reconfigure(port, port->up.netdev,
                                                 port->odp_port)) {
         ofproto_dpif_cast(port->up.ofproto)->backer->need_revalidate =
@@ -1904,11 +1902,9 @@ static int
 set_cfm(struct ofport *ofport_, const struct cfm_settings *s)
 {
     struct ofport_dpif *ofport = ofport_dpif_cast(ofport_);
-    int error;
+    int error = 0;
 
-    if (!s) {
-        error = 0;
-    } else {
+    if (s) {
         if (!ofport->cfm) {
             struct ofproto_dpif *ofproto;
 
@@ -1918,13 +1914,17 @@ set_cfm(struct ofport *ofport_, const struct cfm_settings *s)
         }
 
         if (cfm_configure(ofport->cfm, s)) {
-            return 0;
+            error = 0;
+            goto out;
         }
 
         error = EINVAL;
     }
     cfm_unref(ofport->cfm);
     ofport->cfm = NULL;
+out:
+    ofproto_dpif_monitor_port_update(ofport, ofport->bfd, ofport->cfm,
+                                     ofport->up.pp.hw_addr);
     return error;
 }
 
@@ -1958,7 +1958,8 @@ set_bfd(struct ofport *ofport_, const struct smap *cfg)
     if (ofport->bfd != old) {
         ofproto->backer->need_revalidate = REV_RECONFIGURE;
     }
-
+    ofproto_dpif_monitor_port_update(ofport, ofport->bfd, ofport->cfm,
+                                     ofport->up.pp.hw_addr);
     return 0;
 }
 
@@ -1996,7 +1997,7 @@ send_bpdu_cb(struct ofpbuf *pkt, int port_num, void *ofproto_)
             VLOG_WARN_RL(&rl, "%s: cannot send BPDU on port %d "
                          "with unknown MAC", ofproto->up.name, port_num);
         } else {
-            send_packet(ofport, pkt);
+            ofproto_dpif_send_packet(ofport, pkt);
         }
     }
     ofpbuf_delete(pkt);
@@ -2592,7 +2593,7 @@ send_pdu_cb(void *port_, const void *pdu, size_t pdu_size)
                                  pdu_size);
         memcpy(packet_pdu, pdu, pdu_size);
 
-        send_packet(port, &packet);
+        ofproto_dpif_send_packet(port, &packet);
         ofpbuf_uninit(&packet);
     } else {
         VLOG_ERR_RL(&rl, "port %s: cannot obtain Ethernet address of iface "
@@ -2629,7 +2630,7 @@ bundle_send_learning_packets(struct ofbundle *bundle)
     LIST_FOR_EACH (learning_packet, list_node, &packets) {
         int ret;
 
-        ret = send_packet(learning_packet->private_p, learning_packet);
+        ret = ofproto_dpif_send_packet(learning_packet->private_p, learning_packet);
         if (ret) {
             error = ret;
             n_errors++;
@@ -2844,28 +2845,6 @@ ofport_update_peer(struct ofport_dpif *ofport)
 }
 
 static void
-port_run_fast(struct ofport_dpif *ofport)
-{
-    if (ofport->cfm && cfm_should_send_ccm(ofport->cfm)) {
-        struct ofpbuf packet;
-
-        ofpbuf_init(&packet, 0);
-        cfm_compose_ccm(ofport->cfm, &packet, ofport->up.pp.hw_addr);
-        send_packet(ofport, &packet);
-        ofpbuf_uninit(&packet);
-    }
-
-    if (ofport->bfd && bfd_should_send_packet(ofport->bfd)) {
-        struct ofpbuf packet;
-
-        ofpbuf_init(&packet, 0);
-        bfd_put_packet(ofport->bfd, &packet, ofport->up.pp.hw_addr);
-        send_packet(ofport, &packet);
-        ofpbuf_uninit(&packet);
-    }
-}
-
-static void
 port_run(struct ofport_dpif *ofport)
 {
     long long int carrier_seq = netdev_get_carrier_resets(ofport->up.netdev);
@@ -2876,12 +2855,9 @@ port_run(struct ofport_dpif *ofport)
 
     ofport->carrier_seq = carrier_seq;
 
-    port_run_fast(ofport);
-
     if (ofport->cfm) {
         int cfm_opup = cfm_get_opup(ofport->cfm);
 
-        cfm_run(ofport->cfm);
         cfm_enable = !cfm_get_fault(ofport->cfm);
 
         if (cfm_opup >= 0) {
@@ -2890,7 +2866,6 @@ port_run(struct ofport_dpif *ofport)
     }
 
     if (ofport->bfd) {
-        bfd_run(ofport->bfd);
         bfd_enable = bfd_forwarding(ofport->bfd);
     }
 
@@ -2911,18 +2886,6 @@ port_run(struct ofport_dpif *ofport)
     }
 
     ofport->may_enable = enable;
-}
-
-static void
-port_wait(struct ofport_dpif *ofport)
-{
-    if (ofport->cfm) {
-        cfm_wait(ofport->cfm);
-    }
-
-    if (ofport->bfd) {
-        bfd_wait(ofport->bfd);
-    }
 }
 
 static int
@@ -3038,10 +3001,11 @@ port_get_stats(const struct ofport *ofport_, struct netdev_stats *stats)
     if (!error && ofport_->ofp_port == OFPP_LOCAL) {
         struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofport->up.ofproto);
 
+        ovs_mutex_lock(&ofproto->stats_mutex);
         /* ofproto->stats.tx_packets represents packets that we created
          * internally and sent to some port (e.g. packets sent with
-         * send_packet()).  Account for them as if they had come from
-         * OFPP_LOCAL and got forwarded. */
+         * ofproto_dpif_send_packet()).  Account for them as if they had
+         * come from OFPP_LOCAL and got forwarded. */
 
         if (stats->rx_packets != UINT64_MAX) {
             stats->rx_packets += ofproto->stats.tx_packets;
@@ -3062,6 +3026,7 @@ port_get_stats(const struct ofport *ofport_, struct netdev_stats *stats)
         if (stats->tx_bytes != UINT64_MAX) {
             stats->tx_bytes += ofproto->stats.rx_bytes;
         }
+        ovs_mutex_unlock(&ofproto->stats_mutex);
     }
 
     return error;
@@ -4825,55 +4790,18 @@ rule_modify_actions(struct rule *rule_, bool reset_counters)
 /* Sends 'packet' out 'ofport'.
  * May modify 'packet'.
  * Returns 0 if successful, otherwise a positive errno value. */
-static int
-send_packet(const struct ofport_dpif *ofport, struct ofpbuf *packet)
+int
+ofproto_dpif_send_packet(const struct ofport_dpif *ofport, struct ofpbuf *packet)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofport->up.ofproto);
-    uint64_t odp_actions_stub[1024 / 8];
-    struct ofpbuf key, odp_actions;
-    struct dpif_flow_stats stats;
-    struct odputil_keybuf keybuf;
-    struct ofpact_output output;
-    struct xlate_out xout;
-    struct xlate_in xin;
-    struct flow flow;
-    union flow_in_port in_port_;
     int error;
 
-    ofpbuf_use_stub(&odp_actions, odp_actions_stub, sizeof odp_actions_stub);
-    ofpbuf_use_stack(&key, &keybuf, sizeof keybuf);
+    error = xlate_send_packet(ofport, packet);
 
-    /* Use OFPP_NONE as the in_port to avoid special packet processing. */
-    in_port_.ofp_port = OFPP_NONE;
-    flow_extract(packet, 0, 0, NULL, &in_port_, &flow);
-    odp_flow_key_from_flow(&key, &flow, ofp_port_to_odp_port(ofproto,
-                                                             OFPP_LOCAL));
-    dpif_flow_stats_extract(&flow, packet, time_msec(), &stats);
-
-    ofpact_init(&output.ofpact, OFPACT_OUTPUT, sizeof output);
-    output.port = ofport->up.ofp_port;
-    output.max_len = 0;
-
-    xlate_in_init(&xin, ofproto, &flow, NULL, 0, packet);
-    xin.ofpacts_len = sizeof output;
-    xin.ofpacts = &output.ofpact;
-    xin.resubmit_stats = &stats;
-    xlate_actions(&xin, &xout);
-
-    error = dpif_execute(ofproto->backer->dpif,
-                         key.data, key.size,
-                         xout.odp_actions.data, xout.odp_actions.size,
-                         packet);
-    xlate_out_uninit(&xout);
-
-    if (error) {
-        VLOG_WARN_RL(&rl, "%s: failed to send packet on port %s (%s)",
-                     ofproto->up.name, netdev_get_name(ofport->up.netdev),
-                     ovs_strerror(error));
-    }
-
+    ovs_mutex_lock(&ofproto->stats_mutex);
     ofproto->stats.tx_packets++;
     ofproto->stats.tx_bytes += packet->size;
+    ovs_mutex_unlock(&ofproto->stats_mutex);
     return error;
 }
 
