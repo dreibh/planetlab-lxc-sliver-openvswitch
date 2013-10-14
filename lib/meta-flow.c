@@ -482,7 +482,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         MFM_NONE,
         MFS_DECIMAL,
         MFP_ARP,
-        false,
+        true,
         NXM_OF_ARP_OP, "NXM_OF_ARP_OP",
         OXM_OF_ARP_OP, "OXM_OF_ARP_OP",
         OFPUTIL_P_ANY,
@@ -493,7 +493,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         MFM_FULLY,
         MFS_IPV4,
         MFP_ARP,
-        false,
+        true,
         NXM_OF_ARP_SPA, "NXM_OF_ARP_SPA",
         OXM_OF_ARP_SPA, "OXM_OF_ARP_SPA",
         OFPUTIL_P_ANY,
@@ -504,7 +504,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         MFM_FULLY,
         MFS_IPV4,
         MFP_ARP,
-        false,
+        true,
         NXM_OF_ARP_TPA, "NXM_OF_ARP_TPA",
         OXM_OF_ARP_TPA, "OXM_OF_ARP_TPA",
         OFPUTIL_P_ANY,
@@ -515,7 +515,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         MFM_FULLY,
         MFS_ETHERNET,
         MFP_ARP,
-        false,
+        true,
         NXM_NX_ARP_SHA, "NXM_NX_ARP_SHA",
         OXM_OF_ARP_SHA, "OXM_OF_ARP_SHA",
         OFPUTIL_P_NXM_OXM_ANY,
@@ -526,7 +526,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         MFM_FULLY,
         MFS_ETHERNET,
         MFP_ARP,
-        false,
+        true,
         NXM_NX_ARP_THA, "NXM_NX_ARP_THA",
         OXM_OF_ARP_THA, "OXM_OF_ARP_THA",
         OFPUTIL_P_NXM_OXM_ANY,
@@ -2175,7 +2175,7 @@ mf_random_value(const struct mf_field *mf, union mf_value *value)
         break;
 
     case MFF_IPV6_LABEL:
-        value->be32 &= ~htonl(IPV6_LABEL_MASK);
+        value->be32 &= htonl(IPV6_LABEL_MASK);
         break;
 
     case MFF_IP_DSCP:

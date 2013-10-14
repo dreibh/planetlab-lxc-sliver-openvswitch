@@ -1582,7 +1582,7 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
         special = process_special(ctx, &ctx->xin->flow, peer,
                                   ctx->xin->packet);
         if (special) {
-            ctx->xout->slow = special;
+            ctx->xout->slow |= special;
         } else if (may_receive(peer, ctx)) {
             if (xport_stp_forward_state(peer)) {
                 xlate_table_action(ctx, flow->in_port.ofp_port, 0, true);
@@ -1660,9 +1660,10 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
     }
 
     if (out_port != ODPP_NONE) {
-        commit_odp_actions(flow, &ctx->base_flow,
-                           &ctx->xout->odp_actions, &ctx->xout->wc,
-                           &ctx->mpls_depth_delta);
+        ctx->xout->slow |= commit_odp_actions(flow, &ctx->base_flow,
+                                              &ctx->xout->odp_actions,
+                                              &ctx->xout->wc,
+                                              &ctx->mpls_depth_delta);
         nl_msg_put_odp_port(&ctx->xout->odp_actions, OVS_ACTION_ATTR_OUTPUT,
                             out_port);
 
@@ -1814,8 +1815,7 @@ execute_controller_action(struct xlate_ctx *ctx, int len,
     struct ofpbuf *packet;
     struct flow key;
 
-    ovs_assert(!ctx->xout->slow || ctx->xout->slow == SLOW_CONTROLLER);
-    ctx->xout->slow = SLOW_CONTROLLER;
+    ctx->xout->slow |= SLOW_CONTROLLER;
     if (!ctx->xin->packet) {
         return;
     }
@@ -1826,9 +1826,10 @@ execute_controller_action(struct xlate_ctx *ctx, int len,
     key.pkt_mark = 0;
     memset(&key.tunnel, 0, sizeof key.tunnel);
 
-    commit_odp_actions(&ctx->xin->flow, &ctx->base_flow,
-                       &ctx->xout->odp_actions, &ctx->xout->wc,
-                       &ctx->mpls_depth_delta);
+    ctx->xout->slow |= commit_odp_actions(&ctx->xin->flow, &ctx->base_flow,
+                                          &ctx->xout->odp_actions,
+                                          &ctx->xout->wc,
+                                          &ctx->mpls_depth_delta);
 
     odp_execute_actions(NULL, packet, &key, ctx->xout->odp_actions.data,
                         ctx->xout->odp_actions.size, NULL, NULL);
@@ -2214,9 +2215,10 @@ xlate_sample_action(struct xlate_ctx *ctx,
    * the same percentage. */
   uint32_t probability = (os->probability << 16) | os->probability;
 
-  commit_odp_actions(&ctx->xin->flow, &ctx->base_flow,
-                     &ctx->xout->odp_actions, &ctx->xout->wc,
-                     &ctx->mpls_depth_delta);
+  ctx->xout->slow |= commit_odp_actions(&ctx->xin->flow, &ctx->base_flow,
+                                        &ctx->xout->odp_actions,
+                                        &ctx->xout->wc,
+                                        &ctx->mpls_depth_delta);
 
   compose_flow_sample_cookie(os->probability, os->collector_set_id,
                              os->obs_domain_id, os->obs_point_id, &cookie);
@@ -2661,6 +2663,7 @@ xlate_actions__(struct xlate_in *xin, struct xlate_out *xout)
 {
     struct flow_wildcards *wc = &xout->wc;
     struct flow *flow = &xin->flow;
+    struct rule_dpif *rule = NULL;
 
     struct rule_actions *actions = NULL;
     enum slow_path_reason special;
@@ -2735,11 +2738,20 @@ xlate_actions__(struct xlate_in *xin, struct xlate_out *xout)
     ctx.exit = false;
     ctx.mpls_depth_delta = 0;
 
+    if (!xin->ofpacts && !ctx.rule) {
+        rule_dpif_lookup(ctx.xbridge->ofproto, flow, wc, &rule);
+        if (ctx.xin->resubmit_stats) {
+            rule_dpif_credit_stats(rule, ctx.xin->resubmit_stats);
+        }
+        ctx.rule = rule;
+    }
+    xout->fail_open = ctx.rule && rule_dpif_fail_open(ctx.rule);
+
     if (xin->ofpacts) {
         ofpacts = xin->ofpacts;
         ofpacts_len = xin->ofpacts_len;
-    } else if (xin->rule) {
-        actions = rule_dpif_get_actions(xin->rule);
+    } else if (ctx.rule) {
+        actions = rule_dpif_get_actions(ctx.rule);
         ofpacts = actions->ofpacts;
         ofpacts_len = actions->ofpacts_len;
     } else {
@@ -2780,7 +2792,7 @@ xlate_actions__(struct xlate_in *xin, struct xlate_out *xout)
     in_port = get_ofp_port(ctx.xbridge, flow->in_port.ofp_port);
     special = process_special(&ctx, flow, in_port, ctx.xin->packet);
     if (special) {
-        ctx.xout->slow = special;
+        ctx.xout->slow |= special;
     } else {
         size_t sample_actions_len;
 
@@ -2836,6 +2848,7 @@ xlate_actions__(struct xlate_in *xin, struct xlate_out *xout)
 
 out:
     rule_actions_unref(actions);
+    rule_dpif_unref(rule);
 }
 
 /* Sends 'packet' out 'ofport'.
@@ -2844,20 +2857,12 @@ out:
 int
 xlate_send_packet(const struct ofport_dpif *ofport, struct ofpbuf *packet)
 {
-    uint64_t odp_actions_stub[1024 / 8];
     struct xport *xport;
-    struct ofpbuf key, odp_actions;
-    struct dpif_flow_stats stats;
-    struct odputil_keybuf keybuf;
     struct ofpact_output output;
-    struct xlate_out xout;
-    struct xlate_in xin;
     struct flow flow;
     union flow_in_port in_port_;
     int error;
 
-    ofpbuf_use_stub(&odp_actions, odp_actions_stub, sizeof odp_actions_stub);
-    ofpbuf_use_stack(&key, &keybuf, sizeof keybuf);
     ofpact_init(&output.ofpact, OFPACT_OUTPUT, sizeof output);
     /* Use OFPP_NONE as the in_port to avoid special packet processing. */
     in_port_.ofp_port = OFPP_NONE;
@@ -2866,28 +2871,14 @@ xlate_send_packet(const struct ofport_dpif *ofport, struct ofpbuf *packet)
     ovs_rwlock_rdlock(&xlate_rwlock);
     xport = xport_lookup(ofport);
     if (!xport) {
-        error = EINVAL;
         ovs_rwlock_unlock(&xlate_rwlock);
-        goto out;
+        return EINVAL;
     }
-
-    odp_flow_key_from_flow(&key, &flow, ofp_port_to_odp_port(xport->xbridge, OFPP_LOCAL));
-    dpif_flow_stats_extract(&flow, packet, time_msec(), &stats);
     output.port = xport->ofp_port;
     output.max_len = 0;
-    xlate_in_init(&xin, xport->xbridge->ofproto, &flow, NULL, 0, packet);
-    xin.ofpacts_len = sizeof output;
-    xin.ofpacts = &output.ofpact;
-    xin.resubmit_stats = &stats;
-    /* Calls xlate_actions__ directly, since the rdlock is acquired. */
-    xlate_actions__(&xin, &xout);
-    error = dpif_execute(xport->xbridge->dpif,
-                         key.data, key.size,
-                         xout.odp_actions.data, xout.odp_actions.size,
-                         packet);
+    error =  ofproto_dpif_execute_actions(xport->xbridge->ofproto, &flow, NULL,
+                                          &output.ofpact, sizeof output,
+                                          packet);
     ovs_rwlock_unlock(&xlate_rwlock);
-
-out:
-    xlate_out_uninit(&xout);
     return error;
 }

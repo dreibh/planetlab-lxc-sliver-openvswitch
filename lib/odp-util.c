@@ -176,37 +176,27 @@ format_odp_sample_action(struct ds *ds, const struct nlattr *attr)
 }
 
 static const char *
-slow_path_reason_to_string(enum slow_path_reason reason)
+slow_path_reason_to_string(uint32_t reason)
 {
-    switch (reason) {
-    case SLOW_CFM:
-        return "cfm";
-    case SLOW_LACP:
-        return "lacp";
-    case SLOW_STP:
-        return "stp";
-    case SLOW_BFD:
-        return "bfd";
-    case SLOW_CONTROLLER:
-        return "controller";
-    case __SLOW_MAX:
-    default:
-        return NULL;
+    switch ((enum slow_path_reason) reason) {
+#define SPR(ENUM, STRING, EXPLANATION) case ENUM: return STRING;
+        SLOW_PATH_REASONS
+#undef SPR
     }
+
+    return NULL;
 }
 
-static enum slow_path_reason
-string_to_slow_path_reason(const char *string)
+const char *
+slow_path_reason_to_explanation(enum slow_path_reason reason)
 {
-    enum slow_path_reason i;
-
-    for (i = 1; i < __SLOW_MAX; i++) {
-        if (!strcmp(string, slow_path_reason_to_string(i))) {
-            return i;
-        }
+    switch (reason) {
+#define SPR(ENUM, STRING, EXPLANATION) case ENUM: return EXPLANATION;
+        SLOW_PATH_REASONS
+#undef SPR
     }
 
-    return 0;
+    return "<unknown>";
 }
 
 static int
@@ -303,10 +293,10 @@ format_odp_userspace_action(struct ds *ds, const struct nlattr *attr)
                               cookie.sflow.output);
             } else if (userdata_len == sizeof cookie.slow_path
                        && cookie.type == USER_ACTION_COOKIE_SLOW_PATH) {
-                const char *reason;
-                reason = slow_path_reason_to_string(cookie.slow_path.reason);
-                reason = reason ? reason : "";
-                ds_put_format(ds, ",slow_path(%s)", reason);
+                ds_put_cstr(ds, ",slow_path(");
+                format_flags(ds, slow_path_reason_to_string,
+                             cookie.slow_path.reason, ',');
+                ds_put_format(ds, ")");
             } else if (userdata_len == sizeof cookie.flow_sample
                        && cookie.type == USER_ACTION_COOKIE_FLOW_SAMPLE) {
                 ds_put_format(ds, ",flow_sample(probability=%"PRIu16
@@ -536,27 +526,25 @@ parse_odp_action(const char *s, const struct simap *port_names,
             odp_put_userspace_action(pid, &cookie, sizeof cookie.sflow,
                                      actions);
             return n;
-        } else if (sscanf(s, "userspace(pid=%lli,slow_path(%n", &pid, &n) > 0
+        } else if (sscanf(s, "userspace(pid=%lli,slow_path%n", &pid, &n) > 0
                    && n > 0) {
             union user_action_cookie cookie;
-            char reason[32];
-
-            if (s[n] == ')' && s[n + 1] == ')') {
-                reason[0] = '\0';
-                n += 2;
-            } else if (sscanf(s + n, "%31[^)]))", reason) > 0) {
-                n += strlen(reason) + 2;
-            } else {
-                return -EINVAL;
-            }
+            int res;
 
             cookie.type = USER_ACTION_COOKIE_SLOW_PATH;
             cookie.slow_path.unused = 0;
-            cookie.slow_path.reason = string_to_slow_path_reason(reason);
+            cookie.slow_path.reason = 0;
 
-            if (reason[0] && !cookie.slow_path.reason) {
+            res = parse_flags(&s[n], slow_path_reason_to_string,
+                              &cookie.slow_path.reason);
+            if (res < 0) {
+                return res;
+            }
+            n += res;
+            if (s[n] != ')') {
                 return -EINVAL;
             }
+            n++;
 
             odp_put_userspace_action(pid, &cookie, sizeof cookie.slow_path,
                                      actions);
@@ -3505,20 +3493,66 @@ commit_set_ipv6_action(const struct flow *flow, struct flow *base,
                       &ipv6_key, sizeof(ipv6_key));
 }
 
-static void
+static enum slow_path_reason
+commit_set_arp_action(const struct flow *flow, struct flow *base,
+                      struct ofpbuf *odp_actions, struct flow_wildcards *wc)
+{
+    struct ovs_key_arp arp_key;
+
+    if (base->nw_src == flow->nw_src &&
+        base->nw_dst == flow->nw_dst &&
+        base->nw_proto == flow->nw_proto &&
+        eth_addr_equals(base->arp_sha, flow->arp_sha) &&
+        eth_addr_equals(base->arp_tha, flow->arp_tha)) {
+        return 0;
+    }
+
+    memset(&wc->masks.nw_src, 0xff, sizeof wc->masks.nw_src);
+    memset(&wc->masks.nw_dst, 0xff, sizeof wc->masks.nw_dst);
+    memset(&wc->masks.nw_proto, 0xff, sizeof wc->masks.nw_proto);
+    memset(&wc->masks.arp_sha, 0xff, sizeof wc->masks.arp_sha);
+    memset(&wc->masks.arp_tha, 0xff, sizeof wc->masks.arp_tha);
+
+    base->nw_src = flow->nw_src;
+    base->nw_dst = flow->nw_dst;
+    base->nw_proto = flow->nw_proto;
+    memcpy(base->arp_sha, flow->arp_sha, ETH_ADDR_LEN);
+    memcpy(base->arp_tha, flow->arp_tha, ETH_ADDR_LEN);
+
+    arp_key.arp_sip = base->nw_src;
+    arp_key.arp_tip = base->nw_dst;
+    arp_key.arp_op = htons(base->nw_proto);
+    memcpy(arp_key.arp_sha, flow->arp_sha, ETH_ADDR_LEN);
+    memcpy(arp_key.arp_tha, flow->arp_tha, ETH_ADDR_LEN);
+
+    commit_set_action(odp_actions, OVS_KEY_ATTR_ARP, &arp_key, sizeof arp_key);
+
+    return SLOW_ACTION;
+}
+
+static enum slow_path_reason
 commit_set_nw_action(const struct flow *flow, struct flow *base,
                      struct ofpbuf *odp_actions, struct flow_wildcards *wc)
 {
-    /* Check if flow really have an IP header. */
+    /* Check if 'flow' really has an L3 header. */
     if (!flow->nw_proto) {
-        return;
+        return 0;
     }
 
-    if (base->dl_type == htons(ETH_TYPE_IP)) {
+    switch (ntohs(base->dl_type)) {
+    case ETH_TYPE_IP:
         commit_set_ipv4_action(flow, base, odp_actions, wc);
-    } else if (base->dl_type == htons(ETH_TYPE_IPV6)) {
+        break;
+
+    case ETH_TYPE_IPV6:
         commit_set_ipv6_action(flow, base, odp_actions, wc);
+        break;
+
+    case ETH_TYPE_ARP:
+        return commit_set_arp_action(flow, base, odp_actions, wc);
     }
+
+    return 0;
 }
 
 static void
@@ -3595,20 +3629,26 @@ commit_set_pkt_mark_action(const struct flow *flow, struct flow *base,
 
     odp_put_pkt_mark_action(base->pkt_mark, odp_actions);
 }
+
 /* If any of the flow key data that ODP actions can modify are different in
  * 'base' and 'flow', appends ODP actions to 'odp_actions' that change the flow
  * key from 'base' into 'flow', and then changes 'base' the same way.  Does not
  * commit set_tunnel actions.  Users should call commit_odp_tunnel_action()
  * in addition to this function if needed.  Sets fields in 'wc' that are
- * used as part of the action. */
-void
+ * used as part of the action.
+ *
+ * Returns a reason to force processing the flow's packets into the userspace
+ * slow path, if there is one, otherwise 0. */
+enum slow_path_reason
 commit_odp_actions(const struct flow *flow, struct flow *base,
                    struct ofpbuf *odp_actions, struct flow_wildcards *wc,
                    int *mpls_depth_delta)
 {
+    enum slow_path_reason slow;
+
     commit_set_ether_addr_action(flow, base, odp_actions, wc);
     commit_vlan_action(flow->vlan_tci, base, odp_actions, wc);
-    commit_set_nw_action(flow, base, odp_actions, wc);
+    slow = commit_set_nw_action(flow, base, odp_actions, wc);
     commit_set_port_action(flow, base, odp_actions, wc);
     /* Committing MPLS actions should occur after committing nw and port
      * actions. This is because committing MPLS actions may alter a packet so
@@ -3617,4 +3657,6 @@ commit_odp_actions(const struct flow *flow, struct flow *base,
     commit_mpls_action(flow, base, odp_actions, wc, mpls_depth_delta);
     commit_set_priority_action(flow, base, odp_actions, wc);
     commit_set_pkt_mark_action(flow, base, odp_actions, wc);
+
+    return slow;
 }
