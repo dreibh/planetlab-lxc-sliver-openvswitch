@@ -1099,9 +1099,23 @@ Sets the TCP or UDP or SCTP source port to \fIport\fR.
 Sets the TCP or UDP or SCTP destination port to \fIport\fR.
 .
 .IP \fBmod_nw_tos\fB:\fItos\fR
-Sets the IPv4 ToS/DSCP field to \fItos\fR, which must be a multiple of
-4 between 0 and 255.  This action does not modify the two least
-significant bits of the ToS field (the ECN bits).
+Sets the DSCP bits in the IPv4 ToS/DSCP or IPv6 traffic class field to
+\fItos\fR, which must be a multiple of 4 between 0 and 255.  This action
+does not modify the two least significant bits of the ToS field (the ECN bits).
+.
+.IP \fBmod_nw_ecn\fB:\fIecn\fR
+Sets the ECN bits in the IPv4 ToS or IPv6 traffic class field to \fIecn\fR,
+which must be a value between 0 and 3, inclusive.  This action does not modify
+the six most significant bits of the field (the DSCP bits).
+.IP
+Requires OpenFlow 1.1 or later.
+.
+.IP \fBmod_nw_ttl\fB:\fIttl\fR
+Sets the IPv4 TTL or IPv6 hop limit field to \fIttl\fR, which is specified as
+a decimal number between 0 and 255, inclusive.  Switch behavior when setting
+\fIttl\fR to zero is not well specified, though.
+.IP
+Requires OpenFlow 1.1 or later.
 .RE
 .IP
 The following actions are Nicira vendor extensions that, as of this writing, are
@@ -1142,7 +1156,8 @@ actions were applied.
 .IP \fBdec_ttl\fR
 .IQ \fBdec_ttl\fB[\fR(\fIid1,id2\fI)\fR]\fR
 Decrement TTL of IPv4 packet or hop limit of IPv6 packet.  If the
-TTL or hop limit is initially zero, no decrement occurs.  Instead,
+TTL or hop limit is initially zero or decrementing would make it so, no
+decrement occurs, as packets reaching TTL zero must be rejected.  Instead,
 a ``packet-in'' message with reason code \fBOFPR_INVALID_TTL\fR is
 sent to each connected controller that has enabled receiving them,
 if any.  Processing the current set of actions then stops.  However,
@@ -1161,9 +1176,9 @@ Set the TTL of the outer MPLS label stack entry of a packet.
 .
 .IP \fBdec_mpls_ttl\fR
 Decrement TTL of the outer MPLS label stack entry of a packet.  If the TTL
-is initially zero, no decrement occurs.  Instead, a ``packet-in'' message
-with reason code \fBOFPR_INVALID_TTL\fR is sent to each connected
-controller with controller id zer that has enabled receiving them.
+is initially zero or decrementing would make it so, no decrement occurs.
+Instead, a ``packet-in'' message with reason code \fBOFPR_INVALID_TTL\fR
+is sent to the main controller (id zero), if it has enabled receiving them.
 Processing the current set of actions then stops.  However, if the current
 set of actions was reached through ``resubmit'' then remaining actions in
 outer levels resume processing.
@@ -1346,6 +1361,91 @@ to \fBactions=\fR field.
 .IP \fBclear_actions\fR
 Clears all the actions in the action set immediately.
 .
+.IP \fBwrite_actions(\fR[\fIaction\fR][\fB,\fIaction\fR...]\fB)
+Add the specific actions to the action set.  The syntax of
+\fIactions\fR is the same as in the \fBactions=\fR field.  The action
+set is carried between flow tables and then executed at the end of the
+pipeline.
+.
+.IP
+The actions in the action set are applied in the following order, as
+required by the OpenFlow specification, regardless of the order in
+which they were added to the action set.  Except as specified
+otherwise below, the action set only holds at most a single action of
+each type.  When more than one action of a single type is written to
+the action set, the one written later replaces the earlier action:
+.
+.RS
+.IP 1.
+\fBstrip_vlan\fR
+.IQ
+\fBpop_mpls\fR
+.
+.IP 2.
+\fBpush_mpls\fR
+.
+.IP 3.
+\fBpush_vlan\fR
+.
+.IP 4.
+\fBdec_ttl\fR
+.IQ
+\fBdec_mpls_ttl\fR
+.
+.IP 5.
+\fBload\fR
+.IQ
+\fBmod_dl_dst\fR
+.IQ
+\fBmod_dl_src\fR
+.IQ
+\fBmod_nw_dst\fR
+.IQ
+\fBmod_nw_src\fR
+.IQ
+\fBmod_nw_tos\fR
+.IQ
+\fBmod_nw_ecn\fR
+.IQ
+\fBmod_nw_ttl\fR
+.IQ
+\fBmod_tp_dst\fR
+.IQ
+\fBmod_tp_src\fR
+.IQ
+\fBmod_vlan_pcp\fR
+.IQ
+\fBmod_vlan_vid\fR
+.IQ
+\fBset_field\fR
+.IQ
+\fBset_tunnel\fR
+.IQ
+\fBset_tunnel64\fR
+.IQ
+The action set can contain any number of these actions, with
+cumulative effect.  That is, when multiple actions modify the same
+part of a field, the later modification takes effect, and when they
+modify different parts of a field (or different fields), then both
+modifications are applied.
+.
+.IP 6.
+\fBset_queue\fR
+.
+.IP 7.
+\fBgroup\fR
+.IQ
+\fBoutput\fR
+.IQ
+If both actions are present, then \fBgroup\fR is executed and
+\fBoutput\fR is ignored, regardless of the order in which they were
+added to the action set.  (If neither action is present, the action
+set has no real effect, because the modified packet is not sent
+anywhere and thus the modifications are not visible.)
+.RE
+.IP
+Only the actions listed above may be written to the action set.
+.
 .IP \fBwrite_metadata\fB:\fIvalue\fR[/\fImask\fR]
 Updates the metadata field for the flow. If \fImask\fR is omitted, the
 metadata field is set exactly to \fIvalue\fR; if \fImask\fR is specified, then
@@ -1409,10 +1509,12 @@ configuring sample collector sets.
 This action was added in Open vSwitch 1.10.90.
 .
 .IP "\fBexit\fR"
-This action causes Open vSwitch to immediately halt execution of further
-actions.  Those actions which have already been executed are unaffected.  Any
-further actions, including those which may be in other tables, or different
-levels of the \fBresubmit\fR call stack, are ignored.
+This action causes Open vSwitch to immediately halt execution of
+further actions.  Those actions which have already been executed are
+unaffected.  Any further actions, including those which may be in
+other tables, or different levels of the \fBresubmit\fR call stack,
+are ignored.  Actions in the action set is still executed (specify
+\fBclear_actions\fR before \fBexit\fR to discard them).
 .RE
 .
 .PP

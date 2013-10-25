@@ -28,6 +28,7 @@
 union user_action_cookie;
 struct dpif_flow_stats;
 struct ofproto_dpif;
+struct ofproto_packet_in;
 struct ofport_dpif;
 struct dpif_backer;
 struct OVS_LOCKABLE rule_dpif;
@@ -73,7 +74,8 @@ void rule_dpif_unref(struct rule_dpif *);
 void rule_dpif_credit_stats(struct rule_dpif *rule ,
                             const struct dpif_flow_stats *);
 
-bool rule_dpif_fail_open(const struct rule_dpif *rule);
+bool rule_dpif_is_fail_open(const struct rule_dpif *);
+bool rule_dpif_is_table_miss(const struct rule_dpif *);
 
 struct rule_actions *rule_dpif_get_actions(const struct rule_dpif *);
 
@@ -97,7 +99,7 @@ int ofproto_dpif_execute_actions(struct ofproto_dpif *, const struct flow *,
                                  struct rule_dpif *, const struct ofpact *,
                                  size_t ofpacts_len, struct ofpbuf *);
 void ofproto_dpif_send_packet_in(struct ofproto_dpif *,
-                                 struct ofputil_packet_in *pin);
+                                 struct ofproto_packet_in *);
 int ofproto_dpif_send_packet(const struct ofport_dpif *, struct ofpbuf *);
 void ofproto_dpif_flow_mod(struct ofproto_dpif *, struct ofputil_flow_mod *);
 

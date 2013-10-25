@@ -36,6 +36,7 @@
 #include "openflow/openflow.h"
 #include "ovs-thread.h"
 #include "packets.h"
+#include "simap.h"
 #include "socket-util.h"
 #include "vconn.h"
 
@@ -601,7 +602,7 @@ parse_named_action(enum ofputil_action_code code,
     char *error = NULL;
     uint16_t ethertype = 0;
     uint16_t vid = 0;
-    uint8_t tos = 0;
+    uint8_t tos = 0, ecn, ttl;
     uint8_t pcp = 0;
 
     switch (code) {
@@ -696,7 +697,28 @@ parse_named_action(enum ofputil_action_code code,
         if (tos & ~IP_DSCP_MASK) {
             return xasprintf("%s: not a valid TOS", arg);
         }
-        ofpact_put_SET_IPV4_DSCP(ofpacts)->dscp = tos;
+        ofpact_put_SET_IP_DSCP(ofpacts)->dscp = tos;
+        break;
+
+    case OFPUTIL_OFPAT11_SET_NW_ECN:
+        error = str_to_u8(arg, "ECN", &ecn);
+        if (error) {
+            return error;
+        }
+
+        if (ecn & ~IP_ECN_MASK) {
+            return xasprintf("%s: not a valid ECN", arg);
+        }
+        ofpact_put_SET_IP_ECN(ofpacts)->ecn = ecn;
+        break;
+
+    case OFPUTIL_OFPAT11_SET_NW_TTL:
+        error = str_to_u8(arg, "TTL", &ttl);
+        if (error) {
+            return error;
+        }
+
+        ofpact_put_SET_IP_TTL(ofpacts)->ttl = ttl;
         break;
 
     case OFPUTIL_OFPAT11_DEC_NW_TTL:
@@ -879,12 +901,11 @@ str_to_ofpact__(char *pos, char *act, char *arg,
  * Returns NULL if successful, otherwise a malloc()'d string describing the
  * error.  The caller is responsible for freeing the returned string. */
 static char * WARN_UNUSED_RESULT
-str_to_ofpacts(char *str, struct ofpbuf *ofpacts,
-               enum ofputil_protocol *usable_protocols)
+str_to_ofpacts__(char *str, struct ofpbuf *ofpacts,
+                 enum ofputil_protocol *usable_protocols)
 {
     size_t orig_size = ofpacts->size;
     char *pos, *act, *arg;
-    enum ofperr error;
     int n_actions;
 
     pos = str;
@@ -899,13 +920,34 @@ str_to_ofpacts(char *str, struct ofpbuf *ofpacts,
         n_actions++;
     }
 
+    ofpact_pad(ofpacts);
+    return NULL;
+}
+
+
+/* Parses 'str' as a series of actions, and appends them to 'ofpacts'.
+ *
+ * Returns NULL if successful, otherwise a malloc()'d string describing the
+ * error.  The caller is responsible for freeing the returned string. */
+static char * WARN_UNUSED_RESULT
+str_to_ofpacts(char *str, struct ofpbuf *ofpacts,
+               enum ofputil_protocol *usable_protocols)
+{
+    size_t orig_size = ofpacts->size;
+    char *error_s;
+    enum ofperr error;
+
+    error_s = str_to_ofpacts__(str, ofpacts, usable_protocols);
+    if (error_s) {
+        return error_s;
+    }
+
     error = ofpacts_verify(ofpacts->data, ofpacts->size);
     if (error) {
         ofpacts->size = orig_size;
         return xstrdup("Incorrect action ordering");
     }
 
-    ofpact_pad(ofpacts);
     return NULL;
 }
 
@@ -929,10 +971,24 @@ parse_named_instruction(enum ovs_instruction_type type,
         NOT_REACHED();  /* This case is handled by str_to_inst_ofpacts() */
         break;
 
-    case OVSINST_OFPIT11_WRITE_ACTIONS:
-        /* XXX */
-        error_s = xstrdup("instruction write-actions is not supported yet");
+    case OVSINST_OFPIT11_WRITE_ACTIONS: {
+        struct ofpact_nest *on;
+        size_t ofs;
+
+        ofpact_pad(ofpacts);
+        ofs = ofpacts->size;
+        on = ofpact_put(ofpacts, OFPACT_WRITE_ACTIONS,
+                        offsetof(struct ofpact_nest, actions));
+        error_s = str_to_ofpacts__(arg, ofpacts, usable_protocols);
+
+        on = ofpbuf_at_assert(ofpacts, ofs, sizeof *on);
+        on->ofpact.len = ofpacts->size - ofs;
+
+        if (error_s) {
+            ofpacts->size = ofs;
+        }
         break;
+    }
 
     case OVSINST_OFPIT11_CLEAR_ACTIONS:
         ofpact_put_CLEAR_ACTIONS(ofpacts);
@@ -1096,7 +1152,8 @@ parse_field(const struct mf_field *mf, const char *s, struct match *match,
 
 static char * WARN_UNUSED_RESULT
 parse_ofp_str__(struct ofputil_flow_mod *fm, int command, char *string,
-                enum ofputil_protocol *usable_protocols)
+                enum ofputil_protocol *usable_protocols,
+                bool enforce_consistency)
 {
     enum {
         F_OUT_PORT = 1 << 0,
@@ -1304,10 +1361,21 @@ parse_ofp_str__(struct ofputil_flow_mod *fm, int command, char *string,
             enum ofperr err;
 
             err = ofpacts_check(ofpacts.data, ofpacts.size, &fm->match.flow,
-                                OFPP_MAX, 0);
+                                OFPP_MAX, 0, true);
             if (err) {
-                error = xasprintf("actions are invalid with specified match "
-                                  "(%s)", ofperr_to_string(err));
+                if (!enforce_consistency &&
+                    err == OFPERR_OFPBAC_MATCH_INCONSISTENT) {
+                    /* Allow inconsistent actions to be used with OF 1.0. */
+                    *usable_protocols &= OFPUTIL_P_OF10_ANY;
+                    /* Try again, allowing for inconsistency.
+                     * XXX: As a side effect, logging may be duplicated. */
+                    err = ofpacts_check(ofpacts.data, ofpacts.size,
+                                        &fm->match.flow, OFPP_MAX, 0, false);
+                }
+                if (err) {
+                    error = xasprintf("actions are invalid with specified match "
+                                      "(%s)", ofperr_to_string(err));
+                }
             }
         }
         if (error) {
@@ -1337,12 +1405,14 @@ parse_ofp_str__(struct ofputil_flow_mod *fm, int command, char *string,
  * error.  The caller is responsible for freeing the returned string. */
 char * WARN_UNUSED_RESULT
 parse_ofp_str(struct ofputil_flow_mod *fm, int command, const char *str_,
-              enum ofputil_protocol *usable_protocols)
+              enum ofputil_protocol *usable_protocols,
+              bool enforce_consistency)
 {
     char *string = xstrdup(str_);
     char *error;
 
-    error = parse_ofp_str__(fm, command, string, usable_protocols);
+    error = parse_ofp_str__(fm, command, string, usable_protocols,
+                            enforce_consistency);
     if (error) {
         fm->ofpacts = NULL;
         fm->ofpacts_len = 0;
@@ -1689,9 +1759,11 @@ parse_ofpacts(const char *s_, struct ofpbuf *ofpacts,
 char * WARN_UNUSED_RESULT
 parse_ofp_flow_mod_str(struct ofputil_flow_mod *fm, const char *string,
                        uint16_t command,
-                       enum ofputil_protocol *usable_protocols)
+                       enum ofputil_protocol *usable_protocols,
+                       bool enforce_consistency)
 {
-    char *error = parse_ofp_str(fm, command, string, usable_protocols);
+    char *error = parse_ofp_str(fm, command, string, usable_protocols,
+                                enforce_consistency);
     if (!error) {
         /* Normalize a copy of the match.  This ensures that non-normalized
          * flows get logged but doesn't affect what gets sent to the switch, so
@@ -1753,7 +1825,8 @@ parse_ofp_table_mod(struct ofputil_table_mod *tm, const char *table_id,
 char * WARN_UNUSED_RESULT
 parse_ofp_flow_mod_file(const char *file_name, uint16_t command,
                         struct ofputil_flow_mod **fms, size_t *n_fms,
-                        enum ofputil_protocol *usable_protocols)
+                        enum ofputil_protocol *usable_protocols,
+                        bool enforce_consistency)
 {
     size_t allocated_fms;
     int line_number;
@@ -1782,7 +1855,7 @@ parse_ofp_flow_mod_file(const char *file_name, uint16_t command,
             *fms = x2nrealloc(*fms, &allocated_fms, sizeof **fms);
         }
         error = parse_ofp_flow_mod_str(&(*fms)[*n_fms], ds_cstr(&s), command,
-                                       &usable);
+                                       &usable, enforce_consistency);
         if (error) {
             size_t i;
 
@@ -1814,12 +1887,14 @@ parse_ofp_flow_mod_file(const char *file_name, uint16_t command,
 char * WARN_UNUSED_RESULT
 parse_ofp_flow_stats_request_str(struct ofputil_flow_stats_request *fsr,
                                  bool aggregate, const char *string,
-                                 enum ofputil_protocol *usable_protocols)
+                                 enum ofputil_protocol *usable_protocols,
+                                 bool enforce_consistency)
 {
     struct ofputil_flow_mod fm;
     char *error;
 
-    error = parse_ofp_str(&fm, -1, string, usable_protocols);
+    error = parse_ofp_str(&fm, -1, string, usable_protocols,
+                          enforce_consistency);
     if (error) {
         return error;
     }
@@ -1845,18 +1920,24 @@ parse_ofp_flow_stats_request_str(struct ofputil_flow_stats_request *fsr,
 /* Parses a specification of a flow from 's' into 'flow'.  's' must take the
  * form FIELD=VALUE[,FIELD=VALUE]... where each FIELD is the name of a
  * mf_field.  Fields must be specified in a natural order for satisfying
- * prerequisites.
+ * prerequisites. If 'mask' is specified, fills the mask field for each of the
+ * field specified in flow. If the map, 'names_portno' is specfied, converts
+ * the in_port name into port no while setting the 'flow'.
  *
  * Returns NULL on success, otherwise a malloc()'d string that explains the
  * problem. */
 char *
-parse_ofp_exact_flow(struct flow *flow, const char *s)
+parse_ofp_exact_flow(struct flow *flow, struct flow *mask, const char *s,
+                     const struct simap *portno_names)
 {
     char *pos, *key, *value_s;
     char *error = NULL;
     char *copy;
 
     memset(flow, 0, sizeof *flow);
+    if (mask) {
+        memset(mask, 0, sizeof *mask);
+    }
 
     pos = copy = xstrdup(s);
     while (ofputil_parse_key_value(&pos, &key, &value_s)) {
@@ -1867,6 +1948,9 @@ parse_ofp_exact_flow(struct flow *flow, const char *s)
                 goto exit;
             }
             flow->dl_type = htons(p->dl_type);
+            if (mask) {
+                mask->dl_type = OVS_BE16_MAX;
+            }
 
             if (p->nw_proto) {
                 if (flow->nw_proto) {
@@ -1875,6 +1959,9 @@ parse_ofp_exact_flow(struct flow *flow, const char *s)
                     goto exit;
                 }
                 flow->nw_proto = p->nw_proto;
+                if (mask) {
+                    mask->nw_proto = UINT8_MAX;
+                }
             }
         } else {
             const struct mf_field *mf;
@@ -1898,15 +1985,28 @@ parse_ofp_exact_flow(struct flow *flow, const char *s)
                 goto exit;
             }
 
-            field_error = mf_parse_value(mf, value_s, &value);
-            if (field_error) {
-                error = xasprintf("%s: bad value for %s (%s)",
-                                  s, key, field_error);
-                free(field_error);
-                goto exit;
-            }
+            if (!strcmp(key, "in_port")
+                && portno_names
+                && simap_contains(portno_names, value_s)) {
+                flow->in_port.ofp_port = u16_to_ofp(
+                    simap_get(portno_names, value_s));
+                if (mask) {
+                    mask->in_port.ofp_port = u16_to_ofp(ntohs(OVS_BE16_MAX));
+                }
+            } else {
+                field_error = mf_parse_value(mf, value_s, &value);
+                if (field_error) {
+                    error = xasprintf("%s: bad value for %s (%s)",
+                                      s, key, field_error);
+                    free(field_error);
+                    goto exit;
+                }
 
-            mf_set_flow_value(mf, &value, flow);
+                mf_set_flow_value(mf, &value, flow);
+                if (mask) {
+                    mf_mask_field(mf, mask);
+                }
+            }
         }
     }
 
@@ -1919,6 +2019,9 @@ exit:
 
     if (error) {
         memset(flow, 0, sizeof *flow);
+        if (mask) {
+            memset(mask, 0, sizeof *mask);
+        }
     }
     return error;
 }

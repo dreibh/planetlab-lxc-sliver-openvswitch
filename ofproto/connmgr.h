@@ -22,6 +22,7 @@
 #include "list.h"
 #include "match.h"
 #include "ofp-errors.h"
+#include "ofp-util.h"
 #include "ofproto.h"
 #include "openflow/nicira-ext.h"
 #include "openvswitch/types.h"
@@ -29,9 +30,6 @@
 struct nlattr;
 struct ofconn;
 struct ofopgroup;
-struct ofputil_flow_removed;
-struct ofputil_packet_in;
-struct ofputil_phy_port;
 struct rule;
 struct simap;
 struct sset;
@@ -62,6 +60,19 @@ enum ofconn_async_msg_type {
     OAM_PORT_STATUS,            /* OFPT_PORT_STATUS. */
     OAM_FLOW_REMOVED,           /* OFPT_FLOW_REMOVED or NXT_FLOW_REMOVED. */
     OAM_N_TYPES
+};
+
+/* A packet_in, with extra members to assist in queuing and routing it. */
+struct ofproto_packet_in {
+    struct ofputil_packet_in up;
+    struct list list_node;      /* For queuing. */
+    uint16_t controller_id;     /* Controller ID to send to. */
+    int send_len;               /* Length that the action requested sending. */
+
+    /* True if the packet_in was generated directly by a table-miss flow, that
+     * is, a flow with priority 0 that wildcards all fields.  (Our
+     * interpretation of "directly" is "not via groups".) */
+    bool generated_by_table_miss;
 };
 
 /* Basics. */
@@ -141,7 +152,7 @@ void connmgr_send_port_status(struct connmgr *,
 void connmgr_send_flow_removed(struct connmgr *,
                                const struct ofputil_flow_removed *);
 void connmgr_send_packet_in(struct connmgr *,
-                            const struct ofputil_packet_in *);
+                            const struct ofproto_packet_in *);
 
 /* Fail-open settings. */
 enum ofproto_fail_mode connmgr_get_fail_mode(const struct connmgr *);

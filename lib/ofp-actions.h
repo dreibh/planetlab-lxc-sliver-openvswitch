@@ -17,6 +17,7 @@
 #ifndef OFP_ACTIONS_H
 #define OFP_ACTIONS_H 1
 
+#include <stddef.h>
 #include <stdint.h>
 #include "meta-flow.h"
 #include "ofp-errors.h"
@@ -66,7 +67,9 @@
     DEFINE_OFPACT(SET_ETH_DST,     ofpact_mac,           ofpact)    \
     DEFINE_OFPACT(SET_IPV4_SRC,    ofpact_ipv4,          ofpact)    \
     DEFINE_OFPACT(SET_IPV4_DST,    ofpact_ipv4,          ofpact)    \
-    DEFINE_OFPACT(SET_IPV4_DSCP,   ofpact_dscp,          ofpact)    \
+    DEFINE_OFPACT(SET_IP_DSCP,     ofpact_dscp,          ofpact)    \
+    DEFINE_OFPACT(SET_IP_ECN,      ofpact_ecn,           ofpact)    \
+    DEFINE_OFPACT(SET_IP_TTL,      ofpact_ip_ttl,        ofpact)    \
     DEFINE_OFPACT(SET_L4_SRC_PORT, ofpact_l4_port,       ofpact)    \
     DEFINE_OFPACT(SET_L4_DST_PORT, ofpact_l4_port,       ofpact)    \
     DEFINE_OFPACT(REG_MOVE,        ofpact_reg_move,      ofpact)    \
@@ -99,8 +102,8 @@
                                                                     \
     /* Instructions */                                              \
     DEFINE_OFPACT(METER,           ofpact_meter,         ofpact)    \
-    /* XXX Write-Actions */                                         \
     DEFINE_OFPACT(CLEAR_ACTIONS,   ofpact_null,          ofpact)    \
+    DEFINE_OFPACT(WRITE_ACTIONS,   ofpact_nest,          ofpact)    \
     DEFINE_OFPACT(WRITE_METADATA,  ofpact_metadata,      ofpact)    \
     DEFINE_OFPACT(GOTO_TABLE,      ofpact_goto_table,    ofpact)
 
@@ -284,12 +287,28 @@ struct ofpact_ipv4 {
     ovs_be32 ipv4;
 };
 
-/* OFPACT_SET_IPV4_DSCP.
+/* OFPACT_SET_IP_DSCP.
  *
  * Used for OFPAT10_SET_NW_TOS. */
 struct ofpact_dscp {
     struct ofpact ofpact;
     uint8_t dscp;               /* DSCP in high 6 bits, rest ignored. */
+};
+
+/* OFPACT_SET_IP_ECN.
+ *
+ * Used for OFPAT11_SET_NW_ECN. */
+struct ofpact_ecn {
+    struct ofpact ofpact;
+    uint8_t ecn;               /* ECN in low 2 bits, rest ignored. */
+};
+
+/* OFPACT_SET_IP_TTL.
+ *
+ * Used for OFPAT11_SET_NW_TTL. */
+struct ofpact_ip_ttl {
+    struct ofpact ofpact;
+    uint8_t ttl;
 };
 
 /* OFPACT_SET_L4_SRC_PORT, OFPACT_SET_L4_DST_PORT.
@@ -326,12 +345,26 @@ struct ofpact_reg_load {
     union mf_subvalue subvalue; /* Least-significant bits are used. */
 };
 
+/* The position in the packet at which to insert an MPLS header.
+ *
+ * Used NXAST_PUSH_MPLS, OFPAT11_PUSH_MPLS. */
+enum ofpact_mpls_position {
+    /* Add the MPLS LSE after the Ethernet header but before any VLAN tags.
+     * OpenFlow 1.3+ requires this behavior. */
+   OFPACT_MPLS_BEFORE_VLAN,
+
+   /* Add the MPLS LSE after the Ethernet header and any VLAN tags.
+    * OpenFlow 1.1 and 1.2 require this behavior. */
+   OFPACT_MPLS_AFTER_VLAN
+};
+
 /* OFPACT_PUSH_VLAN/MPLS/PBB
  *
  * Used for NXAST_PUSH_MPLS, OFPAT11_PUSH_MPLS. */
 struct ofpact_push_mpls {
     struct ofpact ofpact;
     ovs_be16 ethertype;
+    enum ofpact_mpls_position position;
 };
 
 /* OFPACT_POP_MPLS
@@ -383,6 +416,25 @@ struct ofpact_meter {
     struct ofpact ofpact;
     uint32_t meter_id;
 };
+
+/* OFPACT_WRITE_ACTIONS.
+ *
+ * Used for OFPIT11_WRITE_ACTIONS. */
+struct ofpact_nest {
+    struct ofpact ofpact;
+    uint8_t pad[OFPACT_ALIGN(sizeof(struct ofpact)) - sizeof(struct ofpact)];
+    struct ofpact actions[];
+};
+BUILD_ASSERT_DECL(offsetof(struct ofpact_nest, actions) == OFPACT_ALIGNTO);
+
+static inline size_t
+ofpact_nest_get_action_len(const struct ofpact_nest *on)
+{
+    return on->ofpact.len - offsetof(struct ofpact_nest, actions);
+}
+
+void ofpacts_execute_action_set(struct ofpbuf *action_list,
+                                const struct ofpbuf *action_set);
 
 /* OFPACT_RESUBMIT.
  *
@@ -504,14 +556,16 @@ enum ofperr ofpacts_pull_openflow10(struct ofpbuf *openflow,
                                     unsigned int actions_len,
                                     struct ofpbuf *ofpacts);
 enum ofperr ofpacts_pull_openflow11_actions(struct ofpbuf *openflow,
+                                            enum ofp_version version,
                                             unsigned int actions_len,
                                             struct ofpbuf *ofpacts);
 enum ofperr ofpacts_pull_openflow11_instructions(struct ofpbuf *openflow,
+                                                 enum ofp_version version,
                                                  unsigned int instructions_len,
                                                  struct ofpbuf *ofpacts);
 enum ofperr ofpacts_check(const struct ofpact[], size_t ofpacts_len,
                           struct flow *, ofp_port_t max_ports,
-                          uint8_t table_id);
+                          uint8_t table_id, bool enforce_consistency);
 enum ofperr ofpacts_verify(const struct ofpact ofpacts[], size_t ofpacts_len);
 
 /* Converting ofpacts to OpenFlow. */
@@ -665,5 +719,4 @@ enum ovs_instruction_type ovs_instruction_type_from_ofpact_type(
 
 void ofpact_set_field_init(struct ofpact_reg_load *load,
                            const struct mf_field *mf, const void *src);
-
 #endif /* ofp-actions.h */

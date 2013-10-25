@@ -22,15 +22,29 @@
 #include "bfd.h"
 #include "cfm.h"
 #include "hash.h"
+#include "heap.h"
 #include "hmap.h"
+#include "latch.h"
 #include "ofpbuf.h"
 #include "ofproto-dpif.h"
+#include "ovs-thread.h"
+#include "poll-loop.h"
+#include "seq.h"
+#include "timeval.h"
 #include "util.h"
 #include "vlog.h"
+
+VLOG_DEFINE_THIS_MODULE(ofproto_dpif_monitor);
+
+/* Converts the time in millisecond to heap priority. */
+#define MSEC_TO_PRIO(TIME) (LLONG_MAX - (TIME))
+/* Converts the heap priority to time in millisecond. */
+#define PRIO_TO_MSEC(PRIO) (LLONG_MAX - (PRIO))
 
 /* Monitored port.  It owns references to ofport, bfd, cfm structs. */
 struct mport {
     struct hmap_node hmap_node;       /* In monitor_hmap. */
+    struct heap_node heap_node;       /* In monitor_heap. */
     const struct ofport_dpif *ofport; /* The corresponding ofport. */
 
     struct cfm *cfm;                  /* Reference to cfm. */
@@ -39,9 +53,23 @@ struct mport {
 };
 
 /* hmap that contains "struct mport"s. */
-static struct hmap monitor_hmap = HMAP_INITIALIZER(&monitor_hmap);
+static struct hmap monitor_hmap;
 
+/* heap for ordering mport based on bfd/cfm wakeup time. */
+static struct heap monitor_heap;
+
+/* The monitor thread id. */
+static pthread_t monitor_tid;
+/* True if the monitor thread is running. */
+static bool monitor_running;
+
+static struct seq *monitor_seq;
+static struct latch monitor_exit_latch;
 static struct ovs_rwlock monitor_rwlock = OVS_RWLOCK_INITIALIZER;
+
+static void monitor_init(void);
+static void *monitor_main(void *);
+static void monitor_run(void);
 
 static void mport_register(const struct ofport_dpif *, struct bfd *,
                            struct cfm *, uint8_t[ETH_ADDR_LEN])
@@ -69,8 +97,8 @@ mport_find(const struct ofport_dpif *ofport) OVS_REQ_WRLOCK(monitor_rwlock)
     return NULL;
 }
 
-/* Creates a new mport and inserts it into monitor_hmap, if it doesn't exist.
- * Otherwise, just updates its fields. */
+/* Creates a new mport and inserts it into monitor_hmap and monitor_heap,
+ * if it doesn't exist.  Otherwise, just updates its fields. */
 static void
 mport_register(const struct ofport_dpif *ofport, struct bfd *bfd,
                struct cfm *cfm, uint8_t *hw_addr)
@@ -82,11 +110,12 @@ mport_register(const struct ofport_dpif *ofport, struct bfd *bfd,
         mport = xzalloc(sizeof *mport);
         mport->ofport = ofport;
         hmap_insert(&monitor_hmap, &mport->hmap_node, hash_pointer(ofport, 0));
+        heap_insert(&monitor_heap, &mport->heap_node, 0);
     }
     mport_update(mport, bfd, cfm, hw_addr);
 }
 
-/* Removes mport from monitor_hmap and frees it. */
+/* Removes mport from monitor_hmap and monitor_heap and frees it. */
 static void
 mport_unregister(const struct ofport_dpif *ofport)
     OVS_REQ_WRLOCK(monitor_rwlock)
@@ -96,6 +125,7 @@ mport_unregister(const struct ofport_dpif *ofport)
     if (mport) {
         mport_update(mport, NULL, NULL, NULL);
         hmap_remove(&monitor_hmap, &mport->hmap_node);
+        heap_remove(&monitor_heap, &mport->heap_node);
         free(mport);
     }
 }
@@ -118,37 +148,66 @@ mport_update(struct mport *mport, struct bfd *bfd, struct cfm *cfm,
     if (hw_addr && memcmp(mport->hw_addr, hw_addr, ETH_ADDR_LEN)) {
         memcpy(mport->hw_addr, hw_addr, ETH_ADDR_LEN);
     }
+    /* If bfd/cfm is added or reconfigured, move the mport on top of the heap
+     * and wakes up the monitor thread. */
+    if (mport->bfd || mport->cfm) {
+        heap_change(&monitor_heap, &mport->heap_node, LLONG_MAX);
+        seq_change(monitor_seq);
+    }
 }
 
 
-/* Creates the mport in monitor module if either bfd or cfm
- * is configured.  Otherwise, deletes the mport. */
-void
-ofproto_dpif_monitor_port_update(const struct ofport_dpif *ofport,
-                                 struct bfd *bfd, struct cfm *cfm,
-                                 uint8_t hw_addr[ETH_ADDR_LEN])
+/* Initializes the global variables.  This will only run once. */
+static void
+monitor_init(void)
 {
-    ovs_rwlock_wrlock(&monitor_rwlock);
-    if (!cfm && !bfd) {
-        mport_unregister(ofport);
-    } else {
-        mport_register(ofport, bfd, cfm, hw_addr);
+    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&once)) {
+        hmap_init(&monitor_hmap);
+        monitor_seq = seq_create();
+        ovsthread_once_done(&once);
     }
-    ovs_rwlock_unlock(&monitor_rwlock);
 }
 
-/* Checks the sending of control packets on all mports.  Sends the control
- * packets if needed. */
-void
-ofproto_dpif_monitor_run_fast(void)
+/* The 'main' function for the monitor thread. */
+static void *
+monitor_main(void * args OVS_UNUSED)
+{
+    set_subprogram_name("monitor");
+    VLOG_INFO("monitor thread created");
+    while (!latch_is_set(&monitor_exit_latch)) {
+        uint64_t seq = seq_read(monitor_seq);
+
+        monitor_run();
+        latch_wait(&monitor_exit_latch);
+        seq_wait(monitor_seq, seq);
+        poll_block();
+    }
+    VLOG_INFO("monitor thread terminated");
+    return NULL;
+}
+
+/* Checks the sending of control packets on mports that have timed out.
+ * Sends the control packets if needed.  Executes bfd and cfm periodic
+ * functions (run, wait) on those mports. */
+static void
+monitor_run(void)
 {
     uint32_t stub[512 / 4];
+    long long int prio_now;
     struct ofpbuf packet;
-    struct mport *mport;
 
     ofpbuf_use_stub(&packet, stub, sizeof stub);
     ovs_rwlock_rdlock(&monitor_rwlock);
-    HMAP_FOR_EACH (mport, hmap_node, &monitor_hmap) {
+    prio_now = MSEC_TO_PRIO(time_msec());
+    /* Peeks the top of heap and checks if we should run this mport. */
+    while (!heap_is_empty(&monitor_heap)
+           && heap_max(&monitor_heap)->priority >= prio_now) {
+        long long int next_wake_time;
+        struct mport *mport;
+
+        mport = CONTAINER_OF(heap_max(&monitor_heap), struct mport, heap_node);
         if (mport->cfm && cfm_should_send_ccm(mport->cfm)) {
             ofpbuf_clear(&packet);
             cfm_compose_ccm(mport->cfm, &packet, mport->hw_addr);
@@ -159,43 +218,58 @@ ofproto_dpif_monitor_run_fast(void)
             bfd_put_packet(mport->bfd, &packet, mport->hw_addr);
             ofproto_dpif_send_packet(mport->ofport, &packet);
         }
+        if (mport->cfm) {
+            cfm_run(mport->cfm);
+            cfm_wait(mport->cfm);
+        }
+        if (mport->bfd) {
+            bfd_run(mport->bfd);
+            bfd_wait(mport->bfd);
+        }
+        /* Computes the next wakeup time for this mport. */
+        next_wake_time = MIN(bfd_wake_time(mport->bfd), cfm_wake_time(mport->cfm));
+        heap_change(&monitor_heap, heap_max(&monitor_heap),
+                    MSEC_TO_PRIO(next_wake_time));
+    }
+
+    /* Waits on the earliest next wakeup time. */
+    if (!heap_is_empty(&monitor_heap)) {
+        poll_timer_wait_until(PRIO_TO_MSEC(heap_max(&monitor_heap)->priority));
     }
     ovs_rwlock_unlock(&monitor_rwlock);
     ofpbuf_uninit(&packet);
 }
+
 
-/* Executes bfd_run(), cfm_run() on all mports. */
+/* Creates the mport in monitor module if either bfd or cfm
+ * is configured.  Otherwise, deletes the mport.
+ * Also checks whether the monitor thread should be started
+ * or terminated. */
 void
-ofproto_dpif_monitor_run(void)
+ofproto_dpif_monitor_port_update(const struct ofport_dpif *ofport,
+                                 struct bfd *bfd, struct cfm *cfm,
+                                 uint8_t hw_addr[ETH_ADDR_LEN])
 {
-    struct mport *mport;
-
-    ovs_rwlock_rdlock(&monitor_rwlock);
-    HMAP_FOR_EACH (mport, hmap_node, &monitor_hmap) {
-        if (mport->cfm) {
-            cfm_run(mport->cfm);
-        }
-        if (mport->bfd) {
-            bfd_run(mport->bfd);
-        }
+    monitor_init();
+    ovs_rwlock_wrlock(&monitor_rwlock);
+    if (!cfm && !bfd) {
+        mport_unregister(ofport);
+    } else {
+        mport_register(ofport, bfd, cfm, hw_addr);
     }
     ovs_rwlock_unlock(&monitor_rwlock);
-}
 
-/* Executes the bfd_wait() and cfm_wait() functions on all mports. */
-void
-ofproto_dpif_monitor_wait(void)
-{
-    struct mport *mport;
-
-    ovs_rwlock_rdlock(&monitor_rwlock);
-    HMAP_FOR_EACH (mport, hmap_node, &monitor_hmap) {
-        if (mport->cfm) {
-            cfm_wait(mport->cfm);
-        }
-        if (mport->bfd) {
-            bfd_wait(mport->bfd);
-        }
+    /* If the monitor thread is not running and the hmap
+     * is not empty, starts it.  If it is and the hmap is empty,
+     * terminates it. */
+    if (!monitor_running && !hmap_is_empty(&monitor_hmap))  {
+        latch_init(&monitor_exit_latch);
+        xpthread_create(&monitor_tid, NULL, monitor_main, NULL);
+        monitor_running = true;
+    } else if (monitor_running && hmap_is_empty(&monitor_hmap))  {
+        latch_set(&monitor_exit_latch);
+        xpthread_join(monitor_tid, NULL);
+        latch_destroy(&monitor_exit_latch);
+        monitor_running = false;
     }
-    ovs_rwlock_unlock(&monitor_rwlock);
 }

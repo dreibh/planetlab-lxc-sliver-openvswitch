@@ -91,7 +91,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         OFPUTIL_P_NONE,
         OFPUTIL_P_NONE,
     }, {
-        MFF_TUN_TOS, "tun_tos", NULL,
+        MFF_TUN_TTL, "tun_ttl", NULL,
         MF_FIELD_SIZES(u8),
         MFM_NONE,
         MFS_DECIMAL,
@@ -102,7 +102,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         OFPUTIL_P_NONE,
         OFPUTIL_P_NONE,
     }, {
-        MFF_TUN_TTL, "tun_ttl", NULL,
+        MFF_TUN_TOS, "tun_tos", NULL,
         MF_FIELD_SIZES(u8),
         MFM_NONE,
         MFS_DECIMAL,
@@ -760,11 +760,15 @@ nxm_init_add_field(const struct mf_field *mf, uint32_t header)
 static void
 nxm_do_init(void)
 {
-    const struct mf_field *mf;
+    int i;
 
     hmap_init(&all_fields);
     shash_init(&mf_by_name);
-    for (mf = mf_fields; mf < &mf_fields[MFF_N_IDS]; mf++) {
+    for (i = 0; i < MFF_N_IDS; i++) {
+        const struct mf_field *mf = &mf_fields[i];
+
+        ovs_assert(mf->id == i); /* Fields must be in the enum order. */
+
         nxm_init_add_field(mf, mf->nxm_header);
         if (mf->oxm_header != mf->nxm_header) {
             nxm_init_add_field(mf, mf->oxm_header);
@@ -1016,6 +1020,46 @@ mf_are_prereqs_ok(const struct mf_field *mf, const struct flow *flow)
 
     NOT_REACHED();
 }
+
+/* Set field and it's prerequisities in the mask.
+ * This is only ever called for writeable 'mf's, but we do not make the
+ * distinction here. */
+void
+mf_mask_field_and_prereqs(const struct mf_field *mf, struct flow *mask)
+{
+    static const union mf_value exact_match_mask = MF_EXACT_MASK_INITIALIZER;
+
+    mf_set_flow_value(mf, &exact_match_mask, mask);
+
+    switch (mf->prereqs) {
+    case MFP_ND:
+    case MFP_ND_SOLICIT:
+    case MFP_ND_ADVERT:
+        mask->tp_src = OVS_BE16_MAX;
+        mask->tp_dst = OVS_BE16_MAX;
+        /* Fall through. */
+    case MFP_TCP:
+    case MFP_UDP:
+    case MFP_SCTP:
+    case MFP_ICMPV4:
+    case MFP_ICMPV6:
+        mask->nw_proto = 0xff;
+        /* Fall through. */
+    case MFP_ARP:
+    case MFP_IPV4:
+    case MFP_IPV6:
+    case MFP_MPLS:
+    case MFP_IP_ANY:
+        mask->dl_type = OVS_BE16_MAX;
+        break;
+    case MFP_VLAN_VID:
+        mask->vlan_tci |= htons(VLAN_CFI);
+        break;
+    case MFP_NONE:
+        break;
+    }
+}
+
 
 /* Returns true if 'value' may be a valid value *as part of a masked match*,
  * false otherwise.
@@ -1491,6 +1535,24 @@ mf_set_value(const struct mf_field *mf,
     case MFF_N_IDS:
     default:
         NOT_REACHED();
+    }
+}
+
+/* Unwildcard 'mask' member field described by 'mf'.  The caller is
+ * responsible for ensuring that 'mask' meets 'mf''s prerequisites. */
+void
+mf_mask_field(const struct mf_field *mf, struct flow *mask)
+{
+    static const union mf_value exact_match_mask = MF_EXACT_MASK_INITIALIZER;
+
+    /* For MFF_DL_VLAN, we cannot send a all 1's to flow_set_dl_vlan()
+     * as that will be considered as OFP10_VLAN_NONE. So consider it as a
+     * special case. For the rest, calling mf_set_flow_value() is good
+     * enough. */
+    if (mf->id == MFF_DL_VLAN) {
+        flow_set_dl_vlan(mask, htons(VLAN_VID_MASK));
+    } else {
+        mf_set_flow_value(mf, &exact_match_mask, mask);
     }
 }
 

@@ -241,6 +241,7 @@ static long long int ofport_get_usage(const struct ofproto *,
                                       ofp_port_t ofp_port);
 static void ofport_set_usage(struct ofproto *, ofp_port_t ofp_port,
                              long long int last_used);
+static void ofport_remove_usage(struct ofproto *, ofp_port_t ofp_port);
 
 /* Ofport usage.
  *
@@ -450,7 +451,7 @@ ofproto_enumerate_names(const char *type, struct sset *names)
 {
     const struct ofproto_class *class = ofproto_class_find__(type);
     return class ? class->enumerate_names(type, names) : EAFNOSUPPORT;
- }
+}
 
 int
 ofproto_create(const char *datapath_name, const char *datapath_type,
@@ -1138,7 +1139,8 @@ ofproto_get_snoops(const struct ofproto *ofproto, struct sset *snoops)
 }
 
 static void
-ofproto_rule_delete__(struct ofproto *ofproto, struct rule *rule)
+ofproto_rule_delete__(struct ofproto *ofproto, struct rule *rule,
+                      uint8_t reason)
     OVS_REQUIRES(ofproto_mutex)
 {
     struct ofopgroup *group;
@@ -1146,7 +1148,7 @@ ofproto_rule_delete__(struct ofproto *ofproto, struct rule *rule)
     ovs_assert(!rule->pending);
 
     group = ofopgroup_create_unattached(ofproto);
-    delete_flow__(rule, group, OFPRR_DELETE);
+    delete_flow__(rule, group, reason);
     ofopgroup_submit(group);
 }
 
@@ -1201,7 +1203,7 @@ ofproto_flush__(struct ofproto *ofproto)
         ovs_rwlock_unlock(&table->cls.rwlock);
         CLS_CURSOR_FOR_EACH_SAFE (rule, next_rule, cr, &cursor) {
             if (!rule->pending) {
-                ofproto_rule_delete__(ofproto, rule);
+                ofproto_rule_delete__(ofproto, rule, OFPRR_DELETE);
             }
         }
     }
@@ -1972,6 +1974,13 @@ alloc_ofp_port(struct ofproto *ofproto, const char *netdev_name)
             if (!last_used_at) {
                 port_idx = ofproto->alloc_port_no;
                 break;
+            } else if ( last_used_at < time_msec() - 60*60*1000) {
+                /* If the port with ofport 'ofproto->alloc_port_no' was deleted
+                 * more than an hour ago, consider it usable. */
+                ofport_remove_usage(ofproto,
+                    u16_to_ofp(ofproto->alloc_port_no));
+                port_idx = ofproto->alloc_port_no;
+                break;
             } else if (last_used_at < lru) {
                 lru = last_used_at;
                 lru_ofport = ofproto->alloc_port_no;
@@ -2252,6 +2261,20 @@ ofport_set_usage(struct ofproto *ofproto, ofp_port_t ofp_port,
     usage->last_used = last_used;
     hmap_insert(&ofproto->ofport_usage, &usage->hmap_node,
                 hash_ofp_port(ofp_port));
+}
+
+static void
+ofport_remove_usage(struct ofproto *ofproto, ofp_port_t ofp_port)
+{
+    struct ofport_usage *usage;
+    HMAP_FOR_EACH_IN_BUCKET (usage, hmap_node, hash_ofp_port(ofp_port),
+                             &ofproto->ofport_usage) {
+        if (usage->ofp_port == ofp_port) {
+            hmap_remove(&ofproto->ofport_usage, &usage->hmap_node);
+            free(usage);
+            break;
+        }
+    }
 }
 
 int
@@ -2800,13 +2823,15 @@ reject_slave_controller(struct ofconn *ofconn)
 static enum ofperr
 ofproto_check_ofpacts(struct ofproto *ofproto,
                       const struct ofpact ofpacts[], size_t ofpacts_len,
-                      struct flow *flow, uint8_t table_id)
+                      struct flow *flow, uint8_t table_id,
+                      bool enforce_consistency)
 {
     enum ofperr error;
     uint32_t mid;
 
     error = ofpacts_check(ofpacts, ofpacts_len, flow,
-                          u16_to_ofp(ofproto->max_ports), table_id);
+                          u16_to_ofp(ofproto->max_ports), table_id,
+                          enforce_consistency);
     if (error) {
         return error;
     }
@@ -2864,7 +2889,8 @@ handle_packet_out(struct ofconn *ofconn, const struct ofp_header *oh)
     /* Verify actions against packet, then send packet if successful. */
     in_port_.ofp_port = po.in_port;
     flow_extract(payload, 0, 0, NULL, &in_port_, &flow);
-    error = ofproto_check_ofpacts(p, po.ofpacts, po.ofpacts_len, &flow, 0);
+    error = ofproto_check_ofpacts(p, po.ofpacts, po.ofpacts_len, &flow, 0,
+                                  oh->version > OFP10_VERSION);
     if (!error) {
         error = p->ofproto_class->packet_out(p, payload, &flow,
                                              po.ofpacts, po.ofpacts_len);
@@ -3555,6 +3581,7 @@ flow_stats_ds(struct rule *rule, struct ds *results)
     cls_rule_format(&rule->cr, results);
     ds_put_char(results, ',');
 
+    ds_put_cstr(results, "actions=");
     ofpacts_format(actions->ofpacts, actions->ofpacts_len, results);
 
     ds_put_cstr(results, "\n");
@@ -3913,7 +3940,8 @@ add_flow(struct ofproto *ofproto, struct ofconn *ofconn,
 
     /* Verify actions. */
     error = ofproto_check_ofpacts(ofproto, fm->ofpacts, fm->ofpacts_len,
-                                  &fm->match.flow, table_id);
+                                  &fm->match.flow, table_id,
+                                  request && request->version > OFP10_VERSION);
     if (error) {
         cls_rule_destroy(&cr);
         return error;
@@ -4035,9 +4063,10 @@ modify_flows__(struct ofproto *ofproto, struct ofconn *ofconn,
             continue;
         }
 
-        /* Verify actions. */
+        /* Verify actions, enforce consistency check on OF1.1+. */
         error = ofpacts_check(fm->ofpacts, fm->ofpacts_len, &fm->match.flow,
-                              u16_to_ofp(ofproto->max_ports), rule->table_id);
+                              u16_to_ofp(ofproto->max_ports), rule->table_id,
+                              request && request->version > OFP10_VERSION);
         if (error) {
             return error;
         }
@@ -4299,8 +4328,7 @@ ofproto_rule_expire(struct rule *rule, uint8_t reason)
     ovs_assert(reason == OFPRR_HARD_TIMEOUT || reason == OFPRR_IDLE_TIMEOUT
                || reason == OFPRR_DELETE || reason == OFPRR_GROUP_DELETE);
 
-    ofproto_rule_send_removed(rule, reason);
-    ofproto_rule_delete__(ofproto, rule);
+    ofproto_rule_delete__(ofproto, rule, reason);
 }
 
 /* Reduces '*timeout' to no more than 'max'.  A value of zero in either case
@@ -5649,6 +5677,13 @@ handle_openflow__(struct ofconn *ofconn, const struct ofpbuf *msg)
     if (error) {
         return error;
     }
+    if (oh->version >= OFP13_VERSION && ofpmsg_is_stat_request(oh)
+        && ofpmp_more(oh)) {
+        /* We have no buffer implementation for multipart requests.
+         * Report overflow for requests which consists of multiple
+         * messages. */
+        return OFPERR_OFPBRC_MULTIPART_BUFFER_OVERFLOW;
+    }
 
     switch (type) {
         /* OpenFlow requests. */
@@ -5762,7 +5797,7 @@ handle_openflow__(struct ofconn *ofconn, const struct ofpbuf *msg)
         /* FIXME: Change the following once they are implemented: */
     case OFPTYPE_QUEUE_GET_CONFIG_REQUEST:
     case OFPTYPE_TABLE_FEATURES_STATS_REQUEST:
-        return OFPERR_OFPBRC_BAD_TYPE;
+        /* fallthrough */
 
     case OFPTYPE_HELLO:
     case OFPTYPE_ERROR:
@@ -5793,7 +5828,11 @@ handle_openflow__(struct ofconn *ofconn, const struct ofpbuf *msg)
     case OFPTYPE_METER_FEATURES_STATS_REPLY:
     case OFPTYPE_TABLE_FEATURES_STATS_REPLY:
     default:
-        return OFPERR_OFPBRC_BAD_TYPE;
+        if (ofpmsg_is_stat_request(oh)) {
+            return OFPERR_OFPBRC_BAD_STAT;
+        } else {
+            return OFPERR_OFPBRC_BAD_TYPE;
+        }
     }
 }
 

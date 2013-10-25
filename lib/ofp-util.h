@@ -30,6 +30,7 @@
 #include "type-props.h"
 
 struct ofpbuf;
+union ofp_action;
 
 /* Port numbers. */
 enum ofperr ofputil_port_from_ofp11(ovs_be32 ofp11_port,
@@ -88,6 +89,7 @@ enum ofputil_protocol {
     OFPUTIL_P_OF10_NXM_TID = 1 << 3,
 #define OFPUTIL_P_OF10_STD_ANY (OFPUTIL_P_OF10_STD | OFPUTIL_P_OF10_STD_TID)
 #define OFPUTIL_P_OF10_NXM_ANY (OFPUTIL_P_OF10_NXM | OFPUTIL_P_OF10_NXM_TID)
+#define OFPUTIL_P_OF10_ANY (OFPUTIL_P_OF10_STD_ANY | OFPUTIL_P_OF10_NXM_ANY)
 
     /* OpenFlow 1.1 protocol.
      *
@@ -375,21 +377,33 @@ struct ofpbuf *ofputil_encode_flow_removed(const struct ofputil_flow_removed *,
 
 /* Abstract packet-in message. */
 struct ofputil_packet_in {
-    struct list list_node; /* For queueing packet_ins. */
-
+    /* Packet data and metadata.
+     *
+     * To save bandwidth, in some cases a switch may send only the first
+     * several bytes of a packet, indicated by 'packet_len < total_len'.  When
+     * the full packet is included, 'packet_len == total_len'. */
     const void *packet;
-    size_t packet_len;
+    size_t packet_len;          /* Number of bytes in 'packet'. */
+    size_t total_len;           /* Size of packet, pre-truncation. */
+    struct flow_metadata fmd;
 
-    enum ofp_packet_in_reason reason;    /* One of OFPR_*. */
-    uint16_t controller_id;              /* Controller ID to send to. */
-    uint8_t table_id;
-    ovs_be64 cookie;
-
+    /* Identifies a buffer in the switch that contains the full packet, to
+     * allow the controller to reference it later without having to send the
+     * entire packet back to the switch.
+     *
+     * UINT32_MAX indicates that the packet is not buffered in the switch.  A
+     * switch should only use UINT32_MAX when it sends the entire packet. */
     uint32_t buffer_id;
-    int send_len;
-    uint16_t total_len;         /* Full length of frame. */
 
-    struct flow_metadata fmd;   /* Metadata at creation time. */
+    /* Reason that the packet-in is being sent. */
+    enum ofp_packet_in_reason reason;    /* One of OFPR_*. */
+
+    /* Information about the OpenFlow flow that triggered the packet-in.
+     *
+     * A packet-in triggered by a flow table miss has no associated flow.  In
+     * that case, 'cookie' is UINT64_MAX. */
+    uint8_t table_id;                    /* OpenFlow table ID. */
+    ovs_be64 cookie;                     /* Flow's cookie. */
 };
 
 enum ofperr ofputil_decode_packet_in(struct ofputil_packet_in *,
@@ -973,7 +987,7 @@ int ofputil_decode_group_stats_reply(struct ofpbuf *,
                                      struct ofputil_group_stats *);
 
 int ofputil_decode_group_desc_reply(struct ofputil_group_desc *,
-                                    struct ofpbuf *);
+                                    struct ofpbuf *, enum ofp_version);
 
 void ofputil_append_group_desc_reply(const struct ofputil_group_desc *,
                                      struct list *buckets,

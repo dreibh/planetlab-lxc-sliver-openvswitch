@@ -223,6 +223,7 @@ void ovs_dp_process_received_packet(struct vport *p, struct sk_buff *skb)
 	struct dp_stats_percpu *stats;
 	struct sw_flow_key key;
 	u64 *stats_counter;
+	u32 n_mask_hit;
 	int error;
 
 	stats = this_cpu_ptr(dp->stats_percpu);
@@ -235,7 +236,7 @@ void ovs_dp_process_received_packet(struct vport *p, struct sk_buff *skb)
 	}
 
 	/* Look up flow. */
-	flow = ovs_flow_tbl_lookup(&dp->table, &key);
+	flow = ovs_flow_tbl_lookup(&dp->table, &key, &n_mask_hit);
 	if (unlikely(!flow)) {
 		struct dp_upcall_info upcall;
 
@@ -252,14 +253,15 @@ void ovs_dp_process_received_packet(struct vport *p, struct sk_buff *skb)
 	OVS_CB(skb)->flow = flow;
 	OVS_CB(skb)->pkt_key = &key;
 
-	stats_counter = &stats->n_hit;
-	ovs_flow_used(OVS_CB(skb)->flow, skb);
+	ovs_flow_stats_update(OVS_CB(skb)->flow, skb);
 	ovs_execute_actions(dp, skb);
+	stats_counter = &stats->n_hit;
 
 out:
 	/* Update datapath statistics. */
 	u64_stats_update_begin(&stats->sync);
 	(*stats_counter)++;
+	stats->n_mask_hit += n_mask_hit;
 	u64_stats_update_end(&stats->sync);
 }
 
@@ -454,14 +456,6 @@ out:
 	return err;
 }
 
-static void clear_stats(struct sw_flow *flow)
-{
-	flow->used = 0;
-	flow->tcp_flags = 0;
-	flow->packet_count = 0;
-	flow->byte_count = 0;
-}
-
 static int ovs_packet_cmd_execute(struct sk_buff *skb, struct genl_info *info)
 {
 	struct ovs_header *ovs_header = info->userhdr;
@@ -566,13 +560,18 @@ static struct genl_ops dp_packet_genl_ops[] = {
 	}
 };
 
-static void get_dp_stats(struct datapath *dp, struct ovs_dp_stats *stats)
+static void get_dp_stats(struct datapath *dp, struct ovs_dp_stats *stats,
+			 struct ovs_dp_megaflow_stats *mega_stats)
 {
 	int i;
 
+	memset(mega_stats, 0, sizeof(*mega_stats));
+
 	stats->n_flows = ovs_flow_tbl_count(&dp->table);
+	mega_stats->n_masks = ovs_flow_tbl_num_masks(&dp->table);
 
 	stats->n_hit = stats->n_missed = stats->n_lost = 0;
+
 	for_each_possible_cpu(i) {
 		const struct dp_stats_percpu *percpu_stats;
 		struct dp_stats_percpu local_stats;
@@ -588,6 +587,7 @@ static void get_dp_stats(struct datapath *dp, struct ovs_dp_stats *stats)
 		stats->n_hit += local_stats.n_hit;
 		stats->n_missed += local_stats.n_missed;
 		stats->n_lost += local_stats.n_lost;
+		mega_stats->n_mask_hit += local_stats.n_mask_hit;
 	}
 }
 
@@ -629,11 +629,9 @@ static int ovs_flow_cmd_fill_info(struct sw_flow *flow, struct datapath *dp,
 {
 	const int skb_orig_len = skb->len;
 	struct nlattr *start;
-	struct ovs_flow_stats stats;
+	struct sw_flow_stats flow_stats;
 	struct ovs_header *ovs_header;
 	struct nlattr *nla;
-	unsigned long used;
-	u8 tcp_flags;
 	int err;
 
 	ovs_header = genlmsg_put(skb, portid, seq, &dp_flow_genl_family, flags, cmd);
@@ -662,24 +660,24 @@ static int ovs_flow_cmd_fill_info(struct sw_flow *flow, struct datapath *dp,
 
 	nla_nest_end(skb, nla);
 
-	spin_lock_bh(&flow->lock);
-	used = flow->used;
-	stats.n_packets = flow->packet_count;
-	stats.n_bytes = flow->byte_count;
-	tcp_flags = flow->tcp_flags;
-	spin_unlock_bh(&flow->lock);
-
-	if (used &&
-	    nla_put_u64(skb, OVS_FLOW_ATTR_USED, ovs_flow_used_time(used)))
+	ovs_flow_stats_get(flow, &flow_stats);
+	if (flow_stats.used &&
+	    nla_put_u64(skb, OVS_FLOW_ATTR_USED, ovs_flow_used_time(flow_stats.used)))
 		goto nla_put_failure;
 
-	if (stats.n_packets &&
-	    nla_put(skb, OVS_FLOW_ATTR_STATS,
-		    sizeof(struct ovs_flow_stats), &stats))
-		goto nla_put_failure;
+	if (flow_stats.packet_count) {
+		struct ovs_flow_stats stats = {
+			.n_packets = flow_stats.packet_count,
+			.n_bytes = flow_stats.byte_count,
+		};
 
-	if (tcp_flags &&
-	    nla_put_u8(skb, OVS_FLOW_ATTR_TCP_FLAGS, tcp_flags))
+		if (nla_put(skb, OVS_FLOW_ATTR_STATS,
+			    sizeof(struct ovs_flow_stats), &stats))
+			goto nla_put_failure;
+	}
+
+	if (flow_stats.tcp_flags &&
+	    nla_put_u8(skb, OVS_FLOW_ATTR_TCP_FLAGS, flow_stats.tcp_flags))
 		goto nla_put_failure;
 
 	/* If OVS_FLOW_ATTR_ACTIONS doesn't fit, skip dumping the actions if
@@ -746,6 +744,14 @@ static struct sk_buff *ovs_flow_cmd_build_info(struct sw_flow *flow,
 	return skb;
 }
 
+static struct sw_flow *__ovs_flow_tbl_lookup(struct flow_table *tbl,
+					      const struct sw_flow_key *key)
+{
+	u32 __always_unused n_mask_hit;
+
+	return ovs_flow_tbl_lookup(tbl, key, &n_mask_hit);
+}
+
 static int ovs_flow_cmd_new_or_set(struct sk_buff *skb, struct genl_info *info)
 {
 	struct nlattr **a = info->attrs;
@@ -796,7 +802,7 @@ static int ovs_flow_cmd_new_or_set(struct sk_buff *skb, struct genl_info *info)
 		goto err_unlock_ovs;
 
 	/* Check if this is a duplicate flow */
-	flow = ovs_flow_tbl_lookup(&dp->table, &key);
+	flow = __ovs_flow_tbl_lookup(&dp->table, &key);
 	if (!flow) {
 		/* Bail out if we're not allowed to create a new flow. */
 		error = -ENOENT;
@@ -809,7 +815,6 @@ static int ovs_flow_cmd_new_or_set(struct sk_buff *skb, struct genl_info *info)
 			error = PTR_ERR(flow);
 			goto err_unlock_ovs;
 		}
-		clear_stats(flow);
 
 		flow->key = masked_key;
 		flow->unmasked_key = key;
@@ -855,11 +860,8 @@ static int ovs_flow_cmd_new_or_set(struct sk_buff *skb, struct genl_info *info)
 					       info->snd_seq, OVS_FLOW_CMD_NEW);
 
 		/* Clear stats. */
-		if (a[OVS_FLOW_ATTR_CLEAR]) {
-			spin_lock_bh(&flow->lock);
-			clear_stats(flow);
-			spin_unlock_bh(&flow->lock);
-		}
+		if (a[OVS_FLOW_ATTR_CLEAR])
+			ovs_flow_stats_clear(flow);
 	}
 	ovs_unlock();
 
@@ -908,7 +910,7 @@ static int ovs_flow_cmd_get(struct sk_buff *skb, struct genl_info *info)
 		goto unlock;
 	}
 
-	flow = ovs_flow_tbl_lookup(&dp->table, &key);
+	flow = __ovs_flow_tbl_lookup(&dp->table, &key);
 	if (!flow || !ovs_flow_cmp_unmasked_key(flow, &match)) {
 		err = -ENOENT;
 		goto unlock;
@@ -956,7 +958,7 @@ static int ovs_flow_cmd_del(struct sk_buff *skb, struct genl_info *info)
 	if (err)
 		goto unlock;
 
-	flow = ovs_flow_tbl_lookup(&dp->table, &key);
+	flow = __ovs_flow_tbl_lookup(&dp->table, &key);
 	if (!flow || !ovs_flow_cmp_unmasked_key(flow, &match)) {
 		err = -ENOENT;
 		goto unlock;
@@ -1070,6 +1072,7 @@ static size_t ovs_dp_cmd_msg_size(void)
 
 	msgsize += nla_total_size(IFNAMSIZ);
 	msgsize += nla_total_size(sizeof(struct ovs_dp_stats));
+	msgsize += nla_total_size(sizeof(struct ovs_dp_megaflow_stats));
 
 	return msgsize;
 }
@@ -1079,6 +1082,7 @@ static int ovs_dp_cmd_fill_info(struct datapath *dp, struct sk_buff *skb,
 {
 	struct ovs_header *ovs_header;
 	struct ovs_dp_stats dp_stats;
+	struct ovs_dp_megaflow_stats dp_megaflow_stats;
 	int err;
 
 	ovs_header = genlmsg_put(skb, portid, seq, &dp_datapath_genl_family,
@@ -1094,8 +1098,14 @@ static int ovs_dp_cmd_fill_info(struct datapath *dp, struct sk_buff *skb,
 	if (err)
 		goto nla_put_failure;
 
-	get_dp_stats(dp, &dp_stats);
-	if (nla_put(skb, OVS_DP_ATTR_STATS, sizeof(struct ovs_dp_stats), &dp_stats))
+	get_dp_stats(dp, &dp_stats, &dp_megaflow_stats);
+	if (nla_put(skb, OVS_DP_ATTR_STATS, sizeof(struct ovs_dp_stats),
+			&dp_stats))
+		goto nla_put_failure;
+
+	if (nla_put(skb, OVS_DP_ATTR_MEGAFLOW_STATS,
+			sizeof(struct ovs_dp_megaflow_stats),
+			&dp_megaflow_stats))
 		goto nla_put_failure;
 
 	return genlmsg_end(skb, ovs_header);

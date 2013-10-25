@@ -54,9 +54,6 @@ OpenFlow 1.1
 The list of remaining work items for OpenFlow 1.1 is below.  It is
 probably incomplete.
 
-    * Implement Write-Actions instruction.
-      [required for 1.1+]
-
     * The new in_phy_port field in OFPT_PACKET_IN needs some kind of
       implementation.  It has a sensible interpretation for tunnels
       but in general the physical port is not in the datapath for OVS
@@ -106,6 +103,11 @@ additional work specific to Openflow 1.2 are complete.  (This is based
 on the change log at the end of the OF1.2 spec.  I didn't compare the
 specs carefully yet.)
 
+    * Action translation needs some work to transform OpenFlow 1.1
+      field modification actions into OpenFlow 1.2+ "set-field"
+      actions, because OpenFlow 1.2 dropped support for the OF1.1
+      actions.
+
 OpenFlow 1.3
 ------------
 
@@ -114,16 +116,18 @@ following additional work.  (This is based on the change log at the
 end of the OF1.3 spec, reusing most of the section titles directly.  I
 didn't compare the specs carefully yet.)
 
-    * Send errors for unsupported multipart requests.
-      [required for OF1.3+]
-
     * Add support for multipart requests.
+      Currently we always report OFPBRC_MULTIPART_BUFFER_OVERFLOW.
       [optional for OF1.3+]
 
     * Add OFPMP_TABLE_FEATURES statistics.
       [optional for OF1.3+]
 
     * More flexible table miss support.
+      This requires the following.
+      - Change the default table-miss action (in the absense of table-miss
+        entry) from packet_in to drop for OF1.3+.  Decide what to do if
+        a switch is configured to support multiple OF versions.
       [required for OF1.3+]
 
     * IPv6 extension header handling support.  Fully implementing this

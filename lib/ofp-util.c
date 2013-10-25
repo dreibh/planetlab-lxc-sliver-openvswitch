@@ -296,8 +296,8 @@ ofputil_pull_ofp11_match(struct ofpbuf *buf, struct match *match,
     }
 }
 
-/* Converts the ofp11_match in 'match' into a struct match in 'match.  Returns
- * 0 if successful, otherwise an OFPERR_* value. */
+/* Converts the ofp11_match in 'ofmatch' into a struct match in 'match'.
+ * Returns 0 if successful, otherwise an OFPERR_* value. */
 enum ofperr
 ofputil_match_from_ofp11_match(const struct ofp11_match *ofmatch,
                                struct match *match)
@@ -1504,7 +1504,8 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
             return error;
         }
 
-        error = ofpacts_pull_openflow11_instructions(&b, b.size, ofpacts);
+        error = ofpacts_pull_openflow11_instructions(&b, oh->version,
+                                                     b.size, ofpacts);
         if (error) {
             return error;
         }
@@ -2360,7 +2361,8 @@ ofputil_decode_flow_stats_reply(struct ofputil_flow_stats *fs,
             return EINVAL;
         }
 
-        if (ofpacts_pull_openflow11_instructions(msg, length - sizeof *ofs -
+        if (ofpacts_pull_openflow11_instructions(msg, oh->version,
+                                                 length - sizeof *ofs -
                                                  padded_match_len, ofpacts)) {
             VLOG_WARN_RL(&bad_ofmsg_rl, "OFPST_FLOW reply bad instructions");
             return EINVAL;
@@ -2820,6 +2822,7 @@ ofputil_decode_packet_in(struct ofputil_packet_in *pin,
     struct ofpbuf b;
 
     memset(pin, 0, sizeof *pin);
+    pin->cookie = OVS_BE64_MAX;
 
     ofpbuf_use_const(&b, oh, ntohs(oh->length));
     raw = ofpraw_pull_assert(&b);
@@ -2938,7 +2941,6 @@ ofputil_encode_packet_in(const struct ofputil_packet_in *pin,
                          enum ofputil_protocol protocol,
                          enum nx_packet_in_format packet_in_format)
 {
-    size_t send_len = MIN(pin->send_len, pin->packet_len);
     struct ofpbuf *packet;
 
     /* Add OFPT_PACKET_IN. */
@@ -2964,11 +2966,11 @@ ofputil_encode_packet_in(const struct ofputil_packet_in *pin,
         /* The final argument is just an estimate of the space required. */
         packet = ofpraw_alloc_xid(packet_in_raw, packet_in_version,
                                   htonl(0), (sizeof(struct flow_metadata) * 2
-                                             + 2 + send_len));
+                                             + 2 + pin->packet_len));
         ofpbuf_put_zeros(packet, packet_in_size);
         oxm_put_match(packet, &match);
         ofpbuf_put_zeros(packet, 2);
-        ofpbuf_put(packet, pin->packet, send_len);
+        ofpbuf_put(packet, pin->packet, pin->packet_len);
 
         opi = packet->l3;
         opi->pi.buffer_id = htonl(pin->buffer_id);
@@ -2982,14 +2984,14 @@ ofputil_encode_packet_in(const struct ofputil_packet_in *pin,
         struct ofp10_packet_in *opi;
 
         packet = ofpraw_alloc_xid(OFPRAW_OFPT10_PACKET_IN, OFP10_VERSION,
-                                  htonl(0), send_len);
+                                  htonl(0), pin->packet_len);
         opi = ofpbuf_put_zeros(packet, offsetof(struct ofp10_packet_in, data));
         opi->total_len = htons(pin->total_len);
         opi->in_port = htons(ofp_to_u16(pin->fmd.in_port));
         opi->reason = pin->reason;
         opi->buffer_id = htonl(pin->buffer_id);
 
-        ofpbuf_put(packet, pin->packet, send_len);
+        ofpbuf_put(packet, pin->packet, pin->packet_len);
     } else if (packet_in_format == NXPIF_NXM) {
         struct nx_packet_in *npi;
         struct match match;
@@ -3000,11 +3002,11 @@ ofputil_encode_packet_in(const struct ofputil_packet_in *pin,
         /* The final argument is just an estimate of the space required. */
         packet = ofpraw_alloc_xid(OFPRAW_NXT_PACKET_IN, OFP10_VERSION,
                                   htonl(0), (sizeof(struct flow_metadata) * 2
-                                             + 2 + send_len));
+                                             + 2 + pin->packet_len));
         ofpbuf_put_zeros(packet, sizeof *npi);
         match_len = nx_put_match(packet, &match, 0, 0);
         ofpbuf_put_zeros(packet, 2);
-        ofpbuf_put(packet, pin->packet, send_len);
+        ofpbuf_put(packet, pin->packet, pin->packet_len);
 
         npi = packet->l3;
         npi->buffer_id = htonl(pin->buffer_id);
@@ -3092,7 +3094,8 @@ ofputil_decode_packet_out(struct ofputil_packet_out *po,
             return error;
         }
 
-        error = ofpacts_pull_openflow11_actions(&b, ntohs(opo->actions_len),
+        error = ofpacts_pull_openflow11_actions(&b, oh->version,
+                                                ntohs(opo->actions_len),
                                                 ofpacts);
         if (error) {
             return error;
@@ -5674,8 +5677,8 @@ ofputil_append_group_desc_reply(const struct ofputil_group_desc *gds,
 }
 
 static enum ofperr
-ofputil_pull_buckets(struct ofpbuf *msg, size_t buckets_length,
-                     struct list *buckets)
+ofputil_pull_buckets(struct ofpbuf *msg, enum ofp_version version,
+                     size_t buckets_length, struct list *buckets)
 {
     struct ofp11_bucket *ob;
 
@@ -5708,8 +5711,8 @@ ofputil_pull_buckets(struct ofpbuf *msg, size_t buckets_length,
         buckets_length -= ob_len;
 
         ofpbuf_init(&ofpacts, 0);
-        error = ofpacts_pull_openflow11_actions(msg, ob_len - sizeof *ob,
-                                                &ofpacts);
+        error = ofpacts_pull_openflow11_actions(msg, version,
+                                                ob_len - sizeof *ob, &ofpacts);
         if (error) {
             ofpbuf_uninit(&ofpacts);
             ofputil_bucket_list_destroy(buckets);
@@ -5745,7 +5748,7 @@ ofputil_pull_buckets(struct ofpbuf *msg, size_t buckets_length,
  * otherwise a positive errno value. */
 int
 ofputil_decode_group_desc_reply(struct ofputil_group_desc *gd,
-                                struct ofpbuf *msg)
+                                struct ofpbuf *msg, enum ofp_version version)
 {
     struct ofp11_group_desc_stats *ogds;
     size_t length;
@@ -5774,7 +5777,8 @@ ofputil_decode_group_desc_reply(struct ofputil_group_desc *gd,
         return OFPERR_OFPBRC_BAD_LEN;
     }
 
-    return ofputil_pull_buckets(msg, length - sizeof *ogds, &gd->buckets);
+    return ofputil_pull_buckets(msg, version, length - sizeof *ogds,
+                                &gd->buckets);
 }
 
 /* Converts abstract group mod 'gm' into a message for OpenFlow version
@@ -5857,7 +5861,7 @@ ofputil_decode_group_mod(const struct ofp_header *oh,
     gm->type = ogm->type;
     gm->group_id = ntohl(ogm->group_id);
 
-    return ofputil_pull_buckets(&msg, msg.size, &gm->buckets);
+    return ofputil_pull_buckets(&msg, oh->version, msg.size, &gm->buckets);
 }
 
 /* Parse a queue status request message into 'oqsr'.

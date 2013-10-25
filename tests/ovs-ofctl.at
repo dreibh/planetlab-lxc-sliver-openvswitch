@@ -139,6 +139,43 @@ OFPT_FLOW_MOD: ADD actions=sample(probability=12345,collector_set_id=23456,obs_d
 ]])
 AT_CLEANUP
 
+AT_SETUP([ovs-ofctl parse-flows (OpenFlow 1.1)])
+AT_DATA([flows.txt], [[
+# comment
+tcp,tp_src=123,out_port=5,actions=flood
+in_port=LOCAL dl_vlan=9 dl_src=00:0A:E4:25:6B:B0 actions=drop
+udp dl_vlan_pcp=7 idle_timeout=5 actions=strip_vlan output:0
+tcp,nw_src=192.168.0.3,tp_dst=80 actions=set_queue:37,output:1
+udp,nw_src=192.168.0.3,tp_dst=53 actions=mod_nw_ecn:2,output:1
+cookie=0x123456789abcdef hard_timeout=10 priority=60000 actions=controller
+actions=note:41.42.43,note:00.01.02.03.04.05.06.07,note
+ip,actions=mod_nw_ttl:1,set_field:10.4.3.77->ip_src
+sctp actions=drop
+sctp actions=drop
+in_port=0 actions=resubmit:0
+actions=sample(probability=12345,collector_set_id=23456,obs_domain_id=34567,obs_point_id=45678)
+]])
+
+AT_CHECK([ovs-ofctl --protocols OpenFlow11 parse-flows flows.txt
+], [0], [stdout])
+AT_CHECK([[sed 's/ (xid=0x[0-9a-fA-F]*)//' stdout]], [0],
+[[usable protocols: any
+chosen protocol: OpenFlow11
+OFPT_FLOW_MOD (OF1.1): ADD table:255 tcp,tp_src=123 out_port:5 actions=FLOOD
+OFPT_FLOW_MOD (OF1.1): ADD table:255 in_port=LOCAL,dl_vlan=9,dl_src=00:0a:e4:25:6b:b0 actions=drop
+OFPT_FLOW_MOD (OF1.1): ADD table:255 udp,dl_vlan_pcp=7 idle:5 actions=strip_vlan,output:0
+OFPT_FLOW_MOD (OF1.1): ADD table:255 tcp,nw_src=192.168.0.3,tp_dst=80 actions=set_queue:37,output:1
+OFPT_FLOW_MOD (OF1.1): ADD table:255 udp,nw_src=192.168.0.3,tp_dst=53 actions=mod_nw_ecn:2,output:1
+OFPT_FLOW_MOD (OF1.1): ADD table:255 priority=60000 cookie:0x123456789abcdef hard:10 actions=CONTROLLER:65535
+OFPT_FLOW_MOD (OF1.1): ADD table:255 actions=note:41.42.43.00.00.00,note:00.01.02.03.04.05.06.07.00.00.00.00.00.00,note:00.00.00.00.00.00
+OFPT_FLOW_MOD (OF1.1): ADD table:255 ip actions=mod_nw_ttl:1,load:0xa04034d->NXM_OF_IP_SRC[]
+OFPT_FLOW_MOD (OF1.1): ADD table:255 sctp actions=drop
+OFPT_FLOW_MOD (OF1.1): ADD table:255 sctp actions=drop
+OFPT_FLOW_MOD (OF1.1): ADD table:255 in_port=0 actions=resubmit:0
+OFPT_FLOW_MOD (OF1.1): ADD table:255 actions=sample(probability=12345,collector_set_id=23456,obs_domain_id=34567,obs_point_id=45678)
+]])
+AT_CLEANUP
+
 AT_SETUP([ovs-ofctl parse-flows (OpenFlow 1.2)])
 AT_DATA([flows.txt], [[
 # comment
@@ -174,6 +211,12 @@ OFPT_FLOW_MOD (OF1.2): ADD table:255 sctp actions=set_field:4445->sctp_dst
 OFPT_FLOW_MOD (OF1.2): ADD table:255 in_port=0 actions=resubmit:0
 OFPT_FLOW_MOD (OF1.2): ADD table:255 actions=sample(probability=12345,collector_set_id=23456,obs_domain_id=34567,obs_point_id=45678)
 ]])
+AT_CLEANUP
+
+AT_SETUP([ovs-ofctl action inconsistency (OpenFlow 1.1)])
+AT_CHECK([ovs-ofctl --protocols OpenFlow11 add-flow br0 'ip actions=mod_tp_dst:1234'
+], [1], [stdout], [ovs-ofctl: actions are invalid with specified match (OFPBAC_MATCH_INCONSISTENT)
+])
 AT_CLEANUP
 
 AT_SETUP([ovs-ofctl parse-flows (With Tunnel-Parameters)])
@@ -229,7 +272,7 @@ actions=output:1,bundle_load(eth_src,0,hrw,ofport,NXM_NX_REG0[16..31],slaves:1),
 actions=resubmit:1,resubmit(2),resubmit(,3),resubmit(2,3)
 send_flow_rem,actions=output:1,output:NXM_NX_REG0[],output:2,output:NXM_NX_REG1[16..31],output:3
 check_overlap,actions=output:1,exit,output:2
-actions=fin_timeout(idle_timeout=5,hard_timeout=15)
+tcp,actions=fin_timeout(idle_timeout=5,hard_timeout=15)
 actions=controller(max_len=123,reason=invalid_ttl,id=555)
 actions=sample(probability=12345,collector_set_id=23456,obs_domain_id=34567,obs_point_id=45678)
 ]])
@@ -265,7 +308,7 @@ NXT_FLOW_MOD: ADD table:255 actions=output:1,bundle_load(eth_src,0,hrw,ofport,NX
 NXT_FLOW_MOD: ADD table:255 actions=resubmit:1,resubmit:2,resubmit(,3),resubmit(2,3)
 NXT_FLOW_MOD: ADD table:255 send_flow_rem actions=output:1,output:NXM_NX_REG0[],output:2,output:NXM_NX_REG1[16..31],output:3
 NXT_FLOW_MOD: ADD table:255 check_overlap actions=output:1,exit,output:2
-NXT_FLOW_MOD: ADD table:255 actions=fin_timeout(idle_timeout=5,hard_timeout=15)
+NXT_FLOW_MOD: ADD table:255 tcp actions=fin_timeout(idle_timeout=5,hard_timeout=15)
 NXT_FLOW_MOD: ADD table:255 actions=controller(reason=invalid_ttl,max_len=123,id=555)
 NXT_FLOW_MOD: ADD table:255 actions=sample(probability=12345,collector_set_id=23456,obs_domain_id=34567,obs_point_id=45678)
 ]])

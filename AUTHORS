@@ -3,6 +3,7 @@ signed off on commits in the Open vSwitch version control repository.
 
 Aaron Rosen             arosen@clemson.edu
 Alexandru Copot         alex.mihai.c@gmail.com
+Alexei Starovoitov      ast@plumgrid.com
 Alexey I. Froloff       raorn@altlinux.org
 Alex Wang               alexw@nicira.com
 Andrew Evans            aevans@nicira.com
@@ -27,10 +28,12 @@ Daniel Roman            droman@nicira.com
 Danny Kukawka           danny.kukawka@bisect.de
 David Erickson          derickso@stanford.edu
 David S. Miller         davem@davemloft.net
+David Yang              davidy@vmware.com
 Devendra Naga           devendra.aaru@gmail.com
 Dominic Curran          dominic.curran@citrix.com
 Duffie Cooley           dcooley@nicira.com
 Ed Maste                emaste at freebsd.org
+Edouard Bourguignon     madko@linuxed.net
 Edward Tomasz Napierała trasz@freebsd.org
 Ethan Jackson           ethan@nicira.com
 Flavio Leitner          fbl@redhat.com
@@ -52,7 +55,7 @@ Jeremy Stribling        strib@nicira.com
 Jesse Gross             jesse@nicira.com
 Jing Ai                 jinga@google.com
 Joe Perches             joe@perches.com
-Joe Stringer            joe@wand.net.nz
+Joe Stringer            joestringer@nicira.com
 Jun Nakajima            jun.nakajima@intel.com
 Justin Pettit           jpettit@nicira.com
 Keith Amidon            keith@nicira.com
@@ -170,6 +173,7 @@ Jeongkeun Lee           jklee@hp.com
 Jian Qiu                swordqiu@gmail.com
 Joan Cirer              joan@ev0.net
 John Galgay             john@galgay.net
+John Hurley             john.hurley@netronome.com
 Kevin Mancuso           kevin.mancuso@rackspace.com
 Kiran Shanbhog          kiran@vmware.com
 Kirill Kabardin

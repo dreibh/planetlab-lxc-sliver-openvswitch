@@ -545,11 +545,11 @@ ofproto_dpif_flow_mod(struct ofproto_dpif *ofproto,
  * Takes ownership of 'pin' and pin->packet. */
 void
 ofproto_dpif_send_packet_in(struct ofproto_dpif *ofproto,
-                            struct ofputil_packet_in *pin)
+                            struct ofproto_packet_in *pin)
 {
     if (!guarded_list_push_back(&ofproto->pins, &pin->list_node, 1024)) {
         COVERAGE_INC(packet_in_overflow);
-        free(CONST_CAST(void *, pin->packet));
+        free(CONST_CAST(void *, pin->up.packet));
         free(pin);
     }
 }
@@ -1359,7 +1359,7 @@ destruct(struct ofproto *ofproto_)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
     struct rule_dpif *rule, *next_rule;
-    struct ofputil_packet_in *pin, *next_pin;
+    struct ofproto_packet_in *pin, *next_pin;
     struct facet *facet, *next_facet;
     struct cls_cursor cursor;
     struct oftable *table;
@@ -1397,7 +1397,7 @@ destruct(struct ofproto *ofproto_)
     guarded_list_pop_all(&ofproto->pins, &pins);
     LIST_FOR_EACH_SAFE (pin, next_pin, list_node, &pins) {
         list_remove(&pin->list_node);
-        free(CONST_CAST(void *, pin->packet));
+        free(CONST_CAST(void *, pin->up.packet));
         free(pin);
     }
     guarded_list_destroy(&ofproto->pins);
@@ -1428,7 +1428,7 @@ static int
 run_fast(struct ofproto *ofproto_)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
-    struct ofputil_packet_in *pin, *next_pin;
+    struct ofproto_packet_in *pin, *next_pin;
     struct list pins;
 
     /* Do not perform any periodic activity required by 'ofproto' while
@@ -1441,11 +1441,10 @@ run_fast(struct ofproto *ofproto_)
     LIST_FOR_EACH_SAFE (pin, next_pin, list_node, &pins) {
         connmgr_send_packet_in(ofproto->up.connmgr, pin);
         list_remove(&pin->list_node);
-        free(CONST_CAST(void *, pin->packet));
+        free(CONST_CAST(void *, pin->up.packet));
         free(pin);
     }
 
-    ofproto_dpif_monitor_run_fast();
     return 0;
 }
 
@@ -1486,9 +1485,6 @@ run(struct ofproto *ofproto_)
     if (ofproto->ipfix) {
         dpif_ipfix_run(ofproto->ipfix);
     }
-
-    ofproto_dpif_monitor_run_fast();
-    ofproto_dpif_monitor_run();
 
     HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
         port_run(ofport);
@@ -1546,7 +1542,6 @@ wait(struct ofproto *ofproto_)
     if (ofproto->ipfix) {
         dpif_ipfix_wait(ofproto->ipfix);
     }
-    ofproto_dpif_monitor_wait();
     HMAP_FOR_EACH (bundle, hmap_node, &ofproto->bundles) {
         bundle_wait(bundle);
     }
@@ -4309,9 +4304,15 @@ rule_dpif_credit_stats(struct rule_dpif *rule,
 }
 
 bool
-rule_dpif_fail_open(const struct rule_dpif *rule)
+rule_dpif_is_fail_open(const struct rule_dpif *rule)
 {
-    return rule->up.cr.priority == FAIL_OPEN_PRIORITY;
+    return is_fail_open_rule(&rule->up);
+}
+
+bool
+rule_dpif_is_table_miss(const struct rule_dpif *rule)
+{
+    return rule_is_table_miss(&rule->up);
 }
 
 ovs_be64
@@ -4633,9 +4634,7 @@ rule_dpif_lookup_in_table(struct ofproto_dpif *ofproto,
         cls_rule = classifier_lookup(cls, &ofpc_normal_flow, wc);
     } else if (frag && ofproto->up.frag_handling == OFPC_FRAG_DROP) {
         cls_rule = &ofproto->drop_frags_rule->up.cr;
-        if (wc) {
-            flow_wildcards_init_exact(wc);
-        }
+        /* Frag mask in wc already set above. */
     } else {
         cls_rule = classifier_lookup(cls, flow, wc);
     }
@@ -5055,7 +5054,7 @@ trace_format_rule(struct ds *result, int level, const struct rule_dpif *rule)
     actions = rule_dpif_get_actions(rule);
 
     ds_put_char_multiple(result, '\t', level);
-    ds_put_cstr(result, "OpenFlow ");
+    ds_put_cstr(result, "OpenFlow actions=");
     ofpacts_format(actions->ofpacts, actions->ofpacts_len, result);
     ds_put_char(result, '\n');
 
@@ -5206,7 +5205,7 @@ ofproto_unixctl_trace(struct unixctl_conn *conn, int argc, const char *argv[],
             goto exit;
         }
         ds_put_format(&result, "Bridge: %s\n", ofproto->up.name);
-    } else if (!parse_ofp_exact_flow(&flow, argv[argc - 1])) {
+    } else if (!parse_ofp_exact_flow(&flow, NULL, argv[argc - 1], NULL)) {
         if (argc != 3) {
             unixctl_command_reply_error(conn, "Must specify bridge name");
             goto exit;

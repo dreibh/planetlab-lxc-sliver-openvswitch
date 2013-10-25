@@ -76,14 +76,18 @@ void ovs_flow_mask_key(struct sw_flow_key *dst, const struct sw_flow_key *src,
 struct sw_flow *ovs_flow_alloc(void)
 {
 	struct sw_flow *flow;
+	int cpu;
 
 	flow = kmem_cache_alloc(flow_cache, GFP_KERNEL);
 	if (!flow)
 		return ERR_PTR(-ENOMEM);
 
-	spin_lock_init(&flow->lock);
 	flow->sf_acts = NULL;
 	flow->mask = NULL;
+
+	memset(flow->stats, 0, num_possible_cpus() * sizeof(struct sw_flow_stats));
+	for_each_possible_cpu(cpu)
+		spin_lock_init(&flow->stats[cpu].lock);
 
 	return flow;
 }
@@ -431,18 +435,32 @@ static struct sw_flow *masked_flow_lookup(struct table_instance *ti,
 }
 
 struct sw_flow *ovs_flow_tbl_lookup(struct flow_table *tbl,
-				    const struct sw_flow_key *key)
+				    const struct sw_flow_key *key,
+				    u32 *n_mask_hit)
 {
 	struct table_instance *ti = rcu_dereference(tbl->ti);
 	struct sw_flow_mask *mask;
 	struct sw_flow *flow;
 
+	*n_mask_hit = 0;
 	list_for_each_entry_rcu(mask, &tbl->mask_list, list) {
+		(*n_mask_hit)++;
 		flow = masked_flow_lookup(ti, key, mask);
 		if (flow)  /* Found */
 			return flow;
 	}
 	return NULL;
+}
+
+int ovs_flow_tbl_num_masks(const struct flow_table *table)
+{
+	struct sw_flow_mask *mask;
+	int num = 0;
+
+	list_for_each_entry(mask, &table->mask_list, list)
+		num++;
+
+	return num;
 }
 
 static struct table_instance *table_instance_expand(struct table_instance *ti)
@@ -561,11 +579,15 @@ int ovs_flow_tbl_insert(struct flow_table *table, struct sw_flow *flow,
  * Returns zero if successful or a negative error code. */
 int ovs_flow_init(void)
 {
+	int flow_size;
+
 	BUILD_BUG_ON(__alignof__(struct sw_flow_key) % __alignof__(long));
 	BUILD_BUG_ON(sizeof(struct sw_flow_key) % sizeof(long));
 
-	flow_cache = kmem_cache_create("sw_flow", sizeof(struct sw_flow), 0,
-					0, NULL);
+	flow_size = sizeof(struct sw_flow) +
+		    (num_possible_cpus() * sizeof(struct sw_flow_stats));
+
+	flow_cache = kmem_cache_create("sw_flow", flow_size, 0, 0, NULL);
 	if (flow_cache == NULL)
 		return -ENOMEM;
 
