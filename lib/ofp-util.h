@@ -31,14 +31,13 @@
 
 struct ofpbuf;
 union ofp_action;
+struct ofpact_set_field;
 
 /* Port numbers. */
 enum ofperr ofputil_port_from_ofp11(ovs_be32 ofp11_port,
                                     ofp_port_t *ofp10_port);
 ovs_be32 ofputil_port_to_ofp11(ofp_port_t ofp10_port);
 
-enum ofperr ofputil_check_output_port(ofp_port_t ofp_port,
-                                      ofp_port_t max_ports);
 bool ofputil_port_from_string(const char *, ofp_port_t *portp);
 void ofputil_format_port(ofp_port_t port, struct ds *);
 void ofputil_port_to_string(ofp_port_t, char namebuf[OFP_MAX_PORT_NAME_LEN],
@@ -295,7 +294,9 @@ struct ofputil_flow_mod {
 enum ofperr ofputil_decode_flow_mod(struct ofputil_flow_mod *,
                                     const struct ofp_header *,
                                     enum ofputil_protocol,
-                                    struct ofpbuf *ofpacts);
+                                    struct ofpbuf *ofpacts,
+                                    ofp_port_t max_port,
+                                    uint8_t max_table);
 struct ofpbuf *ofputil_encode_flow_mod(const struct ofputil_flow_mod *,
                                        enum ofputil_protocol);
 
@@ -692,11 +693,23 @@ struct ofputil_role_request {
     uint64_t generation_id;
 };
 
+struct ofputil_role_status {
+    enum ofp12_controller_role role;
+    enum ofp14_controller_role_reason reason;
+    uint64_t generation_id;
+};
+
 enum ofperr ofputil_decode_role_message(const struct ofp_header *,
                                         struct ofputil_role_request *);
 struct ofpbuf *ofputil_encode_role_reply(const struct ofp_header *,
                                          const struct ofputil_role_request *);
 
+struct ofpbuf *ofputil_encode_role_status(
+                                const struct ofputil_role_status *status,
+                                enum ofputil_protocol protocol);
+
+enum ofperr ofputil_decode_role_status(const struct ofp_header *oh,
+                                       struct ofputil_role_status *rs);
 /* Abstract table stats.
  *
  * For now we use ofp12_table_stats as a superset of the other protocol
@@ -705,6 +718,34 @@ struct ofpbuf *ofputil_encode_role_reply(const struct ofp_header *,
 struct ofpbuf *ofputil_encode_table_stats_reply(
     const struct ofp12_table_stats[], int n,
     const struct ofp_header *request);
+
+/* Queue configuration request. */
+struct ofpbuf *ofputil_encode_queue_get_config_request(enum ofp_version,
+                                                       ofp_port_t port);
+enum ofperr ofputil_decode_queue_get_config_request(const struct ofp_header *,
+                                                    ofp_port_t *port);
+
+/* Queue configuration reply. */
+struct ofputil_queue_config {
+    uint32_t queue_id;
+
+    /* Each of these optional values is expressed in tenths of a percent.
+     * Values greater than 1000 indicate that the feature is disabled.
+     * UINT16_MAX indicates that the value is omitted. */
+    uint16_t min_rate;
+    uint16_t max_rate;
+};
+
+struct ofpbuf *ofputil_encode_queue_get_config_reply(
+    const struct ofp_header *request);
+void ofputil_append_queue_get_config_reply(
+    struct ofpbuf *reply, const struct ofputil_queue_config *);
+
+enum ofperr ofputil_decode_queue_get_config_reply(struct ofpbuf *reply,
+                                                  ofp_port_t *);
+int ofputil_pull_queue_get_config_reply(struct ofpbuf *reply,
+                                        struct ofputil_queue_config *);
+
 
 /* Abstract nx_flow_monitor_request. */
 struct ofputil_flow_monitor_request {
@@ -821,6 +862,7 @@ enum {
 };
 
 int ofputil_action_code_from_name(const char *);
+const char * ofputil_action_name_from_code(enum ofputil_action_code code);
 
 void *ofputil_put_action(enum ofputil_action_code, struct ofpbuf *buf);
 
@@ -949,12 +991,16 @@ struct ofputil_group_stats {
     struct bucket_counter *bucket_stats;
 };
 
-/* Group features reply, independent of protocol. */
+/* Group features reply, independent of protocol.
+ *
+ * Only OF1.2 and later support group features replies. */
 struct ofputil_group_features {
     uint32_t  types;           /* Bitmap of OFPGT_* values supported. */
     uint32_t  capabilities;    /* Bitmap of OFPGFC12_* capability supported. */
     uint32_t  max_groups[4];   /* Maximum number of groups for each type. */
-    uint32_t  actions[4];      /* Bitmaps of OFPAT_* that are supported. */
+
+    /* Bitmaps of OFPAT_* that are supported.  OF1.2+ actions only. */
+    uint32_t  actions[4];
 };
 
 /* Group desc reply, independent of protocol. */
@@ -965,6 +1011,13 @@ struct ofputil_group_desc {
 };
 
 void ofputil_bucket_list_destroy(struct list *buckets);
+
+static inline bool
+ofputil_bucket_has_liveness(const struct ofputil_bucket *bucket)
+{
+    return (bucket->watch_port != OFPP_ANY ||
+            bucket->watch_group != OFPG_ANY);
+}
 
 struct ofpbuf *ofputil_encode_group_stats_request(enum ofp_version,
                                                   uint32_t group_id);

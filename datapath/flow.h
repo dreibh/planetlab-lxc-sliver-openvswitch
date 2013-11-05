@@ -96,6 +96,7 @@ struct sw_flow_key {
 				struct {
 					__be16 src;		/* TCP/UDP/SCTP source port. */
 					__be16 dst;		/* TCP/UDP/SCTP destination port. */
+					__be16 flags;		/* TCP flags. */
 				} tp;
 				struct {
 					u8 sha[ETH_ALEN];	/* ARP source hardware address. */
@@ -112,6 +113,7 @@ struct sw_flow_key {
 			struct {
 				__be16 src;		/* TCP/UDP/SCTP source port. */
 				__be16 dst;		/* TCP/UDP/SCTP destination port. */
+				__be16 flags;		/* TCP flags. */
 			} tp;
 			struct {
 				struct in6_addr target;	/* ND target address. */
@@ -152,7 +154,7 @@ struct sw_flow_stats {
 	u64 byte_count;			/* Number of bytes matched. */
 	unsigned long used;		/* Last used time (in jiffies). */
 	spinlock_t lock;		/* Lock for atomic stats update. */
-	u8 tcp_flags;			/* Union of seen TCP flags. */
+	__be16 tcp_flags;		/* Union of seen TCP flags. */
 } ____cacheline_aligned_in_smp;
 
 struct sw_flow {

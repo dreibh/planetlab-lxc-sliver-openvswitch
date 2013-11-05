@@ -310,6 +310,7 @@ usage(void)
            "  dump-group-features SWITCH  print group features\n"
            "  dump-groups SWITCH          print group description\n"
            "  dump-group-stats SWITCH [GROUP]  print group statistics\n"
+           "  queue-get-config SWITCH PORT  print queue information for port\n"
            "  add-meter SWITCH METER      add meter described by METER\n"
            "  mod-meter SWITCH METER      modify specific METER\n"
            "  del-meter SWITCH METER      delete METER\n"
@@ -1045,6 +1046,26 @@ ofctl_queue_stats(int argc, char *argv[])
 
     request = ofputil_encode_queue_stats_request(vconn_get_version(vconn), &oqs);
     dump_stats_transaction(vconn, request);
+    vconn_close(vconn);
+}
+
+static void
+ofctl_queue_get_config(int argc OVS_UNUSED, char *argv[])
+{
+    const char *vconn_name = argv[1];
+    const char *port_name = argv[2];
+    enum ofputil_protocol protocol;
+    enum ofp_version version;
+    struct ofpbuf *request;
+    struct vconn *vconn;
+    ofp_port_t port;
+
+    port = str_to_port_no(vconn_name, port_name);
+
+    protocol = open_vconn(vconn_name, &vconn);
+    version = ofputil_protocol_to_ofp_version(protocol);
+    request = ofputil_encode_queue_get_config_request(version, port);
+    dump_transaction(vconn, request);
     vconn_close(vconn);
 }
 
@@ -2792,7 +2813,8 @@ ofctl_parse_ofp10_actions(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
         /* Convert to ofpacts. */
         ofpbuf_init(&ofpacts, 0);
         size = of10_in.size;
-        error = ofpacts_pull_openflow10(&of10_in, of10_in.size, &ofpacts);
+        error = ofpacts_pull_openflow_actions(&of10_in, of10_in.size,
+                                              OFP10_VERSION, &ofpacts);
         if (error) {
             printf("bad OF1.1 actions: %s\n\n", ofperr_get_name(error));
             ofpbuf_uninit(&ofpacts);
@@ -2810,7 +2832,8 @@ ofctl_parse_ofp10_actions(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 
         /* Convert back to ofp10 actions and print differences from input. */
         ofpbuf_init(&of10_out, 0);
-        ofpacts_put_openflow10(ofpacts.data, ofpacts.size, &of10_out);
+        ofpacts_put_openflow_actions(ofpacts.data, ofpacts.size, &of10_out,
+                                     OFP10_VERSION);
 
         print_differences("", of10_in.data, of10_in.size,
                           of10_out.data, of10_out.size);
@@ -2978,8 +3001,8 @@ ofctl_parse_ofp11_actions(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
         /* Convert to ofpacts. */
         ofpbuf_init(&ofpacts, 0);
         size = of11_in.size;
-        error = ofpacts_pull_openflow11_actions(&of11_in, OFP11_VERSION,
-                                                of11_in.size, &ofpacts);
+        error = ofpacts_pull_openflow_actions(&of11_in, of11_in.size,
+                                              OFP11_VERSION, &ofpacts);
         if (error) {
             printf("bad OF1.1 actions: %s\n\n", ofperr_get_name(error));
             ofpbuf_uninit(&ofpacts);
@@ -2997,7 +3020,8 @@ ofctl_parse_ofp11_actions(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 
         /* Convert back to ofp11 actions and print differences from input. */
         ofpbuf_init(&of11_out, 0);
-        ofpacts_put_openflow11_actions(ofpacts.data, ofpacts.size, &of11_out);
+        ofpacts_put_openflow_actions(ofpacts.data, ofpacts.size, &of11_out,
+                                     OFP11_VERSION);
 
         print_differences("", of11_in.data, of11_in.size,
                           of11_out.data, of11_out.size);
@@ -3047,14 +3071,15 @@ ofctl_parse_ofp11_instructions(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
         /* Convert to ofpacts. */
         ofpbuf_init(&ofpacts, 0);
         size = of11_in.size;
-        error = ofpacts_pull_openflow11_instructions(&of11_in, OFP11_VERSION,
-                                                     of11_in.size, &ofpacts);
+        error = ofpacts_pull_openflow_instructions(&of11_in, of11_in.size,
+                                                   OFP11_VERSION, &ofpacts);
         if (!error) {
             /* Verify actions, enforce consistency. */
             struct flow flow;
             memset(&flow, 0, sizeof flow);
-            error = ofpacts_check(ofpacts.data, ofpacts.size, &flow, OFPP_MAX,
-                                  table_id ? atoi(table_id) : 0, true);
+            error = ofpacts_check(ofpacts.data, ofpacts.size, &flow,
+                                  true, OFPP_MAX,
+                                  table_id ? atoi(table_id) : 0, 255);
         }
         if (error) {
             printf("bad OF1.1 instructions: %s\n\n", ofperr_get_name(error));
@@ -3074,8 +3099,8 @@ ofctl_parse_ofp11_instructions(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
         /* Convert back to ofp11 instructions and print differences from
          * input. */
         ofpbuf_init(&of11_out, 0);
-        ofpacts_put_openflow11_instructions(ofpacts.data, ofpacts.size,
-                                            &of11_out);
+        ofpacts_put_openflow_instructions(ofpacts.data, ofpacts.size,
+                                          &of11_out, OFP13_VERSION);
 
         print_differences("", of11_in.data, of11_in.size,
                           of11_out.data, of11_out.size);
@@ -3326,6 +3351,7 @@ static const struct command all_commands[] = {
     { "dump-flows", 1, 2, ofctl_dump_flows },
     { "dump-aggregate", 1, 2, ofctl_dump_aggregate },
     { "queue-stats", 1, 3, ofctl_queue_stats },
+    { "queue-get-config", 2, 2, ofctl_queue_get_config },
     { "add-flow", 2, 2, ofctl_add_flow },
     { "add-flows", 2, 2, ofctl_add_flows },
     { "mod-flows", 2, 2, ofctl_mod_flows },

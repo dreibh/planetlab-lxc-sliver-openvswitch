@@ -41,13 +41,15 @@ VLOG_DEFINE_THIS_MODULE(meta_flow);
     sizeof ((union mf_value *)0)->MEMBER,       \
     8 * sizeof ((union mf_value *)0)->MEMBER
 
-static const struct mf_field mf_fields[MFF_N_IDS] = {
+extern const struct mf_field mf_fields[MFF_N_IDS]; /* Silence a warning. */
+
+const struct mf_field mf_fields[MFF_N_IDS] = {
     /* ## -------- ## */
     /* ## metadata ## */
     /* ## -------- ## */
 
     {
-        MFF_TUN_ID, "tun_id", NULL,
+        MFF_TUN_ID, "tun_id", "tunnel_id",
         MF_FIELD_SIZES(be64),
         MFM_FULLY,
         MFS_HEXADECIMAL,
@@ -409,7 +411,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
     },
 
     {
-        MFF_IP_PROTO, "nw_proto", NULL,
+        MFF_IP_PROTO, "nw_proto", "ip_proto",
         MF_FIELD_SIZES(u8),
         MFM_NONE,
         MFS_DECIMAL,
@@ -431,8 +433,8 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         OFPUTIL_P_ANY,   /* Will be shifted for OXM. */
         OFPUTIL_P_NONE,
     }, {
-        MFF_IP_DSCP_SHIFTED, "nw_tos_shifted", NULL,
-        MF_FIELD_SIZES(u8),
+        MFF_IP_DSCP_SHIFTED, "ip_dscp", NULL,
+        1, 6,
         MFM_NONE,
         MFS_DECIMAL,
         MFP_IP_ANY,
@@ -442,7 +444,7 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         OFPUTIL_P_ANY,   /* Will be shifted for non-OXM. */
         OFPUTIL_P_NONE,
     }, {
-        MFF_IP_ECN, "nw_ecn", NULL,
+        MFF_IP_ECN, "nw_ecn", "ip_ecn",
         1, 2,
         MFM_NONE,
         MFS_DECIMAL,
@@ -558,6 +560,17 @@ static const struct mf_field mf_fields[MFF_N_IDS] = {
         NXM_OF_TCP_DST, "NXM_OF_TCP_DST",
         OXM_OF_TCP_DST, "OXM_OF_TCP_DST",
         OFPUTIL_P_ANY,
+        OFPUTIL_P_NXM_OXM_ANY,
+    }, {
+        MFF_TCP_FLAGS, "tcp_flags", NULL,
+        2, 12,
+        MFM_FULLY,
+        MFS_HEXADECIMAL,
+        MFP_TCP,
+        false,
+        NXM_NX_TCP_FLAGS, "NXM_NX_TCP_FLAGS",
+        NXM_NX_TCP_FLAGS, "NXM_NX_TCP_FLAGS",
+        OFPUTIL_P_NXM_OXM_ANY,
         OFPUTIL_P_NXM_OXM_ANY,
     },
 
@@ -716,14 +729,6 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
 
 const struct mf_field *mf_from_nxm_header__(uint32_t header);
 static void nxm_init(void);
-
-/* Returns the field with the given 'id'. */
-const struct mf_field *
-mf_from_id(enum mf_field_id id)
-{
-    ovs_assert((unsigned int) id < MFF_N_IDS);
-    return &mf_fields[id];
-}
 
 /* Returns the field with the given 'name', or a null pointer if no field has
  * that name. */
@@ -919,6 +924,8 @@ mf_is_all_wild(const struct mf_field *mf, const struct flow_wildcards *wc)
     case MFF_ICMPV4_CODE:
     case MFF_ICMPV6_CODE:
         return !wc->masks.tp_dst;
+    case MFF_TCP_FLAGS:
+        return !wc->masks.tcp_flags;
 
     case MFF_N_IDS:
     default:
@@ -1128,6 +1135,8 @@ mf_is_value_valid(const struct mf_field *mf, const union mf_value *value)
         return !(value->u8 & ~IP_ECN_MASK);
     case MFF_IP_FRAG:
         return !(value->u8 & ~FLOW_NW_FRAG_MASK);
+    case MFF_TCP_FLAGS:
+        return !(value->be16 & ~htons(0x0fff));
 
     case MFF_ARP_OP:
         return !(value->be16 & htons(0xff00));
@@ -1326,6 +1335,10 @@ mf_get_value(const struct mf_field *mf, const struct flow *flow,
         value->be16 = flow->tp_dst;
         break;
 
+    case MFF_TCP_FLAGS:
+        value->be16 = flow->tcp_flags;
+        break;
+
     case MFF_ICMPV4_TYPE:
     case MFF_ICMPV6_TYPE:
         value->u8 = ntohs(flow->tp_src);
@@ -1516,6 +1529,10 @@ mf_set_value(const struct mf_field *mf,
     case MFF_UDP_DST:
     case MFF_SCTP_DST:
         match_set_tp_dst(match, value->be16);
+        break;
+
+    case MFF_TCP_FLAGS:
+        match_set_tcp_flags(match, value->be16);
         break;
 
     case MFF_ICMPV4_TYPE:
@@ -1730,6 +1747,10 @@ mf_set_flow_value(const struct mf_field *mf,
         flow->tp_dst = value->be16;
         break;
 
+    case MFF_TCP_FLAGS:
+        flow->tcp_flags = value->be16;
+        break;
+
     case MFF_ICMPV4_TYPE:
     case MFF_ICMPV6_TYPE:
         flow->tp_src = htons(value->u8);
@@ -1941,6 +1962,11 @@ mf_set_wild(const struct mf_field *mf, struct match *match)
         match->flow.tp_dst = htons(0);
         break;
 
+    case MFF_TCP_FLAGS:
+        match->wc.masks.tcp_flags = htons(0);
+        match->flow.tcp_flags = htons(0);
+        break;
+
     case MFF_ND_TARGET:
         memset(&match->wc.masks.nd_target, 0,
                sizeof match->wc.masks.nd_target);
@@ -1998,7 +2024,7 @@ mf_set(const struct mf_field *mf,
     case MFF_ICMPV4_CODE:
     case MFF_ICMPV6_TYPE:
     case MFF_ICMPV6_CODE:
-        NOT_REACHED();
+        return OFPUTIL_P_NONE;
 
     case MFF_TUN_ID:
         match_set_tun_id_masked(match, value->be64, mask->be64);
@@ -2109,6 +2135,10 @@ mf_set(const struct mf_field *mf,
     case MFF_UDP_DST:
     case MFF_SCTP_DST:
         match_set_tp_dst_masked(match, value->be16, mask->be16);
+        break;
+
+    case MFF_TCP_FLAGS:
+        match_set_tcp_flags_masked(match, value->be16, mask->be16);
         break;
 
     case MFF_N_IDS:
@@ -2230,6 +2260,10 @@ mf_random_value(const struct mf_field *mf, union mf_value *value)
     case MFF_ND_TARGET:
     case MFF_ND_SLL:
     case MFF_ND_TLL:
+        break;
+
+    case MFF_TCP_FLAGS:
+        value->be16 &= htons(0x0fff);
         break;
 
     case MFF_IN_PORT_OXM:
@@ -2569,6 +2603,8 @@ char *
 mf_parse(const struct mf_field *mf, const char *s,
          union mf_value *value, union mf_value *mask)
 {
+    char *error;
+
     if (!strcmp(s, "*")) {
         memset(value, 0, mf->n_bytes);
         memset(mask, 0, mf->n_bytes);
@@ -2578,32 +2614,47 @@ mf_parse(const struct mf_field *mf, const char *s,
     switch (mf->string) {
     case MFS_DECIMAL:
     case MFS_HEXADECIMAL:
-        return mf_from_integer_string(mf, s,
-                                      (uint8_t *) value, (uint8_t *) mask);
+        error = mf_from_integer_string(mf, s,
+                                       (uint8_t *) value, (uint8_t *) mask);
+        break;
 
     case MFS_ETHERNET:
-        return mf_from_ethernet_string(mf, s, value->mac, mask->mac);
+        error = mf_from_ethernet_string(mf, s, value->mac, mask->mac);
+        break;
 
     case MFS_IPV4:
-        return mf_from_ipv4_string(mf, s, &value->be32, &mask->be32);
+        error = mf_from_ipv4_string(mf, s, &value->be32, &mask->be32);
+        break;
 
     case MFS_IPV6:
-        return mf_from_ipv6_string(mf, s, &value->ipv6, &mask->ipv6);
+        error = mf_from_ipv6_string(mf, s, &value->ipv6, &mask->ipv6);
+        break;
 
     case MFS_OFP_PORT:
-        return mf_from_ofp_port_string(mf, s, &value->be16, &mask->be16);
+        error = mf_from_ofp_port_string(mf, s, &value->be16, &mask->be16);
+        break;
 
     case MFS_OFP_PORT_OXM:
-        return mf_from_ofp_port_string32(mf, s, &value->be32, &mask->be32);
+        error = mf_from_ofp_port_string32(mf, s, &value->be32, &mask->be32);
+        break;
 
     case MFS_FRAG:
-        return mf_from_frag_string(s, &value->u8, &mask->u8);
+        error = mf_from_frag_string(s, &value->u8, &mask->u8);
+        break;
 
     case MFS_TNL_FLAGS:
         ovs_assert(mf->n_bytes == sizeof(ovs_be16));
-        return mf_from_tun_flags_string(s, &value->be16, &mask->be16);
+        error = mf_from_tun_flags_string(s, &value->be16, &mask->be16);
+        break;
+
+    default:
+        NOT_REACHED();
     }
-    NOT_REACHED();
+
+    if (!error && !mf_is_mask_valid(mf, mask)) {
+        error = xasprintf("%s: invalid mask for field %s", s, mf->name);
+    }
+    return error;
 }
 
 /* Parses 's', a string value for field 'mf', into 'value'.  Returns NULL if

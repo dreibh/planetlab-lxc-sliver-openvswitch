@@ -757,7 +757,8 @@ ofp_print_flow_mod(struct ds *s, const struct ofp_header *oh, int verbosity)
     protocol = ofputil_protocol_set_tid(protocol, true);
 
     ofpbuf_init(&ofpacts, 64);
-    error = ofputil_decode_flow_mod(&fm, oh, protocol, &ofpacts);
+    error = ofputil_decode_flow_mod(&fm, oh, protocol, &ofpacts,
+                                    OFPP_MAX, 255);
     if (error) {
         ofpbuf_uninit(&ofpacts);
         ofp_print_error(s, error);
@@ -1006,6 +1007,71 @@ ofp_print_table_mod(struct ds *string, const struct ofp_header *oh)
 
     ds_put_cstr(string, ", flow_miss_config=");
     ofp_print_table_miss_config(string, pm.config);
+}
+
+static void
+ofp_print_queue_get_config_request(struct ds *string,
+                                   const struct ofp_header *oh)
+{
+    enum ofperr error;
+    ofp_port_t port;
+
+    error = ofputil_decode_queue_get_config_request(oh, &port);
+    if (error) {
+        ofp_print_error(string, error);
+        return;
+    }
+
+    ds_put_cstr(string, " port=");
+    ofputil_format_port(port, string);
+}
+
+static void
+print_queue_rate(struct ds *string, const char *name, unsigned int rate)
+{
+    if (rate <= 1000) {
+        ds_put_format(string, " %s:%u.%u%%", name, rate / 10, rate % 10);
+    } else if (rate < UINT16_MAX) {
+        ds_put_format(string, " %s:(disabled)", name);
+    }
+}
+
+static void
+ofp_print_queue_get_config_reply(struct ds *string,
+                                 const struct ofp_header *oh)
+{
+    enum ofperr error;
+    struct ofpbuf b;
+    ofp_port_t port;
+
+    ofpbuf_use_const(&b, oh, ntohs(oh->length));
+    error = ofputil_decode_queue_get_config_reply(&b, &port);
+    if (error) {
+        ofp_print_error(string, error);
+        return;
+    }
+
+    ds_put_cstr(string, " port=");
+    ofputil_format_port(port, string);
+    ds_put_char(string, '\n');
+
+    for (;;) {
+        struct ofputil_queue_config queue;
+        int retval;
+
+        retval = ofputil_pull_queue_get_config_reply(&b, &queue);
+        if (retval) {
+            if (retval != EOF) {
+                ofp_print_error(string, retval);
+            }
+            break;
+        }
+
+        ds_put_format(string, "queue %"PRIu32":", queue.queue_id);
+        print_queue_rate(string, "min_rate", queue.min_rate);
+        print_queue_rate(string, "max_rate", queue.max_rate);
+        ds_put_char(string, '\n');
+    }
 }
 
 static void
@@ -1852,20 +1918,12 @@ ofp_print_echo(struct ds *string, const struct ofp_header *oh, int verbosity)
 }
 
 static void
-ofp_print_role_message(struct ds *string, const struct ofp_header *oh)
+ofp_print_role_generic(struct ds *string, enum ofp12_controller_role role,
+                       uint64_t generation_id)
 {
-    struct ofputil_role_request rr;
-    enum ofperr error;
-
-    error = ofputil_decode_role_message(oh, &rr);
-    if (error) {
-        ofp_print_error(string, error);
-        return;
-    }
-
     ds_put_cstr(string, " role=");
 
-    switch (rr.role) {
+    switch (role) {
     case OFPCR12_ROLE_NOCHANGE:
         ds_put_cstr(string, "nochange");
         break;
@@ -1882,8 +1940,54 @@ ofp_print_role_message(struct ds *string, const struct ofp_header *oh)
         NOT_REACHED();
     }
 
-    if (rr.have_generation_id) {
-        ds_put_format(string, " generation_id=%"PRIu64, rr.generation_id);
+    if (generation_id != UINT64_MAX) {
+        ds_put_format(string, " generation_id=%"PRIu64, generation_id);
+    }
+}
+
+static void
+ofp_print_role_message(struct ds *string, const struct ofp_header *oh)
+{
+    struct ofputil_role_request rr;
+    enum ofperr error;
+
+    error = ofputil_decode_role_message(oh, &rr);
+    if (error) {
+        ofp_print_error(string, error);
+        return;
+    }
+
+    ofp_print_role_generic(string, rr.role, rr.have_generation_id ? rr.generation_id : UINT64_MAX);
+}
+
+static void
+ofp_print_role_status_message(struct ds *string, const struct ofp_header *oh)
+{
+    struct ofputil_role_status rs;
+    enum ofperr error;
+
+    error = ofputil_decode_role_status(oh, &rs);
+    if (error) {
+        ofp_print_error(string, error);
+        return;
+    }
+
+    ofp_print_role_generic(string, rs.role, rs.generation_id);
+
+    ds_put_cstr(string, " reason=");
+
+    switch (rs.reason) {
+    case OFPCRR_MASTER_REQUEST:
+        ds_put_cstr(string, "master_request");
+        break;
+    case OFPCRR_CONFIG:
+        ds_put_cstr(string, "configuration_changed");
+        break;
+    case OFPCRR_EXPERIMENTER:
+        ds_put_cstr(string, "experimenter_data_changed");
+        break;
+    default:
+        NOT_REACHED();
     }
 }
 
@@ -2419,8 +2523,6 @@ ofp_to_string__(const struct ofp_header *oh, enum ofpraw raw,
         ofp_print_group_mod(string, oh);
         break;
 
-    case OFPTYPE_QUEUE_GET_CONFIG_REQUEST:
-    case OFPTYPE_QUEUE_GET_CONFIG_REPLY:
     case OFPTYPE_TABLE_FEATURES_STATS_REQUEST:
     case OFPTYPE_TABLE_FEATURES_STATS_REPLY:
         ofp_print_not_implemented(string);
@@ -2490,9 +2592,20 @@ ofp_to_string__(const struct ofp_header *oh, enum ofpraw raw,
     case OFPTYPE_BARRIER_REPLY:
         break;
 
+    case OFPTYPE_QUEUE_GET_CONFIG_REQUEST:
+        ofp_print_queue_get_config_request(string, oh);
+        break;
+
+    case OFPTYPE_QUEUE_GET_CONFIG_REPLY:
+        ofp_print_queue_get_config_reply(string, oh);
+        break;
+
     case OFPTYPE_ROLE_REQUEST:
     case OFPTYPE_ROLE_REPLY:
         ofp_print_role_message(string, oh);
+        break;
+    case OFPTYPE_ROLE_STATUS:
+        ofp_print_role_status_message(string, oh);
         break;
 
     case OFPTYPE_METER_STATS_REQUEST:

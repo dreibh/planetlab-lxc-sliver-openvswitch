@@ -49,6 +49,7 @@
 #include "vlog.h"
 
 COVERAGE_DEFINE(xlate_actions);
+COVERAGE_DEFINE(xlate_actions_oversize);
 
 VLOG_DEFINE_THIS_MODULE(ofproto_dpif_xlate);
 
@@ -126,6 +127,7 @@ struct xport {
     struct xport *peer;              /* Patch port peer or null. */
 
     enum ofputil_port_config config; /* OpenFlow port configuration. */
+    enum ofputil_port_state state;   /* OpenFlow port state. */
     int stp_port_no;                 /* STP port number or -1 if not in use. */
 
     struct hmap skb_priorities;      /* Map of 'skb_priority_to_dscp's. */
@@ -396,7 +398,8 @@ xlate_ofport_set(struct ofproto_dpif *ofproto, struct ofbundle *ofbundle,
                  const struct cfm *cfm, const struct bfd *bfd,
                  struct ofport_dpif *peer, int stp_port_no,
                  const struct ofproto_port_queue *qdscp_list, size_t n_qdscp,
-                 enum ofputil_port_config config, bool is_tunnel,
+                 enum ofputil_port_config config,
+                 enum ofputil_port_state state, bool is_tunnel,
                  bool may_enable)
 {
     struct xport *xport = xport_lookup(ofport);
@@ -417,6 +420,7 @@ xlate_ofport_set(struct ofproto_dpif *ofproto, struct ofbundle *ofbundle,
     ovs_assert(xport->ofp_port == ofp_port);
 
     xport->config = config;
+    xport->state = state;
     xport->stp_port_no = stp_port_no;
     xport->is_tunnel = is_tunnel;
     xport->may_enable = may_enable;
@@ -717,6 +721,106 @@ ofp_port_to_odp_port(const struct xbridge *xbridge, ofp_port_t ofp_port)
 {
     const struct xport *xport = get_ofp_port(xbridge, ofp_port);
     return xport ? xport->odp_port : ODPP_NONE;
+}
+
+static bool
+odp_port_is_alive(const struct xlate_ctx *ctx, ofp_port_t ofp_port)
+{
+    struct xport *xport;
+
+    xport = get_ofp_port(ctx->xbridge, ofp_port);
+    if (!xport || xport->config & OFPUTIL_PC_PORT_DOWN ||
+        xport->state & OFPUTIL_PS_LINK_DOWN) {
+        return false;
+    }
+
+    return true;
+}
+
+static const struct ofputil_bucket *
+group_first_live_bucket(const struct xlate_ctx *, const struct group_dpif *,
+                        int depth);
+
+static bool
+group_is_alive(const struct xlate_ctx *ctx, uint32_t group_id, int depth)
+{
+    struct group_dpif *group;
+    bool hit;
+
+    hit = group_dpif_lookup(ctx->xbridge->ofproto, group_id, &group);
+    if (!hit) {
+        return false;
+    }
+
+    hit = group_first_live_bucket(ctx, group, depth) != NULL;
+
+    group_dpif_release(group);
+    return hit;
+}
+
+#define MAX_LIVENESS_RECURSION 128 /* Arbitrary limit */
+
+static bool
+bucket_is_alive(const struct xlate_ctx *ctx,
+                const struct ofputil_bucket *bucket, int depth)
+{
+    if (depth >= MAX_LIVENESS_RECURSION) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
+
+        VLOG_WARN_RL(&rl, "bucket chaining exceeded %d links",
+                     MAX_LIVENESS_RECURSION);
+        return false;
+    }
+
+    return !ofputil_bucket_has_liveness(bucket) ||
+           (bucket->watch_port != OFPP_ANY &&
+            odp_port_is_alive(ctx, bucket->watch_port)) ||
+           (bucket->watch_group != OFPG_ANY &&
+            group_is_alive(ctx, bucket->watch_group, depth + 1));
+}
+
+static const struct ofputil_bucket *
+group_first_live_bucket(const struct xlate_ctx *ctx,
+                        const struct group_dpif *group, int depth)
+{
+    struct ofputil_bucket *bucket;
+    const struct list *buckets;
+
+    group_dpif_get_buckets(group, &buckets);
+    LIST_FOR_EACH (bucket, list_node, buckets) {
+        if (bucket_is_alive(ctx, bucket, depth)) {
+            return bucket;
+        }
+    }
+
+    return NULL;
+}
+
+static const struct ofputil_bucket *
+group_best_live_bucket(const struct xlate_ctx *ctx,
+                       const struct group_dpif *group,
+                       uint32_t basis)
+{
+    const struct ofputil_bucket *best_bucket = NULL;
+    uint32_t best_score = 0;
+    int i = 0;
+
+    const struct ofputil_bucket *bucket;
+    const struct list *buckets;
+
+    group_dpif_get_buckets(group, &buckets);
+    LIST_FOR_EACH (bucket, list_node, buckets) {
+        if (bucket_is_alive(ctx, bucket, 0)) {
+            uint32_t score = (hash_int(i, basis) & 0xffff) * bucket->weight;
+            if (score >= best_score) {
+                best_bucket = bucket;
+                best_score = score;
+            }
+        }
+        i++;
+    }
+
+    return best_bucket;
 }
 
 static bool
@@ -1559,7 +1663,7 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
 
     /* If 'struct flow' gets additional metadata, we'll need to zero it out
      * before traversing a patch port. */
-    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 21);
+    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 22);
 
     if (!xport) {
         xlate_report(ctx, "Nonexistent output port");
@@ -1714,9 +1818,8 @@ xlate_recursively(struct xlate_ctx *ctx, struct rule_dpif *rule)
     ctx->recurse--;
 }
 
-static void
-xlate_table_action(struct xlate_ctx *ctx,
-                   ofp_port_t in_port, uint8_t table_id, bool may_packet_in)
+static bool
+xlate_resubmit_resource_check(struct xlate_ctx *ctx)
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
 
@@ -1730,6 +1833,17 @@ xlate_table_action(struct xlate_ctx *ctx,
     } else if (ctx->stack.size >= 65536) {
         VLOG_ERR_RL(&rl, "resubmits yielded over 64 kB of stack");
     } else {
+        return true;
+    }
+
+    return false;
+}
+
+static void
+xlate_table_action(struct xlate_ctx *ctx,
+                   ofp_port_t in_port, uint8_t table_id, bool may_packet_in)
+{
+    if (xlate_resubmit_resource_check(ctx)) {
         struct rule_dpif *rule;
         ofp_port_t old_in_port = ctx->xin->flow.in_port.ofp_port;
         uint8_t old_table_id = ctx->table_id;
@@ -1773,6 +1887,109 @@ xlate_table_action(struct xlate_ctx *ctx,
     }
 
     ctx->exit = true;
+}
+
+static void
+xlate_group_bucket(struct xlate_ctx *ctx, const struct ofputil_bucket *bucket)
+{
+    uint64_t action_list_stub[1024 / 8];
+    struct ofpbuf action_list, action_set;
+
+    ofpbuf_use_const(&action_set, bucket->ofpacts, bucket->ofpacts_len);
+    ofpbuf_use_stub(&action_list, action_list_stub, sizeof action_list_stub);
+
+    ofpacts_execute_action_set(&action_list, &action_set);
+    ctx->recurse++;
+    do_xlate_actions(action_list.data, action_list.size, ctx);
+    ctx->recurse--;
+
+    ofpbuf_uninit(&action_set);
+    ofpbuf_uninit(&action_list);
+}
+
+static void
+xlate_all_group(struct xlate_ctx *ctx, struct group_dpif *group)
+{
+    const struct ofputil_bucket *bucket;
+    const struct list *buckets;
+    struct flow old_flow = ctx->xin->flow;
+
+    group_dpif_get_buckets(group, &buckets);
+
+    LIST_FOR_EACH (bucket, list_node, buckets) {
+        xlate_group_bucket(ctx, bucket);
+        /* Roll back flow to previous state.
+         * This is equivalent to cloning the packet for each bucket.
+         *
+         * As a side effect any subsequently applied actions will
+         * also effectively be applied to a clone of the packet taken
+         * just before applying the all or indirect group. */
+        ctx->xin->flow = old_flow;
+    }
+}
+
+static void
+xlate_ff_group(struct xlate_ctx *ctx, struct group_dpif *group)
+{
+    const struct ofputil_bucket *bucket;
+
+    bucket = group_first_live_bucket(ctx, group, 0);
+    if (bucket) {
+        xlate_group_bucket(ctx, bucket);
+    }
+}
+
+static void
+xlate_select_group(struct xlate_ctx *ctx, struct group_dpif *group)
+{
+    struct flow_wildcards *wc = &ctx->xout->wc;
+    const struct ofputil_bucket *bucket;
+    uint32_t basis;
+
+    basis = hash_bytes(ctx->xin->flow.dl_dst, sizeof ctx->xin->flow.dl_dst, 0);
+    bucket = group_best_live_bucket(ctx, group, basis);
+    if (bucket) {
+        memset(&wc->masks.dl_dst, 0xff, sizeof wc->masks.dl_dst);
+        xlate_group_bucket(ctx, bucket);
+    }
+}
+
+static void
+xlate_group_action__(struct xlate_ctx *ctx, struct group_dpif *group)
+{
+    switch (group_dpif_get_type(group)) {
+    case OFPGT11_ALL:
+    case OFPGT11_INDIRECT:
+        xlate_all_group(ctx, group);
+        break;
+    case OFPGT11_SELECT:
+        xlate_select_group(ctx, group);
+        break;
+    case OFPGT11_FF:
+        xlate_ff_group(ctx, group);
+        break;
+    default:
+        NOT_REACHED();
+    }
+    group_dpif_release(group);
+}
+
+static bool
+xlate_group_action(struct xlate_ctx *ctx, uint32_t group_id)
+{
+    if (xlate_resubmit_resource_check(ctx)) {
+        struct group_dpif *group;
+        bool got_group;
+
+        got_group = group_dpif_lookup(ctx->xbridge->ofproto, group_id, &group);
+        if (got_group) {
+            xlate_group_action__(ctx, group);
+        } else {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static void
@@ -1981,6 +2198,54 @@ compose_dec_ttl(struct xlate_ctx *ctx, struct ofpact_cnt_ids *ids)
         /* Stop processing for current table. */
         return true;
     }
+}
+
+static bool
+compose_set_mpls_label_action(struct xlate_ctx *ctx, ovs_be32 label)
+{
+    if (!eth_type_mpls(ctx->xin->flow.dl_type)) {
+        return true;
+    }
+
+    /* If mpls_depth_delta is negative then an MPLS POP action has been
+     * executed and the resulting MPLS label stack is unknown.  This means
+     * a SET MPLS LABEL action can't be executed as it needs to manipulate
+     * the top-most MPLS LSE. Thus, stop processing.
+     *
+     * It is planned that in the future this case will be handled
+     * by recirculation.
+     */
+    if (ctx->mpls_depth_delta < 0) {
+        return true;
+    }
+
+    ctx->xout->wc.masks.mpls_lse |= htonl(MPLS_LABEL_MASK);
+    set_mpls_lse_label(&ctx->xin->flow.mpls_lse, label);
+    return false;
+}
+
+static bool
+compose_set_mpls_tc_action(struct xlate_ctx *ctx, uint8_t tc)
+{
+    if (!eth_type_mpls(ctx->xin->flow.dl_type)) {
+        return true;
+    }
+
+    /* If mpls_depth_delta is negative then an MPLS POP action has been
+     * executed and the resulting MPLS label stack is unknown.  This means
+     * a SET MPLS TC action can't be executed as it needs to manipulate
+     * the top-most MPLS LSE. Thus, stop processing.
+     *
+     * It is planned that in the future this case will be handled
+     * by recirculation.
+     */
+    if (ctx->mpls_depth_delta < 0) {
+        return true;
+    }
+
+    ctx->xout->wc.masks.mpls_lse |= htonl(MPLS_TC_MASK);
+    set_mpls_lse_tc(&ctx->xin->flow.mpls_lse, tc);
+    return false;
 }
 
 static bool
@@ -2292,6 +2557,8 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
     OFPACT_FOR_EACH (a, ofpacts, ofpacts_len) {
         struct ofpact_controller *controller;
         const struct ofpact_metadata *metadata;
+        const struct ofpact_set_field *set_field;
+        const struct mf_field *mf;
 
         if (ctx->exit) {
             break;
@@ -2304,7 +2571,9 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             break;
 
         case OFPACT_GROUP:
-            /* XXX not yet implemented */
+            if (xlate_group_action(ctx, ofpact_get_GROUP(a)->group_id)) {
+                return;
+            }
             break;
 
         case OFPACT_CONTROLLER:
@@ -2320,17 +2589,22 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
 
         case OFPACT_SET_VLAN_VID:
             wc->masks.vlan_tci |= htons(VLAN_VID_MASK | VLAN_CFI);
-            flow->vlan_tci &= ~htons(VLAN_VID_MASK);
-            flow->vlan_tci |= (htons(ofpact_get_SET_VLAN_VID(a)->vlan_vid)
-                               | htons(VLAN_CFI));
+            if (flow->vlan_tci & htons(VLAN_CFI) ||
+                ofpact_get_SET_VLAN_VID(a)->push_vlan_if_needed) {
+                flow->vlan_tci &= ~htons(VLAN_VID_MASK);
+                flow->vlan_tci |= (htons(ofpact_get_SET_VLAN_VID(a)->vlan_vid)
+                                   | htons(VLAN_CFI));
+            }
             break;
 
         case OFPACT_SET_VLAN_PCP:
             wc->masks.vlan_tci |= htons(VLAN_PCP_MASK | VLAN_CFI);
-            flow->vlan_tci &= ~htons(VLAN_PCP_MASK);
-            flow->vlan_tci |=
-                htons((ofpact_get_SET_VLAN_PCP(a)->vlan_pcp << VLAN_PCP_SHIFT)
-                      | VLAN_CFI);
+            if (flow->vlan_tci & htons(VLAN_CFI) ||
+                ofpact_get_SET_VLAN_PCP(a)->push_vlan_if_needed) {
+                flow->vlan_tci &= ~htons(VLAN_PCP_MASK);
+                flow->vlan_tci |= htons((ofpact_get_SET_VLAN_PCP(a)->vlan_pcp
+                                         << VLAN_PCP_SHIFT) | VLAN_CFI);
+            }
             break;
 
         case OFPACT_STRIP_VLAN:
@@ -2431,6 +2705,20 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             nxm_execute_reg_load(ofpact_get_REG_LOAD(a), flow, wc);
             break;
 
+        case OFPACT_SET_FIELD:
+            set_field = ofpact_get_SET_FIELD(a);
+            mf = set_field->field;
+            mf_mask_field_and_prereqs(mf, &wc->masks);
+
+            /* Set field action only ever overwrites packet's outermost
+             * applicable header fields.  Do nothing if no header exists. */
+            if ((mf->id != MFF_VLAN_VID || flow->vlan_tci & htons(VLAN_CFI))
+                && ((mf->id != MFF_MPLS_LABEL && mf->id != MFF_MPLS_TC)
+                    || flow->mpls_lse)) {
+                mf_set_flow_value(mf, &set_field->value, flow);
+            }
+            break;
+
         case OFPACT_STACK_PUSH:
             nxm_execute_stack_push(ofpact_get_STACK_PUSH(a), flow, wc,
                                    &ctx->stack);
@@ -2451,6 +2739,20 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
         case OFPACT_POP_MPLS:
             if (compose_mpls_pop_action(ctx,
                                         ofpact_get_POP_MPLS(a)->ethertype)) {
+                return;
+            }
+            break;
+
+        case OFPACT_SET_MPLS_LABEL:
+            if (compose_set_mpls_label_action(ctx,
+                                              ofpact_get_SET_MPLS_LABEL(a)->label)) {
+                return;
+            }
+            break;
+
+        case OFPACT_SET_MPLS_TC:
+            if (compose_set_mpls_tc_action(ctx,
+                                           ofpact_get_SET_MPLS_TC(a)->tc)) {
                 return;
             }
             break;
@@ -2524,7 +2826,6 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             break;
 
         case OFPACT_GOTO_TABLE: {
-            /* It is assumed that goto-table is the last action. */
             struct ofpact_goto_table *ogt = ofpact_get_GOTO_TABLE(a);
 
             ovs_assert(ctx->table_id < ogt->table_id);
@@ -2543,7 +2844,7 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
 void
 xlate_in_init(struct xlate_in *xin, struct ofproto_dpif *ofproto,
               const struct flow *flow, struct rule_dpif *rule,
-              uint8_t tcp_flags, const struct ofpbuf *packet)
+              uint16_t tcp_flags, const struct ofpbuf *packet)
 {
     xin->ofproto = ofproto;
     xin->flow = *flow;
@@ -2887,11 +3188,11 @@ xlate_actions__(struct xlate_in *xin, struct xlate_out *xout)
 
     if (nl_attr_oversized(ctx.xout->odp_actions.size)) {
         /* These datapath actions are too big for a Netlink attribute, so we
-         * can't execute them. */
-        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
-
-        VLOG_ERR_RL(&rl, "discarding oversize datapath actions");
-        ofpbuf_clear(&ctx.xout->odp_actions);
+         * can't hand them to the kernel directly.  dpif_execute() can execute
+         * them one by one with help, so just mark the result as SLOW_ACTION to
+         * prevent the flow from being installed. */
+        COVERAGE_INC(xlate_actions_oversize);
+        ctx.xout->slow |= SLOW_ACTION;
     }
 
     ofpbuf_uninit(&ctx.stack);

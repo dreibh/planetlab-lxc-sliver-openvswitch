@@ -144,6 +144,197 @@ OFPST_QUEUE request (OF1.2) (xid=0x2):port=10 queue=ALL
 OVS_VSWITCHD_STOP
 AT_CLEANUP
 
+dnl This is really bare-bones.
+dnl It at least checks request and reply serialization and deserialization.
+AT_SETUP([ofproto - queue configuration - (OpenFlow 1.0)])
+OVS_VSWITCHD_START
+ADD_OF_PORTS([br0], [1], [2])
+AT_CHECK([ovs-ofctl queue-get-config br0 1], [0], [stdout])
+AT_CHECK([STRIP_XIDS stdout], [0], [dnl
+OFPT_QUEUE_GET_CONFIG_REPLY: port=1
+])
+AT_CHECK([ovs-ofctl queue-get-config br0 10], [0],
+  [OFPT_ERROR (xid=0x2): OFPQOFC_BAD_PORT
+OFPT_QUEUE_GET_CONFIG_REQUEST (xid=0x2): port=10
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+AT_SETUP([ofproto - queue configuration - (OpenFlow 1.2)])
+OVS_VSWITCHD_START
+ADD_OF_PORTS([br0], [1], [2])
+AT_CHECK([ovs-ofctl -O OpenFlow12 queue-get-config br0 1], [0], [stdout])
+AT_CHECK([STRIP_XIDS stdout], [0], [dnl
+OFPT_QUEUE_GET_CONFIG_REPLY (OF1.2): port=1
+])
+AT_CHECK([ovs-ofctl -O OpenFlow12 queue-get-config br0 10], [0],
+  [OFPT_ERROR (OF1.2) (xid=0x2): OFPQOFC_BAD_PORT
+OFPT_QUEUE_GET_CONFIG_REQUEST (OF1.2) (xid=0x2): port=10
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+dnl This is really bare-bones.
+dnl It at least checks request and reply serialization and deserialization.
+AT_SETUP([ofproto - del group])
+OVS_VSWITCHD_START
+AT_DATA([groups.txt], [dnl
+group_id=1234,type=all,bucket=output:10
+group_id=1235,type=all,bucket=output:10
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn add-groups br0 groups.txt])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn del-groups br0 group_id=1234])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn dump-groups br0], [0], [stdout])
+AT_CHECK([STRIP_XIDS stdout], [0], [dnl
+OFPST_GROUP_DESC reply (OF1.1):
+ group_id=1235,type=all,bucket=actions=output:10
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn del-groups br0 group_id=1234])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn dump-groups br0], [0], [stdout])
+AT_CHECK([STRIP_XIDS stdout], [0], [dnl
+OFPST_GROUP_DESC reply (OF1.1):
+ group_id=1235,type=all,bucket=actions=output:10
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn del-groups br0], [0])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn dump-groups br0], [0], [stdout])
+AT_CHECK([STRIP_XIDS stdout], [0], [dnl
+OFPST_GROUP_DESC reply (OF1.1):
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+dnl This is really bare-bones.
+dnl It at least checks request and reply serialization and deserialization.
+AT_SETUP([ofproto - del group deletes flows])
+OVS_VSWITCHD_START
+AT_DATA([groups.txt], [dnl
+group_id=1234,type=all,bucket=output:10
+group_id=1235,type=all,bucket=output:10
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn add-groups br0 groups.txt])
+AT_DATA([flows.txt], [dnl
+tcp actions=group:1234
+udp actions=group:1235
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn add-flows br0 flows.txt])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn dump-flows br0 | ofctl_strip | sort],
+[0], [dnl
+ tcp actions=group:1234
+ udp actions=group:1235
+OFPST_FLOW reply (OF1.1):
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn del-groups br0 group_id=1234])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn dump-flows br0 | ofctl_strip | sort],
+[0], [dnl
+ udp actions=group:1235
+OFPST_FLOW reply (OF1.1):
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn del-groups br0 group_id=1234])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn dump-flows br0 | ofctl_strip | sort],
+[0], [dnl
+ udp actions=group:1235
+OFPST_FLOW reply (OF1.1):
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn del-groups br0])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn dump-flows br0 | ofctl_strip | sort],
+[0], [dnl
+OFPST_FLOW reply (OF1.1):
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+dnl This is really bare-bones.
+dnl It at least checks request and reply serialization and deserialization.
+AT_SETUP([ofproto - flow mod checks group availability])
+OVS_VSWITCHD_START
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn add-group br0 group_id=1234,type=all,bucket=output:10])
+AT_DATA([flows.txt], [dnl
+tcp actions=group:1234
+udp actions=group:1235
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn add-flow br0 'tcp actions=group:1234'])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn add-flow br0 'tcp actions=group:1235'], [1], [], [stderr])
+
+# The output should look like this:
+#
+# 00000000  02 0e 00 98 00 00 00 02-00 00 00 00 00 00 00 00 |................|
+# 00000010  00 00 00 00 00 00 00 00-ff 00 00 00 00 00 80 00 |................|
+# 00000020  ff ff ff ff ff ff ff ff-ff ff ff ff 00 00 00 00 |................|
+# 00000030  00 00 00 58 00 00 00 00-00 00 03 d7 00 00 00 00 |...X............|
+#
+# This 'sed' command captures the error message but drops details.
+AT_CHECK([sed '/truncated/d
+/^000000.0/d' stderr | STRIP_XIDS], [0],
+  [OFPT_ERROR (OF1.1): OFPBAC_BAD_OUT_GROUP
+OFPT_FLOW_MOD (OF1.1):
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+dnl This is really bare-bones.
+dnl It at least checks request and reply serialization and deserialization.
+AT_SETUP([ofproto - group description])
+OVS_VSWITCHD_START
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn add-group br0 group_id=1234,type=all,bucket=output:10], [0], [stdout])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn dump-groups br0], [0], [stdout])
+AT_CHECK([STRIP_XIDS stdout], [0], [dnl
+OFPST_GROUP_DESC reply (OF1.1):
+ group_id=1234,type=all,bucket=actions=output:10
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+dnl This is really bare-bones.
+dnl It at least checks request and reply serialization and deserialization.
+AT_SETUP([ofproto - group description])
+OVS_VSWITCHD_START
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn add-group br0 group_id=1234,type=all,bucket=output:10])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn dump-groups br0], [0], [stdout])
+AT_CHECK([STRIP_XIDS stdout], [0], [dnl
+OFPST_GROUP_DESC reply (OF1.1):
+ group_id=1234,type=all,bucket=actions=output:10
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+dnl This is really bare-bones.
+dnl It at least checks request and reply serialization and deserialization.
+AT_SETUP([ofproto - group features])
+OVS_VSWITCHD_START
+AT_CHECK([ovs-ofctl -O OpenFlow12 -vwarn dump-group-features br0], [0], [stdout])
+AT_CHECK([STRIP_XIDS stdout], [0], [dnl
+OFPST_GROUP_FEATURES reply (OF1.2):
+ Group table:
+    Types:  0x0
+    Capabilities:  0x7
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+dnl This is really bare-bones.
+dnl It at least checks request and reply serialization and deserialization.
+AT_SETUP([ofproto - group stats])
+OVS_VSWITCHD_START
+AT_DATA([groups.txt], [dnl
+group_id=1234,type=all,bucket=output:10
+group_id=1235,type=all,bucket=output:10
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn add-groups br0 groups.txt])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn add-flow br0 'tcp actions=group:1234'])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn dump-group-stats br0 group_id=1234], [0], [stdout])
+AT_CHECK([STRIP_XIDS stdout | sort], [0], [dnl
+ group_id=1234,ref_count=1,packet_count=0,byte_count=0,bucket0:packet_count=0,byte_count=0
+OFPST_GROUP reply (OF1.1):
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 -vwarn dump-group-stats br0], [0], [stdout])
+AT_CHECK([STRIP_XIDS stdout | sort], [0], [dnl
+ group_id=1234,ref_count=1,packet_count=0,byte_count=0,bucket0:packet_count=0,byte_count=0
+ group_id=1235,ref_count=0,packet_count=0,byte_count=0,bucket0:packet_count=0,byte_count=0
+OFPST_GROUP reply (OF1.1):
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
 AT_SETUP([ofproto - mod-port (OpenFlow 1.0)])
 OVS_VSWITCHD_START
 for command_config_state in \
@@ -271,6 +462,21 @@ OFPST_AGGREGATE reply (OF1.1): packet_count=0 byte_count=0 flow_count=2
 ])
 AT_CHECK([ovs-ofctl -O OpenFlow11 del-flows br0])
 AT_CHECK([ovs-ofctl -O OpenFlow11 dump-flows br0 | ofctl_strip], [0], [OFPST_FLOW reply (OF1.1):
+ table=1, in_port=4 actions=output:3
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+AT_SETUP([ofproto - flow_mod negative test (OpenFlow 1.1)])
+OVS_VSWITCHD_START(
+  [set bridge br0 protocols=OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13])
+AT_CHECK([ovs-ofctl add-flow -O OpenFlow11 br0 table=1,action=goto_table:2])
+
+# The error message here actually comes from ovs-ofctl, not from ovs-vswitchd,
+# but at least it's the same code in ofpacts_check() that issues the error.
+AT_CHECK([ovs-ofctl add-flow -O OpenFlow11 br0 table=1,action=goto_table:1],
+  [1], [],
+  [ovs-ofctl: actions are invalid with specified match (OFPBRC_BAD_TABLE_ID)
 ])
 OVS_VSWITCHD_STOP
 AT_CLEANUP
@@ -655,8 +861,9 @@ AT_CHECK([ovs-ofctl -O OpenFlow11 dump-flows br0 | ofctl_strip | sort], [0], [dn
 OFPST_FLOW reply (OF1.1):
 ])
 AT_CHECK([ovs-ofctl -O OpenFlow11 del-flows br0])
-AT_CHECK([ovs-ofctl -O OpenFlow11 dump-flows br0 | ofctl_strip | sort], [0], [dnl
+AT_CHECK([ovs-ofctl -O OpenFlow11 dump-flows br0 | ofctl_strip], [0], [dnl
 OFPST_FLOW reply (OF1.1):
+ cookie=0x2, table=1, in_port=2 actions=output:1
 ])
 OVS_VSWITCHD_STOP
 AT_CLEANUP

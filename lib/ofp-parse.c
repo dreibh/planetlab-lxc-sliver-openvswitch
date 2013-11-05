@@ -438,6 +438,42 @@ parse_dec_ttl(struct ofpbuf *b, char *arg)
     return NULL;
 }
 
+/* Parses 'arg' as the argument to a "set_mpls_label" action, and appends such
+ * an action to 'b'.
+ *
+ * Returns NULL if successful, otherwise a malloc()'d string describing the
+ * error.  The caller is responsible for freeing the returned string. */
+static char * WARN_UNUSED_RESULT
+parse_set_mpls_label(struct ofpbuf *b, const char *arg)
+{
+    struct ofpact_mpls_label *mpls_label = ofpact_put_SET_MPLS_LABEL(b);
+
+    if (*arg == '\0') {
+        return xstrdup("parse_set_mpls_label: expected label.");
+    }
+
+    mpls_label->label = htonl(atoi(arg));
+    return NULL;
+}
+
+/* Parses 'arg' as the argument to a "set_mpls_tc" action, and appends such an
+ * action to 'b'.
+ *
+ * Returns NULL if successful, otherwise a malloc()'d string describing the
+ * error.  The caller is responsible for freeing the returned string. */
+static char * WARN_UNUSED_RESULT
+parse_set_mpls_tc(struct ofpbuf *b, const char *arg)
+{
+    struct ofpact_mpls_tc *mpls_tc = ofpact_put_SET_MPLS_TC(b);
+
+    if (*arg == '\0') {
+        return xstrdup("parse_set_mpls_tc: expected tc.");
+    }
+
+    mpls_tc->tc = atoi(arg);
+    return NULL;
+}
+
 /* Parses 'arg' as the argument to a "set_mpls_ttl" action, and appends such an
  * action to 'ofpacts'.
  *
@@ -465,13 +501,12 @@ static char * WARN_UNUSED_RESULT
 set_field_parse__(char *arg, struct ofpbuf *ofpacts,
                   enum ofputil_protocol *usable_protocols)
 {
-    struct ofpact_reg_load *load = ofpact_put_REG_LOAD(ofpacts);
+    struct ofpact_set_field *sf = ofpact_put_SET_FIELD(ofpacts);
     char *value;
     char *delim;
     char *key;
     const struct mf_field *mf;
     char *error;
-    union mf_value mf_value;
 
     value = arg;
     delim = strstr(arg, "->");
@@ -490,16 +525,16 @@ set_field_parse__(char *arg, struct ofpbuf *ofpacts,
     if (!mf->writable) {
         return xasprintf("%s is read-only", key);
     }
-
+    sf->field = mf;
     delim[0] = '\0';
-    error = mf_parse_value(mf, value, &mf_value);
+    error = mf_parse_value(mf, value, &sf->value);
     if (error) {
         return error;
     }
-    if (!mf_is_value_valid(mf, &mf_value)) {
+
+    if (!mf_is_value_valid(mf, &sf->value)) {
         return xasprintf("%s is not a valid value for field %s", value, key);
     }
-    ofpact_set_field_init(load, mf, &mf_value);
 
     *usable_protocols &= mf->usable_protocols;
     return NULL;
@@ -599,6 +634,8 @@ parse_named_action(enum ofputil_action_code code,
 {
     size_t orig_size = ofpacts->size;
     struct ofpact_tunnel *tunnel;
+    struct ofpact_vlan_vid *vlan_vid;
+    struct ofpact_vlan_pcp *vlan_pcp;
     char *error = NULL;
     uint16_t ethertype = 0;
     uint16_t vid = 0;
@@ -624,7 +661,10 @@ parse_named_action(enum ofputil_action_code code,
         if (vid & ~VLAN_VID_MASK) {
             return xasprintf("%s: not a valid VLAN VID", arg);
         }
-        ofpact_put_SET_VLAN_VID(ofpacts)->vlan_vid = vid;
+        vlan_vid = ofpact_put_SET_VLAN_VID(ofpacts);
+        vlan_vid->vlan_vid = vid;
+        vlan_vid->ofpact.compat = code;
+        vlan_vid->push_vlan_if_needed = code == OFPUTIL_OFPAT10_SET_VLAN_VID;
         break;
 
     case OFPUTIL_OFPAT10_SET_VLAN_PCP:
@@ -637,7 +677,10 @@ parse_named_action(enum ofputil_action_code code,
         if (pcp & ~7) {
             return xasprintf("%s: not a valid VLAN PCP", arg);
         }
-        ofpact_put_SET_VLAN_PCP(ofpacts)->vlan_pcp = pcp;
+        vlan_pcp = ofpact_put_SET_VLAN_PCP(ofpacts);
+        vlan_pcp->vlan_pcp = pcp;
+        vlan_pcp->ofpact.compat = code;
+        vlan_pcp->push_vlan_if_needed = code == OFPUTIL_OFPAT10_SET_VLAN_PCP;
         break;
 
     case OFPUTIL_OFPAT12_SET_FIELD:
@@ -645,7 +688,7 @@ parse_named_action(enum ofputil_action_code code,
 
     case OFPUTIL_OFPAT10_STRIP_VLAN:
     case OFPUTIL_OFPAT11_POP_VLAN:
-        ofpact_put_STRIP_VLAN(ofpacts);
+        ofpact_put_STRIP_VLAN(ofpacts)->ofpact.compat = code;
         break;
 
     case OFPUTIL_OFPAT11_PUSH_VLAN:
@@ -802,6 +845,16 @@ parse_named_action(enum ofputil_action_code code,
 
     case OFPUTIL_NXAST_DEC_TTL:
         error = parse_dec_ttl(ofpacts, arg);
+        break;
+
+    case OFPUTIL_NXAST_SET_MPLS_LABEL:
+    case OFPUTIL_OFPAT11_SET_MPLS_LABEL:
+        error = parse_set_mpls_label(ofpacts, arg);
+        break;
+
+    case OFPUTIL_NXAST_SET_MPLS_TC:
+    case OFPUTIL_OFPAT11_SET_MPLS_TC:
+        error = parse_set_mpls_tc(ofpacts, arg);
         break;
 
     case OFPUTIL_NXAST_SET_MPLS_TTL:
@@ -1361,7 +1414,7 @@ parse_ofp_str__(struct ofputil_flow_mod *fm, int command, char *string,
             enum ofperr err;
 
             err = ofpacts_check(ofpacts.data, ofpacts.size, &fm->match.flow,
-                                OFPP_MAX, 0, true);
+                                true, OFPP_MAX, fm->table_id, 255);
             if (err) {
                 if (!enforce_consistency &&
                     err == OFPERR_OFPBAC_MATCH_INCONSISTENT) {
@@ -1370,7 +1423,8 @@ parse_ofp_str__(struct ofputil_flow_mod *fm, int command, char *string,
                     /* Try again, allowing for inconsistency.
                      * XXX: As a side effect, logging may be duplicated. */
                     err = ofpacts_check(ofpacts.data, ofpacts.size,
-                                        &fm->match.flow, OFPP_MAX, 0, false);
+                                        &fm->match.flow, false,
+                                        OFPP_MAX, fm->table_id, 255);
                 }
                 if (err) {
                     error = xasprintf("actions are invalid with specified match "
@@ -2278,7 +2332,12 @@ parse_ofp_group_mod_file(const char *file_name, uint16_t command,
         char *error;
 
         if (*n_gms >= allocated_gms) {
+            size_t i;
+
             *gms = x2nrealloc(*gms, &allocated_gms, sizeof **gms);
+            for (i = 0; i < *n_gms; i++) {
+                list_moved(&(*gms)[i].buckets);
+            }
         }
         error = parse_ofp_group_mod_str(&(*gms)[*n_gms], command, ds_cstr(&s),
                                         &usable);

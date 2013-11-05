@@ -60,20 +60,18 @@ u64 ovs_flow_used_time(unsigned long flow_jiffies)
 	return cur_ms - idle_ms;
 }
 
-#define TCP_FLAGS_OFFSET 13
-#define TCP_FLAG_MASK 0x3f
+#define TCP_FLAGS_BE16(tp) (*(__be16 *)&tcp_flag_word(tp) & htons(0x0FFF))
 
 void ovs_flow_stats_update(struct sw_flow *flow, struct sk_buff *skb)
 {
 	struct sw_flow_stats *stats = &flow->stats[smp_processor_id()];
-	u8 tcp_flags = 0;
+	__be16 tcp_flags = 0;
 
 	if ((flow->key.eth.type == htons(ETH_P_IP) ||
 	     flow->key.eth.type == htons(ETH_P_IPV6)) &&
 	    flow->key.ip.proto == IPPROTO_TCP &&
 	    likely(skb->len >= skb_transport_offset(skb) + sizeof(struct tcphdr))) {
-		u8 *tcp = (u8 *)tcp_hdr(skb);
-		tcp_flags = *(tcp + TCP_FLAGS_OFFSET) & TCP_FLAG_MASK;
+		tcp_flags = TCP_FLAGS_BE16(tcp_hdr(skb));
 	}
 
 	spin_lock(&stats->lock);
@@ -484,6 +482,7 @@ int ovs_flow_extract(struct sk_buff *skb, u16 in_port, struct sw_flow_key *key)
 				struct tcphdr *tcp = tcp_hdr(skb);
 				key->ipv4.tp.src = tcp->source;
 				key->ipv4.tp.dst = tcp->dest;
+				key->ipv4.tp.flags = TCP_FLAGS_BE16(tcp);
 			}
 		} else if (key->ip.proto == IPPROTO_UDP) {
 			if (udphdr_ok(skb)) {
@@ -552,6 +551,7 @@ int ovs_flow_extract(struct sk_buff *skb, u16 in_port, struct sw_flow_key *key)
 				struct tcphdr *tcp = tcp_hdr(skb);
 				key->ipv6.tp.src = tcp->source;
 				key->ipv6.tp.dst = tcp->dest;
+				key->ipv6.tp.flags = TCP_FLAGS_BE16(tcp);
 			}
 		} else if (key->ip.proto == NEXTHDR_UDP) {
 			if (udphdr_ok(skb)) {

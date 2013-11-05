@@ -198,10 +198,14 @@ enum ofpraw {
     /* OFPT 1.1+ (21): void. */
     OFPRAW_OFPT11_BARRIER_REPLY,
 
+    /* OFPT 1.0 (22): struct ofp10_queue_get_config_request. */
+    OFPRAW_OFPT10_QUEUE_GET_CONFIG_REQUEST,
     /* OFPT 1.1+ (22): struct ofp11_queue_get_config_request. */
     OFPRAW_OFPT11_QUEUE_GET_CONFIG_REQUEST,
 
-    /* OFPT 1.1+ (23): struct ofp11_queue_get_config_reply, struct ofp_packet_queue[]. */
+    /* OFPT 1.0 (23): struct ofp10_queue_get_config_reply, uint8_t[8][]. */
+    OFPRAW_OFPT10_QUEUE_GET_CONFIG_REPLY,
+    /* OFPT 1.1+ (23): struct ofp11_queue_get_config_reply, uint8_t[8][]. */
     OFPRAW_OFPT11_QUEUE_GET_CONFIG_REPLY,
 
     /* OFPT 1.2+ (24): struct ofp12_role_request. */
@@ -225,6 +229,9 @@ enum ofpraw {
 
     /* OFPT 1.3+ (29): struct ofp13_meter_mod, uint8_t[8][]. */
     OFPRAW_OFPT13_METER_MOD,
+
+    /* OFPT 1.4+ (30): struct ofp14_role_status, uint8_t[8][]. */
+    OFPRAW_OFPT14_ROLE_STATUS,
 
 /* Standard statistics. */
 
@@ -478,8 +485,10 @@ enum ofptype {
                                   * OFPRAW_OFPT11_BARRIER_REPLY. */
 
     /* Queue Configuration messages. */
-    OFPTYPE_QUEUE_GET_CONFIG_REQUEST, /* OFPRAW_OFPT11_QUEUE_GET_CONFIG_REQUEST. */
-    OFPTYPE_QUEUE_GET_CONFIG_REPLY, /* OFPRAW_OFPT11_QUEUE_GET_CONFIG_REPLY. */
+    OFPTYPE_QUEUE_GET_CONFIG_REQUEST, /* OFPRAW_OFPT10_QUEUE_GET_CONFIG_REQUEST.
+                                       * OFPRAW_OFPT11_QUEUE_GET_CONFIG_REQUEST. */
+    OFPTYPE_QUEUE_GET_CONFIG_REPLY, /* OFPRAW_OFPT10_QUEUE_GET_CONFIG_REPLY.
+                                     * OFPRAW_OFPT11_QUEUE_GET_CONFIG_REPLY. */
 
     /* Controller role change request messages. */
     OFPTYPE_ROLE_REQUEST,         /* OFPRAW_OFPT12_ROLE_REQUEST.
@@ -495,6 +504,9 @@ enum ofptype {
 
     /* Meters and rate limiters configuration messages. */
     OFPTYPE_METER_MOD,            /* OFPRAW_OFPT13_METER_MOD. */
+
+    /* Controller role change event messages. */
+    OFPTYPE_ROLE_STATUS,          /* OFPRAW_OFPT14_ROLE_STATUS. */
 
     /* Statistics. */
     OFPTYPE_DESC_STATS_REQUEST,      /* OFPRAW_OFPST_DESC_REQUEST. */

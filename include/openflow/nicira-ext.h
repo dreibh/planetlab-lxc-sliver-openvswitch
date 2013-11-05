@@ -312,6 +312,8 @@ enum nx_action_subtype {
     NXAST_STACK_PUSH,           /* struct nx_action_stack */
     NXAST_STACK_POP,            /* struct nx_action_stack */
     NXAST_SAMPLE,               /* struct nx_action_sample */
+    NXAST_SET_MPLS_LABEL,       /* struct nx_action_ttl */
+    NXAST_SET_MPLS_TC,          /* struct nx_action_ttl */
 };
 
 /* Header for Nicira-defined actions. */
@@ -492,6 +494,11 @@ OFP_ASSERT(sizeof(struct nx_action_pop_queue) == 16);
  *   - NXM_OF_TCP_DST
  *   - NXM_OF_UDP_SRC
  *   - NXM_OF_UDP_DST
+ *   - NXM_NX_ARP_SHA
+ *   - NXM_NX_ARP_THA
+ *   - NXM_OF_ARP_OP
+ *   - NXM_OF_ARP_SPA
+ *   - NXM_OF_ARP_TPA
  *     Modifying any of the above fields changes the corresponding packet
  *     header.
  *
@@ -1784,6 +1791,18 @@ OFP_ASSERT(sizeof(struct nx_action_output_reg) == 24);
 #define NXM_NX_PKT_MARK   NXM_HEADER  (0x0001, 33, 4)
 #define NXM_NX_PKT_MARK_W NXM_HEADER_W(0x0001, 33, 4)
 
+/* The flags in the TCP header.
+*
+* Prereqs:
+*   NXM_OF_ETH_TYPE must be either 0x0800 or 0x86dd.
+*   NXM_OF_IP_PROTO must match 6 exactly.
+*
+* Format: 16-bit integer with 4 most-significant bits forced to 0.
+*
+* Masking: Bits 0-11 fully maskable. */
+#define NXM_NX_TCP_FLAGS   NXM_HEADER  (0x0001, 34, 2)
+#define NXM_NX_TCP_FLAGS_W NXM_HEADER_W(0x0001, 34, 2)
+
 /* ## --------------------- ## */
 /* ## Requests and replies. ## */
 /* ## --------------------- ## */
@@ -2260,6 +2279,28 @@ struct nx_action_pop_mpls {
     uint8_t  pad[4];
 };
 OFP_ASSERT(sizeof(struct nx_action_pop_mpls) == 16);
+
+/* Action structure for NXAST_SET_MPLS_LABEL. */
+struct nx_action_mpls_label {
+    ovs_be16 type;                  /* OFPAT_VENDOR. */
+    ovs_be16 len;                   /* Length is 8. */
+    ovs_be32 vendor;                /* NX_VENDOR_ID. */
+    ovs_be16 subtype;               /* NXAST_SET_MPLS_LABEL. */
+    uint8_t  zeros[2];               /* Must be zero. */
+    ovs_be32 label;                 /* LABEL */
+};
+OFP_ASSERT(sizeof(struct nx_action_mpls_label) == 16);
+
+/* Action structure for NXAST_SET_MPLS_TC. */
+struct nx_action_mpls_tc {
+    ovs_be16 type;                  /* OFPAT_VENDOR. */
+    ovs_be16 len;                   /* Length is 8. */
+    ovs_be32 vendor;                /* NX_VENDOR_ID. */
+    ovs_be16 subtype;               /* NXAST_SET_MPLS_TC. */
+    uint8_t  tc;                    /* TC */
+    uint8_t  pad[5];
+};
+OFP_ASSERT(sizeof(struct nx_action_mpls_tc) == 16);
 
 /* Action structure for NXAST_SET_MPLS_TTL. */
 struct nx_action_mpls_ttl {

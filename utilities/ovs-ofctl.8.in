@@ -594,6 +594,7 @@ When \fBdl_type\fR is wildcarded or set to a value other than 0x0800,
 (see \fBFlow Syntax\fR above).
 .
 .IP \fBnw_proto=\fIproto\fR
+.IQ \fBip_proto=\fIproto\fR
 When \fBip\fR or \fBdl_type=0x0800\fR is specified, matches IP
 protocol type \fIproto\fR, which is specified as a decimal number
 between 0 and 255, inclusive (e.g. 1 to match ICMP packets or 6 to match
@@ -626,7 +627,16 @@ When \fBdl_type\fR is wildcarded or set to a value other than 0x0800 or
 0x86dd, the value of \fBnw_tos\fR is ignored (see \fBFlow Syntax\fR
 above).
 .
+.IP \fBip_dscp=\fIdscp\fR
+Matches IP ToS/DSCP or IPv6 traffic class field \fIdscp\fR, which is
+specified as a decimal number between 0 and 63, inclusive.
+.IP
+When \fBdl_type\fR is wildcarded or set to a value other than 0x0800 or
+0x86dd, the value of \fBip_dscp\fR is ignored (see \fBFlow Syntax\fR
+above).
+.
 .IP \fBnw_ecn=\fIecn\fR
+.IQ \fBip_ecn=\fIecn\fR
 Matches \fIecn\fR bits in IP ToS or IPv6 traffic class fields, which is
 specified as a decimal number between 0 and 3, inclusive.
 .IP
@@ -716,6 +726,40 @@ Like the exact-match forms of \fBtp_src\fR and \fBtp_dst\fR described
 above, the bitwise match forms apply only when \fBdl_type\fR and
 \fBnw_proto\fR specify TCP or UDP or SCTP.
 .
+.IP \fBtcp_flags=\fIflags\fB/\fImask\fR
+Bitwise match on TCP flags.  The \fIflags\fR and \fImask\fR are 16-bit
+numbers written in decimal or in hexadecimal prefixed by \fB0x\fR.
+Each 1-bit in \fImask\fR requires that the corresponding bit in
+\fIflags\fR must match.  Each 0-bit in \fImask\fR causes the corresponding
+bit to be ignored.
+.IP
+TCP protocol currently defines 9 flag bits, and additional 3 bits are
+reserved (must be transmitted as zero), see RFCs 793, 3168, and 3540.
+The flag bits are, numbering from the least significant bit:
+.RS
+.IP "\fB0: FIN\fR"
+No more data from sender.
+.IP "\fB1: SYN\fR"
+Synchronize sequence numbers.
+.IP "\fB2: RST\fR"
+Reset the connection.
+.IP "\fB3: PSH\fR"
+Push function.
+.IP "\fB4: ACK\fR"
+Acknowledgement field significant.
+.IP "\fB5: URG\fR"
+Urgent pointer field significant.
+.IP "\fB6: ECE\fR"
+ECN Echo.
+.IP "\fB7: CWR\fR"
+Congestion Windows Reduced.
+.IP "\fB8: NS\fR"
+Nonce Sum.
+.IP "\fB9-11:\fR"
+Reserved.
+.IP "\fB12-15:\fR"
+Not matchable, must be zero.
+.RE
 .IP \fBicmp_type=\fItype\fR
 .IQ \fBicmp_code=\fIcode\fR
 When \fBdl_type\fR and \fBnw_proto\fR specify ICMP or ICMPv6, \fItype\fR
@@ -726,23 +770,60 @@ When \fBdl_type\fR and \fBnw_proto\fR take other values, the values of
 these settings are ignored (see \fBFlow Syntax\fR above).
 .
 .IP \fBtable=\fInumber\fR
-If specified, limits the flow manipulation and flow dump commands to
-only apply to the table with the given \fInumber\fR between 0 and 254.
+For flow dump commands, limits the flows dumped to those in the table
+with the given \fInumber\fR between 0 and 254.  If not specified (or if
+255 is specified as \fInumber\fR), then flows in all tables are
+dumped.
 .
-Behavior varies if \fBtable\fR is not specified (equivalent to
-specifying 255 as \fInumber\fR).  For flow table
-modification commands without \fB\-\-strict\fR, the switch will choose
-the table for these commands to operate on.  For flow table
-modification commands with \fB\-\-strict\fR, the command will operate
-on any single matching flow in any table; it will do nothing if there
-are matches in more than one table.  The \fBdump-flows\fR and
-\fBdump-aggregate\fR commands will gather statistics about flows from
-all tables.
 .IP
-When this field is specified in \fBadd-flow\fR, \fBadd-flows\fR,
-\fBmod-flows\fR and \fBdel-flows\fR commands, it activates a Nicira
-extension to OpenFlow, which as of this writing is only known to be
-implemented by Open vSwitch.
+For flow table modification commands, behavior varies based on the
+OpenFlow version used to connect to the switch:
+.
+.RS
+.IP "OpenFlow 1.0"
+OpenFlow 1.0 does not support \fBtable\fR for modifying flows.
+\fBovs\-ofctl\fR will exit with an error if \fBtable\fR (other than
+\fBtable=255\fR) is specified for a switch that only supports OpenFlow
+1.0.
+.IP
+In OpenFlow 1.0, the switch chooses the table into which to insert a
+new flow.  The Open vSwitch software switch always chooses table 0.
+Other Open vSwitch datapaths and other OpenFlow implementations may
+choose different tables.
+.IP
+The OpenFlow 1.0 behavior in Open vSwitch for modifying or removing
+flows depends on whether \fB\-\-strict\fR is used.  Without
+\fB\-\-strict\fR, the command applies to matching flows in all tables.
+With \fB\-\-strict\fR, the command will operate on any single matching
+flow in any table; it will do nothing if there are matches in more
+than one table.  (The distinction between these behaviors only matters
+if non-OpenFlow 1.0 commands were also used, because OpenFlow 1.0
+alone cannot add flows with the same matching criteria to multiple
+tables.)
+.
+.IP "OpenFlow 1.0 with table_id extension"
+Open vSwitch implements an OpenFlow extension that allows the
+controller to specify the table on which to operate.  \fBovs\-ofctl\fR
+automatically enables the extension when \fBtable\fR is specified and
+OpenFlow 1.0 is used.  \fBovs\-ofctl\fR automatically detects whether
+the switch supports the extension.  As of this writing, this extension
+is only known to be implemented by Open vSwitch.
+.
+.IP
+With this extension, \fBovs\-ofctl\fR operates on the requested table
+when \fBtable\fR is specified, and acts as described for OpenFlow 1.0
+above when no \fBtable\fR is specified (or for \fBtable=255\fR).
+.
+.IP "OpenFlow 1.1"
+OpenFlow 1.1 requires flow table modification commands to specify a
+table.  When \fBtable\fR is not specified (or \fBtable=255\fR is
+specified), \fBovs\-ofctl\fR defaults to table 0.
+.
+.IP "OpenFlow 1.2 and later"
+OpenFlow 1.2 and later allow flow deletion commands, but not other
+flow table modification commands, to operate on all flow tables, with
+the behavior described above for OpenFlow 1.0.
+.RE
 .
 .IP \fBmetadata=\fIvalue\fR[\fB/\fImask\fR]
 Matches \fIvalue\fR either exactly or with optional \fImask\fR in the metadata
@@ -886,6 +967,7 @@ address option.  An address is specified as 6 pairs of hexadecimal
 digits delimited by colons.
 .
 .IP \fBtun_id=\fItunnel-id\fR[\fB/\fImask\fR]
+.IQ \fBtunnel_id=\fItunnel-id\fR[\fB/\fImask\fR]
 Matches tunnel identifier \fItunnel-id\fR.  Only packets that arrive
 over a tunnel that carries a key (e.g. GRE with the RFC 2890 key
 extension and a nonzero key value) will have a nonzero tunnel ID.
@@ -1947,6 +2029,5 @@ Prints the flow entries in the switch.
 .SH "SEE ALSO"
 .
 .BR ovs\-appctl (8),
-.BR ovs\-controller (8),
 .BR ovs\-vswitchd (8)
 .BR ovs\-vswitchd.conf.db (8)
