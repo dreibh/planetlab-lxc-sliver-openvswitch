@@ -56,6 +56,16 @@ AC_DEFUN([OVS_CHECK_ESX],
       AC_DEFINE([ESX], [1], [Define to 1 if building on ESX.])
    fi])
 
+dnl Checks for WINDOWS.
+AC_DEFUN([OVS_CHECK_WIN32],
+  [AC_CHECK_HEADER([windows.h],
+                   [WIN32=yes],
+                   [WIN32=no])
+   AM_CONDITIONAL([WIN32], [test "$WIN32" = yes])
+   if test "$WIN32" = yes; then
+      AC_DEFINE([WIN32], [1], [Define to 1 if building on WIN32.])
+   fi])
+
 dnl Checks for Netlink support.
 AC_DEFUN([OVS_CHECK_NETLINK],
   [AC_CHECK_HEADER([linux/netlink.h],
@@ -195,7 +205,7 @@ AC_DEFUN([OVS_CHECK_PYTHON],
           for dir in $PATH; do
             IFS=$ovs_save_IFS
             test -z "$dir" && dir=.
-            if test -x $dir/$binary && $dir/$binary -c 'import sys
+            if test -x "$dir"/"$binary" && "$dir"/"$binary" -c 'import sys
 if sys.hexversion >= 0x02040000 and sys.hexversion < 0x03000000:
     sys.exit(0)
 else:

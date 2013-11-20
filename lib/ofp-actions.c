@@ -697,7 +697,6 @@ ofpacts_pull_openflow_actions(struct ofpbuf *openflow,
                               unsigned int actions_len,
                               enum ofp_version version,
                               struct ofpbuf *ofpacts) {
-    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
     const union ofp_action *actions;
     enum ofperr error;
 
@@ -1738,7 +1737,6 @@ ofpacts_pull_openflow_instructions(struct ofpbuf *openflow,
                                    enum ofp_version version,
                                    struct ofpbuf *ofpacts)
 {
-    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
     const struct ofp11_instruction *instructions;
     const struct ofp11_instruction *insts[N_OVS_INSTRUCTIONS];
     enum ofperr error;
@@ -1869,7 +1867,8 @@ ofpact_check_output_port(ofp_port_t port, ofp_port_t max_ports)
     }
 }
 
-/* May modify flow->dl_type and flow->vlan_tci, caller must restore them.
+/* May modify flow->dl_type, flow->nw_proto and flow->vlan_tci,
+ * caller must restore them.
  *
  * Modifies some actions, filling in fields that could not be properly set
  * without context. */
@@ -2056,6 +2055,10 @@ ofpact_check__(struct ofpact *a, struct flow *flow,
 
     case OFPACT_PUSH_MPLS:
         flow->dl_type = ofpact_get_PUSH_MPLS(a)->ethertype;
+        /* The packet is now MPLS and the MPLS payload is opaque.
+         * Thus nothing can be assumed about the network protocol.
+         * Temporarily mark that we have no nw_proto. */
+        flow->nw_proto = 0;
         return 0;
 
     case OFPACT_POP_MPLS:
@@ -2127,6 +2130,7 @@ ofpacts_check(struct ofpact ofpacts[], size_t ofpacts_len,
     struct ofpact *a;
     ovs_be16 dl_type = flow->dl_type;
     ovs_be16 vlan_tci = flow->vlan_tci;
+    uint8_t nw_proto = flow->nw_proto;
     enum ofperr error = 0;
 
     OFPACT_FOR_EACH (a, ofpacts, ofpacts_len) {
@@ -2139,6 +2143,7 @@ ofpacts_check(struct ofpact ofpacts[], size_t ofpacts_len,
     /* Restore fields that may have been modified. */
     flow->dl_type = dl_type;
     flow->vlan_tci = vlan_tci;
+    flow->nw_proto = nw_proto;
     return error;
 }
 
@@ -2150,14 +2155,15 @@ ofpacts_verify(const struct ofpact ofpacts[], size_t ofpacts_len)
     const struct ofpact *a;
     enum ovs_instruction_type inst;
 
-    inst = OVSINST_OFPIT11_APPLY_ACTIONS;
+    inst = OVSINST_OFPIT13_METER;
     OFPACT_FOR_EACH (a, ofpacts, ofpacts_len) {
         enum ovs_instruction_type next;
 
         next = ovs_instruction_type_from_ofpact_type(a->type);
-        if (inst == OVSINST_OFPIT11_APPLY_ACTIONS
-            ? next < inst
-            : next <= inst) {
+        if (a > ofpacts
+            && (inst == OVSINST_OFPIT11_APPLY_ACTIONS
+                ? next < inst
+                : next <= inst)) {
             const char *name = ovs_instruction_name_from_type(inst);
             const char *next_name = ovs_instruction_name_from_type(next);
 
@@ -3280,7 +3286,7 @@ ofpact_format(const struct ofpact *a, struct ds *s)
         enqueue = ofpact_get_ENQUEUE(a);
         ds_put_format(s, "enqueue:");
         ofputil_format_port(enqueue->port, s);
-        ds_put_format(s, "q%"PRIu32, enqueue->queue);
+        ds_put_format(s, ":%"PRIu32, enqueue->queue);
         break;
 
     case OFPACT_OUTPUT_REG:

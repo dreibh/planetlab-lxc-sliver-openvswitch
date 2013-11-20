@@ -382,7 +382,8 @@ between a switch and its controller.
 When a switch has more than one controller configured, only the
 traffic to and from a single controller is output.  If none of the
 controllers is configured as a master or a slave (using a Nicira
-extension to OpenFlow), then a controller is chosen arbitrarily among
+extension to OpenFlow 1.0 or 1.1, or a standard request in OpenFlow
+1.2 or later), then a controller is chosen arbitrarily among
 them.  If there is a master controller, it is chosen; otherwise, if
 there are any controllers that are not masters or slaves, one is
 chosen arbitrarily; otherwise, a slave controller is chosen
@@ -922,12 +923,32 @@ The \fBip_frag\fR match type is likely to be most useful in
 \fBnx\-match\fR mode.  See the description of the \fBset\-frags\fR
 command, above, for more details.
 .
+.IP \fBarp_spa=\fIip\fR[\fB/\fInetmask\fR]
+.IQ \fBarp_tpa=\fIip\fR[\fB/\fInetmask\fR]
+When \fBdl_type\fR specifies either ARP or RARP, \fBarp_spa\fR and
+\fBarp_tha\fR match the source and target IPv4 address, respectively.
+An address may be specified as an IP address or host name
+(e.g. \fB192.168.1.1\fR or \fBwww.example.com\fR).  The optional
+\fInetmask\fR allows restricting a match to an IPv4 address prefix.
+The netmask may be specified as a dotted quad
+(e.g. \fB192.168.1.0/255.255.255.0\fR) or as a CIDR block
+(e.g. \fB192.168.1.0/24\fR).
+.
 .IP \fBarp_sha=\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fR
 .IQ \fBarp_tha=\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fR
 When \fBdl_type\fR specifies either ARP or RARP, \fBarp_sha\fR and
 \fBarp_tha\fR match the source and target hardware address, respectively.  An
-address is specified as 6 pairs of hexadecimal digits delimited by colons.
+address is specified as 6 pairs of hexadecimal digits delimited by colons
+(e.g. \fB00:0A:E4:25:6B:B0\fR).
 .
+.IP \fBarp_sha=\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB/\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fR
+.IQ \fBarp_tha=\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB/\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fB:\fIxx\fR
+When \fBdl_type\fR specifies either ARP or RARP, \fBarp_sha\fR and
+\fBarp_tha\fR match the source and target hardware address, respectively.  An
+address is specified as 6 pairs of hexadecimal digits delimited by colons
+(e.g. \fB00:0A:E4:25:6B:B0\fR), with a wildcard mask following the slash.
+.
+
 .IP \fBipv6_src=\fIipv6\fR[\fB/\fInetmask\fR]
 .IQ \fBipv6_dst=\fIipv6\fR[\fB/\fInetmask\fR]
 When \fBdl_type\fR is 0x86dd (possibly via shorthand, e.g., \fBipv6\fR
@@ -965,6 +986,30 @@ When \fBdl_type\fR, \fBnw_proto\fR, and \fBicmp_type\fR specify IPv6
 Neighbor Advertisement (ICMPv6 type 136), matches the target link\-layer
 address option.  An address is specified as 6 pairs of hexadecimal
 digits delimited by colons.
+.
+.IP \fBmpls_bos=\fIbos\fR
+When \fBdl_type\fR is 0x8847 or 0x8848 (possibly via shorthand e.g.,
+\fBmpls\fR or \fBmplsm\fR), matches the bottom-of-stack bit of the
+outer-most MPLS label stack entry. Valid values are 0 and 1.
+.IP
+If 1 then for a packet with a well-formed MPLS label stack the
+bottom-of-stack bit indicates that the outer label stack entry is also
+the inner-most label stack entry and thus that is that there is only one
+label stack entry present.  Conversely, if 0 then for a packet with a
+well-formed MPLS label stack the bottom-of-stack bit indicates that the
+outer label stack entry is not the inner-most label stack entry and
+thus there is more than one label stack entry present.
+.
+.IP \fBmpls_label=\fIlabel\fR
+When \fBdl_type\fR is 0x8847 or 0x8848 (possibly via shorthand e.g.,
+\fBmpls\fR or \fBmplsm\fR), matches the label of the outer
+MPLS label stack entry. The label is a 20-bit value that is decimal by default;
+use a \fB0x\fR prefix to specify them in hexadecimal.
+.
+.IP \fBmpls_tc=\fItc\fR
+When \fBdl_type\fR is 0x8847 or 0x8848 (possibly via shorthand e.g.,
+\fBmpls\fR or \fBmplsm\fR), matches the traffic-class of the outer
+MPLS label stack entry. Valid values are between 0 (lowest) and 7 (highest).
 .
 .IP \fBtun_id=\fItunnel-id\fR[\fB/\fImask\fR]
 .IQ \fBtunnel_id=\fItunnel-id\fR[\fB/\fImask\fR]
@@ -1035,31 +1080,28 @@ command to be used as input for other commands that parse flows.
 The \fBadd\-flow\fR, \fBadd\-flows\fR, and \fBmod\-flows\fR commands
 require an additional field, which must be the final field specified:
 .
-.IP \fBactions=\fR[\fItarget\fR][\fB,\fItarget\fR...]\fR
+.IP \fBactions=\fR[\fIaction\fR][\fB,\fIaction\fR...]\fR
 Specifies a comma-separated list of actions to take on a packet when the 
-flow entry matches.  If no \fItarget\fR is specified, then packets
-matching the flow are dropped.  The \fItarget\fR may be an OpenFlow port 
-number designating the physical port on which to output the packet, or one 
-of the following keywords:
+flow entry matches.  If no \fIaction\fR is specified, then packets
+matching the flow are dropped.  The following forms of \fIaction\fR
+are supported:
 .
 .RS
-.IP \fBoutput:\fIport\fR
-Outputs the packet to \fIport\fR, which must be an OpenFlow port
-number or keyword (e.g. \fBLOCAL\fR).
+.IP \fIport\fR
+.IQ \fBoutput:\fIport\fR
+Outputs the packet to OpenFlow port number \fIport\fR.  If \fIport\fR
+is the packet's input port, the packet is not output.
 .
 .IP \fBoutput:\fIsrc\fB[\fIstart\fB..\fIend\fB]
 Outputs the packet to the OpenFlow port number read from \fIsrc\fR,
 which must be an NXM field as described above.  For example,
 \fBoutput:NXM_NX_REG0[16..31]\fR outputs to the OpenFlow port number
-written in the upper half of register 0.  This form of \fBoutput\fR
-uses an OpenFlow extension that is not supported by standard OpenFlow
-switches.
-.
-.IP \fBenqueue:\fIport\fB:\fIqueue\fR
-Enqueues the packet on the specified \fIqueue\fR within port
-\fIport\fR, which must be an OpenFlow port number or keyword
-(e.g. \fBLOCAL\fR)..  The number of supported queues depends on the
-switch; some OpenFlow implementations do not support queuing at all.
+written in the upper half of register 0.  If the port number is the
+packet's input port, the packet is not output.
+.IP
+This form of \fBoutput\fR was added in Open vSwitch 1.3.0.  This form
+of \fBoutput\fR uses an OpenFlow extension that is not supported by
+standard OpenFlow switches.
 .
 .IP \fBnormal\fR
 Subjects the packet to the device's normal L2/L3 processing.  (This
@@ -1074,6 +1116,13 @@ tree protocol).
 .IP \fBall\fR
 Outputs the packet on all switch physical ports other than the port on
 which it was received.
+.
+.IP \fBlocal\fR
+Outputs the packet on the ``local port,'' which corresponds to the
+network device that has the same name as the bridge.
+.
+.IP \fBin_port\fR
+Outputs the packet on the port from which it was received.
 .
 .IP \fBcontroller(\fIkey\fB=\fIvalue\fR...\fB)
 Sends the packet to the OpenFlow controller as a ``packet in''
@@ -1095,6 +1144,7 @@ controller connection will only have a nonzero connection ID if its
 controller uses the \fBNXT_SET_CONTROLLER_ID\fR Nicira extension to
 OpenFlow.
 .RE
+.IP
 Any \fIreason\fR other than \fBaction\fR and any nonzero
 \fIcontroller-id\fR uses a Nicira vendor extension that, as of this
 writing, is only known to be implemented by Open vSwitch (version 1.6
@@ -1105,12 +1155,11 @@ or later).
 Shorthand for \fBcontroller()\fR or
 \fBcontroller(max_len=\fInbytes\fB)\fR, respectively.
 .
-.IP \fBlocal\fR
-Outputs the packet on the ``local port,'' which corresponds to the
-network device that has the same name as the bridge.
-.
-.IP \fBin_port\fR
-Outputs the packet on the port from which it was received.
+.IP \fBenqueue(\fIport\fB,\fIqueue\fB)\fR
+Enqueues the packet on the specified \fIqueue\fR within port
+\fIport\fR, which must be an OpenFlow port number or keyword
+(e.g. \fBLOCAL\fR).  The number of supported queues depends on the
+switch; some OpenFlow implementations do not support queuing at all.
 .
 .IP \fBdrop\fR
 Discards the packet, so no further processing or forwarding takes place.
@@ -1252,6 +1301,15 @@ invalid ttl packets.  If controller ids are not specified, the
 ``packet_in'' message will be sent only to the controllers having
 controller id zero which have registered for the invalid ttl packets.
 .
+.IP \fBset_mpls_label\fR:\fIlabel\fR
+Set the label of the outer MPLS label stack entry of a packet.
+\fIlabel\fR should be a 20-bit value that is decimal by default;
+use a \fB0x\fR prefix to specify them in hexadecimal.
+.
+.IP \fBset_mpls_tc\fR:\fItc\fR
+Set the traffic-class of the outer MPLS label stack entry of a packet.
+\fItc\fR should be a in the range 0 to 7 inclusive.
+.
 .IP \fBset_mpls_ttl\fR:\fIttl\fR
 Set the TTL of the outer MPLS label stack entry of a packet.
 \fIttl\fR should be in the range 0 to 255 inclusive.
@@ -1318,7 +1376,7 @@ value just popped.
 Writes the literal \fIvalue\fR into the field \fIdst\fR, which should
 be specified as a name used for matching.  (This is similar to
 \fBload\fR but more closely matches the set-field action defined in
-Open Flow 1.2 and above.)
+OpenFlow 1.2 and above.)
 .
 .IP
 Example: \fBset_field:00:11:22:33:44:55->eth_src\fR.

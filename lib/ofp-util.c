@@ -84,7 +84,7 @@ ofputil_netmask_to_wcbits(ovs_be32 netmask)
 void
 ofputil_wildcard_from_ofpfw10(uint32_t ofpfw, struct flow_wildcards *wc)
 {
-    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 22);
+    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 23);
 
     /* Initialize most of wc. */
     flow_wildcards_init_catchall(wc);
@@ -1542,10 +1542,10 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
 
         /* Get table ID.
          *
-         * OF1.1 entirely forbids table_id == 255.
-         * OF1.2+ allows table_id == 255 only for deletes. */
+         * OF1.1 entirely forbids table_id == OFPTT_ALL.
+         * OF1.2+ allows table_id == OFPTT_ALL only for deletes. */
         fm->table_id = ofm->table_id;
-        if (fm->table_id == 255
+        if (fm->table_id == OFPTT_ALL
             && (oh->version == OFP11_VERSION
                 || (ofm->command != OFPFC_DELETE &&
                     ofm->command != OFPFC_DELETE_STRICT))) {
@@ -1698,6 +1698,9 @@ ofputil_pull_bands(struct ofpbuf *msg, size_t len, uint16_t *n_bands,
         }
         mb = ofpbuf_put_uninit(bands, sizeof *mb);
         mb->type = ntohs(ombh->type);
+        if (mb->type != OFPMBT13_DROP && mb->type != OFPMBT13_DSCP_REMARK) {
+            return OFPERR_OFPMMFC_BAD_BAND;
+        }
         mb->rate = ntohl(ombh->rate);
         mb->burst_size = ntohl(ombh->burst_size);
         mb->prec_level = (mb->type == OFPMBT13_DSCP_REMARK) ?
@@ -1728,6 +1731,11 @@ ofputil_decode_meter_mod(const struct ofp_header *oh,
 
     /* Translate the message. */
     mm->command = ntohs(omm->command);
+    if (mm->command != OFPMC13_ADD &&
+        mm->command != OFPMC13_MODIFY &&
+        mm->command != OFPMC13_DELETE) {
+        return OFPERR_OFPMMFC_BAD_COMMAND;
+    }
     mm->meter.meter_id = ntohl(omm->meter_id);
 
     if (mm->command == OFPMC13_DELETE) {
@@ -1738,6 +1746,10 @@ ofputil_decode_meter_mod(const struct ofp_header *oh,
         enum ofperr error;
 
         mm->meter.flags = ntohs(omm->flags);
+        if (mm->meter.flags & OFPMF13_KBPS &&
+            mm->meter.flags & OFPMF13_PKTPS) {
+            return OFPERR_OFPMMFC_BAD_FLAGS;
+        }
         mm->meter.bands = bands->data;
 
         error = ofputil_pull_bands(&b, b.size, &mm->meter.n_bands, bands);
@@ -2081,7 +2093,7 @@ ofputil_encode_flow_mod(const struct ofputil_flow_mod *fm,
             ofm->cookie = fm->cookie;
         }
         ofm->cookie_mask = fm->cookie_mask;
-        if (fm->table_id != 255
+        if (fm->table_id != OFPTT_ALL
             || (protocol != OFPUTIL_P_OF11_STD
                 && (fm->command == OFPFC_DELETE ||
                     fm->command == OFPFC_DELETE_STRICT))) {

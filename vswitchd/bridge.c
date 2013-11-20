@@ -3302,8 +3302,8 @@ port_configure_lacp(struct port *port, struct lacp_settings *s)
 
     system_id = smap_get(&port->cfg->other_config, "lacp-system-id");
     if (system_id) {
-        if (sscanf(system_id, ETH_ADDR_SCAN_FMT,
-                   ETH_ADDR_SCAN_ARGS(s->id)) != ETH_ADDR_SCAN_COUNT) {
+        if (!ovs_scan(system_id, ETH_ADDR_SCAN_FMT,
+                      ETH_ADDR_SCAN_ARGS(s->id))) {
             VLOG_WARN("port %s: LACP system ID (%s) must be an Ethernet"
                       " address.", port->name, system_id);
             return NULL;
@@ -3326,6 +3326,10 @@ port_configure_lacp(struct port *port, struct lacp_settings *s)
 
     lacp_time = smap_get(&port->cfg->other_config, "lacp-time");
     s->fast = lacp_time && !strcasecmp(lacp_time, "fast");
+
+    s->fallback_ab_cfg = smap_get_bool(&port->cfg->other_config,
+                                       "lacp-fallback-ab", false);
+
     return s;
 }
 
@@ -3413,6 +3417,9 @@ port_configure_bond(struct port *port, struct bond_settings *s)
     }
 
     s->fake_iface = port->cfg->bond_fake_iface;
+
+    s->lacp_fallback_ab_cfg = smap_get_bool(&port->cfg->other_config,
+                                       "lacp-fallback-ab", false);
 
     LIST_FOR_EACH (iface, port_elem, &port->ifaces) {
         netdev_set_miimon_interval(iface->netdev, miimon_interval);

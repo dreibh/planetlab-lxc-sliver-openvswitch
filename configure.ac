@@ -48,6 +48,7 @@ AC_SEARCH_LIBS([pthread_sigmask], [pthread])
 AC_FUNC_STRERROR_R
 
 OVS_CHECK_ESX
+OVS_CHECK_WIN32
 OVS_CHECK_COVERAGE
 OVS_CHECK_NDEBUG
 OVS_CHECK_NETLINK
@@ -116,12 +117,12 @@ AC_ARG_VAR(KARCH, [Kernel Architecture String])
 AC_SUBST(KARCH)
 OVS_CHECK_LINUX
 
-AC_CONFIG_FILES([Makefile 
-datapath/Makefile 
-datapath/linux/Kbuild
-datapath/linux/Makefile
-datapath/linux/Makefile.main
-tests/atlocal])
+AC_CONFIG_FILES(Makefile)
+AC_CONFIG_FILES(datapath/Makefile)
+AC_CONFIG_FILES(datapath/linux/Kbuild)
+AC_CONFIG_FILES(datapath/linux/Makefile)
+AC_CONFIG_FILES(datapath/linux/Makefile.main)
+AC_CONFIG_FILES(tests/atlocal)
 
 dnl This makes sure that include/openflow gets created in the build directory.
 AC_CONFIG_COMMANDS([include/openflow/openflow.h.stamp])

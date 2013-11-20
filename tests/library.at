@@ -114,12 +114,13 @@ m4_foreach(
   [[ctz],
    [round_up_pow2],
    [round_down_pow2],
-   [popcount],
+   [count_1bits],
    [log_2_floor],
    [bitwise_copy],
    [bitwise_zero],
    [bitwise_one],
-   [bitwise_is_all_zeros]],
+   [bitwise_is_all_zeros],
+   [ovs_scan]],
   [AT_SETUP([testname[()] function])
    AT_KEYWORDS([testname])
    AT_CHECK([test-util testname], [0], [], [])

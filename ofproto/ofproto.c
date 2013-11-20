@@ -1772,12 +1772,18 @@ ofproto_port_add(struct ofproto *ofproto, struct netdev *netdev,
         update_port(ofproto, netdev_name);
     }
     if (ofp_portp) {
-        struct ofproto_port ofproto_port;
+        *ofp_portp = OFPP_NONE;
+        if (!error) {
+            struct ofproto_port ofproto_port;
 
-        ofproto_port_query_by_name(ofproto, netdev_get_name(netdev),
-                                   &ofproto_port);
-        *ofp_portp = error ? OFPP_NONE : ofproto_port.ofp_port;
-        ofproto_port_destroy(&ofproto_port);
+            error = ofproto_port_query_by_name(ofproto,
+                                               netdev_get_name(netdev),
+                                               &ofproto_port);
+            if (!error) {
+                *ofp_portp = ofproto_port.ofp_port;
+                ofproto_port_destroy(&ofproto_port);
+            }
+        }
     }
     return error;
 }
@@ -2004,9 +2010,13 @@ alloc_ofp_port(struct ofproto *ofproto, const char *netdev_name)
 
         /* Search for a free OpenFlow port number.  We try not to
          * immediately reuse them to prevent problems due to old
-         * flows. */
+         * flows.
+         *
+         * We limit the automatically assigned port numbers to the lower half
+         * of the port range, to reserve the upper half for assignment by
+         * controllers. */
         for (;;) {
-            if (++ofproto->alloc_port_no >= ofproto->max_ports) {
+            if (++ofproto->alloc_port_no >= MIN(ofproto->max_ports, 32768)) {
                 ofproto->alloc_port_no = 1;
             }
             last_used_at = ofport_get_usage(ofproto,
@@ -6614,7 +6624,7 @@ static void
 oftable_init(struct oftable *table)
 {
     memset(table, 0, sizeof *table);
-    classifier_init(&table->cls);
+    classifier_init(&table->cls, flow_segment_u32s);
     table->max_flows = UINT_MAX;
 }
 

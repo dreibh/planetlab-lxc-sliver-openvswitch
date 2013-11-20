@@ -332,6 +332,7 @@ struct ofport_dpif {
     struct bfd *bfd;            /* BFD, if any. */
     bool may_enable;            /* May be enabled in bonds. */
     bool is_tunnel;             /* This port is a tunnel. */
+    bool is_layer3;             /* This is a layer 3 port. */
     long long int carrier_seq;  /* Carrier status changes. */
     struct ofport_dpif *peer;   /* Peer if patch port. */
 
@@ -537,7 +538,9 @@ ofproto_dpif_cast(const struct ofproto *ofproto)
 static struct ofport_dpif *get_ofp_port(const struct ofproto_dpif *ofproto,
                                         ofp_port_t ofp_port);
 static void ofproto_trace(struct ofproto_dpif *, const struct flow *,
-                          const struct ofpbuf *packet, struct ds *);
+                          const struct ofpbuf *packet,
+                          const struct ofpact[], size_t ofpacts_len,
+                          struct ds *);
 
 /* Upcalls. */
 static void handle_upcalls(struct dpif_backer *);
@@ -1233,16 +1236,12 @@ construct(struct ofproto *ofproto_)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
     struct shash_node *node, *next;
-    uint32_t max_ports;
     int error;
 
     error = open_dpif_backer(ofproto->up.type, &ofproto->backer);
     if (error) {
         return error;
     }
-
-    max_ports = dpif_get_max_ports(ofproto->backer->dpif);
-    ofproto_init_max_ports(ofproto_, MIN(max_ports, ofp_to_u16(OFPP_MAX)));
 
     ofproto->netflow = NULL;
     ofproto->sflow = NULL;
@@ -1255,7 +1254,7 @@ construct(struct ofproto *ofproto_)
     ovs_mutex_init(&ofproto->stats_mutex);
     ovs_mutex_init(&ofproto->vsp_mutex);
 
-    classifier_init(&ofproto->facets);
+    classifier_init(&ofproto->facets, NULL);
     ofproto->consistency_rl = LLONG_MIN;
 
     guarded_list_init(&ofproto->pins);
@@ -1710,6 +1709,7 @@ port_construct(struct ofport *port_)
     port->realdev_ofp_port = 0;
     port->vlandev_vid = 0;
     port->carrier_seq = netdev_get_carrier_resets(netdev);
+    port->is_layer3 = netdev_vport_is_layer3(netdev);
 
     if (netdev_vport_is_patch(netdev)) {
         /* By bailing out here, we don't submit the port to the sFlow module
@@ -2307,6 +2307,7 @@ bundle_update(struct ofbundle *bundle)
     bundle->floodable = true;
     LIST_FOR_EACH (port, bundle_node, &bundle->ports) {
         if (port->up.pp.config & OFPUTIL_PC_NO_FLOOD
+            || port->is_layer3
             || !stp_forward_in_state(port->stp_state)) {
             bundle->floodable = false;
             break;
@@ -2354,6 +2355,7 @@ bundle_add_port(struct ofbundle *bundle, ofp_port_t ofp_port,
         port->bundle = bundle;
         list_push_back(&bundle->ports, &port->bundle_node);
         if (port->up.pp.config & OFPUTIL_PC_NO_FLOOD
+            || port->is_layer3
             || !stp_forward_in_state(port->stp_state)) {
             bundle->floodable = false;
         }
@@ -5280,37 +5282,39 @@ trace_report(struct xlate_in *xin, const char *s, int recurse)
     ds_put_char(result, '\n');
 }
 
-static void
-ofproto_unixctl_trace(struct unixctl_conn *conn, int argc, const char *argv[],
-                      void *aux OVS_UNUSED)
+/* Parses the 'argc' elements of 'argv', ignoring argv[0].  The following
+ * forms are supported:
+ *
+ *     - [dpname] odp_flow [-generate | packet]
+ *     - bridge br_flow [-generate | packet]
+ *
+ * On success, initializes '*ofprotop' and 'flow' and returns NULL.  On failure
+ * returns a nonnull error message. */
+static const char *
+parse_flow_and_packet(int argc, const char *argv[],
+                      struct ofproto_dpif **ofprotop, struct flow *flow,
+                      struct ofpbuf **packetp)
 {
     const struct dpif_backer *backer = NULL;
-    struct ofproto_dpif *ofproto;
-    struct ofpbuf odp_key, odp_mask;
+    const char *error = NULL;
+    struct simap port_names = SIMAP_INITIALIZER(&port_names);
     struct ofpbuf *packet;
-    struct ds result;
-    struct flow flow;
-    struct simap port_names;
-    char *s;
+    struct ofpbuf odp_key;
+    struct ofpbuf odp_mask;
 
-    packet = NULL;
-    backer = NULL;
-    ds_init(&result);
     ofpbuf_init(&odp_key, 0);
     ofpbuf_init(&odp_mask, 0);
-    simap_init(&port_names);
 
     /* Handle "-generate" or a hex string as the last argument. */
     if (!strcmp(argv[argc - 1], "-generate")) {
         packet = ofpbuf_new(0);
         argc--;
     } else {
-        const char *error = eth_from_hex(argv[argc - 1], &packet);
+        error = eth_from_hex(argv[argc - 1], &packet);
         if (!error) {
             argc--;
         } else if (argc == 4) {
             /* The 3-argument form must end in "-generate' or a hex string. */
-            unixctl_command_reply_error(conn, error);
             goto exit;
         }
     }
@@ -5327,12 +5331,15 @@ ofproto_unixctl_trace(struct unixctl_conn *conn, int argc, const char *argv[],
             dp_type = argv[1];
         }
         backer = shash_find_data(&all_dpif_backers, dp_type);
-    } else {
+    } else if (argc == 2) {
         struct shash_node *node;
         if (shash_count(&all_dpif_backers) == 1) {
             node = shash_first(&all_dpif_backers);
             backer = node->data;
         }
+    } else {
+        error = "Syntax error";
+        goto exit;
     }
     if (backer && backer->dpif) {
         struct dpif_port dpif_port;
@@ -5347,91 +5354,207 @@ ofproto_unixctl_trace(struct unixctl_conn *conn, int argc, const char *argv[],
      * bridge is specified. If function odp_flow_key_from_string()
      * returns 0, the flow is a odp_flow. If function
      * parse_ofp_exact_flow() returns 0, the flow is a br_flow. */
-    if (!odp_flow_from_string(argv[argc - 1], &port_names, &odp_key, &odp_mask)) {
+    if (!odp_flow_from_string(argv[argc - 1], &port_names,
+                              &odp_key, &odp_mask)) {
         if (!backer) {
-            unixctl_command_reply_error(conn, "Cannot find the datapath");
+            error = "Cannot find the datapath";
             goto exit;
         }
 
-        if (xlate_receive(backer, NULL, odp_key.data, odp_key.size, &flow,
-                          NULL, &ofproto, NULL)) {
-            unixctl_command_reply_error(conn, "Invalid datapath flow");
+        if (xlate_receive(backer, NULL, odp_key.data, odp_key.size, flow,
+                          NULL, ofprotop, NULL)) {
+            error = "Invalid datapath flow";
             goto exit;
         }
-        ds_put_format(&result, "Bridge: %s\n", ofproto->up.name);
-    } else if (!parse_ofp_exact_flow(&flow, NULL, argv[argc - 1], NULL)) {
+    } else if (!parse_ofp_exact_flow(flow, NULL, argv[argc - 1], NULL)) {
         if (argc != 3) {
-            unixctl_command_reply_error(conn, "Must specify bridge name");
+            error = "Must specify bridge name";
             goto exit;
         }
 
-        ofproto = ofproto_dpif_lookup(argv[1]);
-        if (!ofproto) {
-            unixctl_command_reply_error(conn, "Unknown bridge name");
+        *ofprotop = ofproto_dpif_lookup(argv[1]);
+        if (!*ofprotop) {
+            error = "Unknown bridge name";
             goto exit;
         }
     } else {
-        unixctl_command_reply_error(conn, "Bad flow syntax");
+        error = "Bad flow syntax";
         goto exit;
     }
 
     /* Generate a packet, if requested. */
     if (packet) {
         if (!packet->size) {
-            flow_compose(packet, &flow);
+            flow_compose(packet, flow);
         } else {
-            union flow_in_port in_port_;
-
-            in_port_ = flow.in_port;
-            ds_put_cstr(&result, "Packet: ");
-            s = ofp_packet_to_string(packet->data, packet->size);
-            ds_put_cstr(&result, s);
-            free(s);
+            union flow_in_port in_port = flow->in_port;
 
             /* Use the metadata from the flow and the packet argument
              * to reconstruct the flow. */
-            flow_extract(packet, flow.skb_priority, flow.pkt_mark, NULL,
-                         &in_port_, &flow);
+            flow_extract(packet, flow->skb_priority, flow->pkt_mark, NULL,
+                         &in_port, flow);
         }
     }
 
-    ofproto_trace(ofproto, &flow, packet, &result);
+    error = NULL;
+
+exit:
+    if (error) {
+        ofpbuf_delete(packet);
+        packet = NULL;
+    }
+    *packetp = packet;
+    ofpbuf_uninit(&odp_key);
+    ofpbuf_uninit(&odp_mask);
+    simap_destroy(&port_names);
+    return error;
+}
+
+static void
+ofproto_unixctl_trace(struct unixctl_conn *conn, int argc, const char *argv[],
+                      void *aux OVS_UNUSED)
+{
+    struct ofproto_dpif *ofproto;
+    struct ofpbuf *packet;
+    const char *error;
+    struct flow flow;
+
+    error = parse_flow_and_packet(argc, argv, &ofproto, &flow, &packet);
+    if (!error) {
+        struct ds result;
+
+        ds_init(&result);
+        ofproto_trace(ofproto, &flow, packet, NULL, 0, &result);
+        unixctl_command_reply(conn, ds_cstr(&result));
+        ds_destroy(&result);
+        ofpbuf_delete(packet);
+    } else {
+        unixctl_command_reply_error(conn, error);
+    }
+}
+
+static void
+ofproto_unixctl_trace_actions(struct unixctl_conn *conn, int argc,
+                              const char *argv[], void *aux OVS_UNUSED)
+{
+    enum ofputil_protocol usable_protocols;
+    struct ofproto_dpif *ofproto;
+    bool enforce_consistency;
+    struct ofpbuf ofpacts;
+    struct ofpbuf *packet;
+    struct ds result;
+    struct flow flow;
+    uint16_t in_port;
+
+    /* Three kinds of error return values! */
+    enum ofperr retval;
+    const char *error;
+    char *rw_error;
+
+    packet = NULL;
+    ds_init(&result);
+    ofpbuf_init(&ofpacts, 0);
+
+    /* Parse actions. */
+    rw_error = parse_ofpacts(argv[--argc], &ofpacts, &usable_protocols);
+    if (rw_error) {
+        unixctl_command_reply_error(conn, rw_error);
+        free(rw_error);
+        goto exit;
+    }
+
+    /* OpenFlow 1.1 and later suggest that the switch enforces certain forms of
+     * consistency between the flow and the actions, so enforce these by
+     * default if the actions can only work in OF1.1 or later. */
+    enforce_consistency = !(usable_protocols & OFPUTIL_P_OF10_ANY);
+    if (!strcmp(argv[1], "-consistent")) {
+        enforce_consistency = true;
+        argv++;
+        argc--;
+    }
+
+    error = parse_flow_and_packet(argc, argv, &ofproto, &flow, &packet);
+    if (error) {
+        unixctl_command_reply_error(conn, error);
+        goto exit;
+    }
+
+    /* Do the same checks as handle_packet_out() in ofproto.c.
+     *
+     * We pass a 'table_id' of 0 to ofproto_check_ofpacts(), which isn't
+     * strictly correct because these actions aren't in any table, but it's OK
+     * because it 'table_id' is used only to check goto_table instructions, but
+     * packet-outs take a list of actions and therefore it can't include
+     * instructions.
+     *
+     * We skip the "meter" check here because meter is an instruction, not an
+     * action, and thus cannot appear in ofpacts. */
+    in_port = ofp_to_u16(flow.in_port.ofp_port);
+    if (in_port >= ofproto->up.max_ports && in_port < ofp_to_u16(OFPP_MAX)) {
+        unixctl_command_reply_error(conn, "invalid in_port");
+        goto exit;
+    }
+    retval = ofpacts_check(ofpacts.data, ofpacts.size, &flow,
+                           enforce_consistency,
+                           u16_to_ofp(ofproto->up.max_ports), 0, 0);
+    if (retval) {
+        ds_clear(&result);
+        ds_put_format(&result, "Bad actions: %s", ofperr_to_string(retval));
+        unixctl_command_reply_error(conn, ds_cstr(&result));
+        goto exit;
+    }
+
+    ofproto_trace(ofproto, &flow, packet, ofpacts.data, ofpacts.size, &result);
     unixctl_command_reply(conn, ds_cstr(&result));
 
 exit:
     ds_destroy(&result);
     ofpbuf_delete(packet);
-    ofpbuf_uninit(&odp_key);
-    ofpbuf_uninit(&odp_mask);
-    simap_destroy(&port_names);
+    ofpbuf_uninit(&ofpacts);
 }
 
+/* Implements a "trace" through 'ofproto''s flow table, appending a textual
+ * description of the results to 'ds'.
+ *
+ * The trace follows a packet with the specified 'flow' through the flow
+ * table.  'packet' may be nonnull to trace an actual packet, with consequent
+ * side effects (if it is nonnull then its flow must be 'flow').
+ *
+ * If 'ofpacts' is nonnull then its 'ofpacts_len' bytes specify the actions to
+ * trace, otherwise the actions are determined by a flow table lookup. */
 static void
 ofproto_trace(struct ofproto_dpif *ofproto, const struct flow *flow,
-              const struct ofpbuf *packet, struct ds *ds)
+              const struct ofpbuf *packet,
+              const struct ofpact ofpacts[], size_t ofpacts_len,
+              struct ds *ds)
 {
     struct rule_dpif *rule;
     struct flow_wildcards wc;
 
+    ds_put_format(ds, "Bridge: %s\n", ofproto->up.name);
     ds_put_cstr(ds, "Flow: ");
     flow_format(ds, flow);
     ds_put_char(ds, '\n');
 
     flow_wildcards_init_catchall(&wc);
-    rule_dpif_lookup(ofproto, flow, &wc, &rule);
+    if (ofpacts) {
+        rule = NULL;
+    } else {
+        rule_dpif_lookup(ofproto, flow, &wc, &rule);
 
-    trace_format_rule(ds, 0, rule);
-    if (rule == ofproto->miss_rule) {
-        ds_put_cstr(ds, "\nNo match, flow generates \"packet in\"s.\n");
-    } else if (rule == ofproto->no_packet_in_rule) {
-        ds_put_cstr(ds, "\nNo match, packets dropped because "
-                    "OFPPC_NO_PACKET_IN is set on in_port.\n");
-    } else if (rule == ofproto->drop_frags_rule) {
-        ds_put_cstr(ds, "\nPackets dropped because they are IP fragments "
-                    "and the fragment handling mode is \"drop\".\n");
+        trace_format_rule(ds, 0, rule);
+        if (rule == ofproto->miss_rule) {
+            ds_put_cstr(ds, "\nNo match, flow generates \"packet in\"s.\n");
+        } else if (rule == ofproto->no_packet_in_rule) {
+            ds_put_cstr(ds, "\nNo match, packets dropped because "
+                        "OFPPC_NO_PACKET_IN is set on in_port.\n");
+        } else if (rule == ofproto->drop_frags_rule) {
+            ds_put_cstr(ds, "\nPackets dropped because they are IP fragments "
+                        "and the fragment handling mode is \"drop\".\n");
+        }
     }
 
-    if (rule) {
+    if (rule || ofpacts) {
         uint64_t odp_actions_stub[1024 / 8];
         struct ofpbuf odp_actions;
         struct trace_ctx trace;
@@ -5444,6 +5567,10 @@ ofproto_trace(struct ofproto_dpif *ofproto, const struct flow *flow,
         ofpbuf_use_stub(&odp_actions,
                         odp_actions_stub, sizeof odp_actions_stub);
         xlate_in_init(&trace.xin, ofproto, flow, rule, tcp_flags, packet);
+        if (ofpacts) {
+            trace.xin.ofpacts = ofpacts;
+            trace.xin.ofpacts_len = ofpacts_len;
+        }
         trace.xin.resubmit_hook = trace_resubmit;
         trace.xin.report_hook = trace_report;
 
@@ -5877,8 +6004,12 @@ ofproto_dpif_unixctl_init(void)
 
     unixctl_command_register(
         "ofproto/trace",
-        "[dp_name]|bridge odp_flow|br_flow [-generate|packet]",
+        "{[dp_name] odp_flow | bridge br_flow} [-generate|packet]",
         1, 3, ofproto_unixctl_trace, NULL);
+    unixctl_command_register(
+        "ofproto/trace-packet-out",
+        "[-consistent] {[dp_name] odp_flow | bridge br_flow} [-generate|packet] actions",
+        2, 6, ofproto_unixctl_trace_actions, NULL);
     unixctl_command_register("fdb/flush", "[bridge]", 0, 1,
                              ofproto_unixctl_fdb_flush, NULL);
     unixctl_command_register("fdb/show", "bridge", 1, 1,

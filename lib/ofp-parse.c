@@ -147,8 +147,7 @@ str_to_be64(const char *str, ovs_be64 *valuep)
 static char * WARN_UNUSED_RESULT
 str_to_mac(const char *str, uint8_t mac[6])
 {
-    if (sscanf(str, ETH_ADDR_SCAN_FMT, ETH_ADDR_SCAN_ARGS(mac))
-        != ETH_ADDR_SCAN_COUNT) {
+    if (!ovs_scan(str, ETH_ADDR_SCAN_FMT, ETH_ADDR_SCAN_ARGS(mac))) {
         return xasprintf("invalid mac address %s", str);
     }
     return NULL;
@@ -179,12 +178,13 @@ static char * WARN_UNUSED_RESULT
 parse_enqueue(char *arg, struct ofpbuf *ofpacts)
 {
     char *sp = NULL;
-    char *port = strtok_r(arg, ":q", &sp);
+    char *port = strtok_r(arg, ":q,", &sp);
     char *queue = strtok_r(NULL, "", &sp);
     struct ofpact_enqueue *enqueue;
 
     if (port == NULL || queue == NULL) {
-        return xstrdup("\"enqueue\" syntax is \"enqueue:PORT:QUEUE\"");
+        return xstrdup("\"enqueue\" syntax is \"enqueue:PORT:QUEUE\" or "
+                       "\"enqueue(PORT,QUEUE)\"");
     }
 
     enqueue = ofpact_put_ENQUEUE(ofpacts);
@@ -1844,7 +1844,7 @@ parse_ofp_table_mod(struct ofputil_table_mod *tm, const char *table_id,
     *usable_protocols = OFPUTIL_P_OF11_UP;
 
     if (!strcasecmp(table_id, "all")) {
-        tm->table_id = 255;
+        tm->table_id = OFPTT_ALL;
     } else {
         char *error = str_to_u8(table_id, "table_id", &tm->table_id);
         if (error) {

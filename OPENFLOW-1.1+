@@ -119,11 +119,9 @@ didn't compare the specs carefully yet.)
       that is all done, is probably 2 or 3 days work.
       [optional for OF1.3+]
 
-    * Per-flow meters.  Similar to IPv6 extension headers in kernel
-      and design requirements.  Might be politically difficult to add
-      directly to the kernel module, since its functionality overlaps
-      with tc.  Ideally, therefore, we could implement these somehow
-      with tc, but I haven't investigated whether that makes sense.
+    * Per-flow meters.  OpenFlow protocol support is now implemented.
+      Support for the special OFPM_SLOWPATH and OFPM_CONTROLLER meters
+      is missing.  Support for the software switch is under review.
       [optional for OF1.3+]
 
     * Per-connection event filtering.  OF1.3 adopted Open vSwitch's
@@ -140,15 +138,16 @@ didn't compare the specs carefully yet.)
       some kind of "hardware" support, if we judged it useful enough.)
       [optional for OF1.3+]
 
-    * MPLS BoS matching.  (Included in Simon's MPLS series?)
+    * MPLS BoS matching.
+      Part of MPLS patchset by Simon Horman.
       [optional for OF1.3+]
 
     * Provider Backbone Bridge tagging.  I don't plan to implement
       this (but we'd accept an implementation).
       [optional for OF1.3+]
 
-    * Rework tag order.  I'm not sure whether we need to do anything
-      for this. Part of MPLS patchset by Simon Horman.
+    * Rework tag order.
+      Part of MPLS patchset by Simon Horman.
       [required for v1.3+]
 
     * On-demand flow counters.  I think this might be a real
@@ -244,6 +243,12 @@ OpenFlow 1.4
     * Meter notifications
       [EXT-235]
       [optional for OF1.4+]
+
+General
+-----
+
+    * ovs-ofctl(8) often lists as Nicira extensions features that
+      later OpenFlow versions support in standard ways.
 
 How to contribute
 -----------------

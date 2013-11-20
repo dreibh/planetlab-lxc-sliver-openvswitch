@@ -465,4 +465,22 @@ struct ofp_vendor_header {
 };
 OFP_ASSERT(sizeof(struct ofp_vendor_header) == 12);
 
+/* Table numbering. Tables can use any number up to OFPT_MAX. */
+enum ofp_table {
+    /* Last usable table number. */
+    OFPTT_MAX = 0xfe,
+
+    /* Fake tables. */
+    OFPTT_ALL = 0xff         /* Wildcard table used for table config,
+                                flow stats and flow deletes. */
+};
+
+enum ofp_table_config {
+    OFPTC_TABLE_MISS_CONTROLLER = 0 << 0, /* Send to controller. */
+    OFPTC_TABLE_MISS_CONTINUE = 1 << 0, /* Continue to the next table in the
+                                           pipeline (OpenFlow 1.0 behavior). */
+    OFPTC_TABLE_MISS_DROP = 2 << 0, /* Drop the packet. */
+    OFPTC_TABLE_MISS_MASK = 3 << 0
+};
+
 #endif /* openflow/openflow-common.h */
