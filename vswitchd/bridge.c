@@ -984,28 +984,44 @@ bridge_configure_sflow(struct bridge *br, int *sflow_bridge_number)
     sset_destroy(&oso.targets);
 }
 
+/* Returns whether a IPFIX row is valid. */
+static bool
+ovsrec_ipfix_is_valid(const struct ovsrec_ipfix *ipfix)
+{
+    return ipfix && ipfix->n_targets > 0;
+}
+
+/* Returns whether a Flow_Sample_Collector_Set row is valid. */
+static bool
+ovsrec_fscs_is_valid(const struct ovsrec_flow_sample_collector_set *fscs,
+                     const struct bridge *br)
+{
+    return ovsrec_ipfix_is_valid(fscs->ipfix) && fscs->bridge == br->cfg;
+}
+
 /* Set IPFIX configuration on 'br'. */
 static void
 bridge_configure_ipfix(struct bridge *br)
 {
     const struct ovsrec_ipfix *be_cfg = br->cfg->ipfix;
+    bool valid_be_cfg = ovsrec_ipfix_is_valid(be_cfg);
     const struct ovsrec_flow_sample_collector_set *fe_cfg;
     struct ofproto_ipfix_bridge_exporter_options be_opts;
     struct ofproto_ipfix_flow_exporter_options *fe_opts = NULL;
     size_t n_fe_opts = 0;
 
     OVSREC_FLOW_SAMPLE_COLLECTOR_SET_FOR_EACH(fe_cfg, idl) {
-        if (fe_cfg->bridge == br->cfg) {
+        if (ovsrec_fscs_is_valid(fe_cfg, br)) {
             n_fe_opts++;
         }
     }
 
-    if (!be_cfg && n_fe_opts == 0) {
+    if (!valid_be_cfg && n_fe_opts == 0) {
         ofproto_set_ipfix(br->ofproto, NULL, NULL, 0);
         return;
     }
 
-    if (be_cfg) {
+    if (valid_be_cfg) {
         memset(&be_opts, 0, sizeof be_opts);
 
         sset_init(&be_opts.targets);
@@ -1035,7 +1051,7 @@ bridge_configure_ipfix(struct bridge *br)
         fe_opts = xcalloc(n_fe_opts, sizeof *fe_opts);
         opts = fe_opts;
         OVSREC_FLOW_SAMPLE_COLLECTOR_SET_FOR_EACH(fe_cfg, idl) {
-            if (fe_cfg->bridge == br->cfg) {
+            if (ovsrec_fscs_is_valid(fe_cfg, br)) {
                 opts->collector_set_id = fe_cfg->id;
                 sset_init(&opts->targets);
                 sset_add_array(&opts->targets, fe_cfg->ipfix->targets,
@@ -1049,10 +1065,10 @@ bridge_configure_ipfix(struct bridge *br)
         }
     }
 
-    ofproto_set_ipfix(br->ofproto, be_cfg ? &be_opts : NULL, fe_opts,
+    ofproto_set_ipfix(br->ofproto, valid_be_cfg ? &be_opts : NULL, fe_opts,
                       n_fe_opts);
 
-    if (be_cfg) {
+    if (valid_be_cfg) {
         sset_destroy(&be_opts.targets);
     }
 
