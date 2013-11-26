@@ -274,7 +274,7 @@ netdev_tunnel_rx_recv(struct netdev_rx *rx_, void *buffer, size_t size)
     for (;;) {
         ssize_t retval;
         retval = recv(rx->fd, buffer, size, MSG_TRUNC);
-	    VLOG_DBG("%s: recv(%"PRIxPTR", %zu, MSG_TRUNC) = %zd",
+	    VLOG_DBG("%s: recv(%"PRIxPTR", %"PRIuSIZE", MSG_TRUNC) = %"PRIdSIZE,
 		    netdev_rx_get_name(rx_), (uintptr_t)buffer, size, retval);
         if (retval >= 0) {
 	    netdev->stats.rx_packets++;
@@ -317,14 +317,14 @@ netdev_tunnel_send(struct netdev *netdev_, const void *buffer, size_t size)
     for (;;) {
         ssize_t retval;
         retval = send(dev->sockfd, buffer, size, 0);
-    	VLOG_DBG("%s: send(%"PRIxPTR", %zu) = %zd",
+    	VLOG_DBG("%s: send(%"PRIxPTR", %"PRIuSIZE") = %"PRIdSIZE,
 	         netdev_get_name(netdev_), (uintptr_t)buffer, size, retval);
         if (retval >= 0) {
 	    dev->stats.tx_packets++;
 	    dev->stats.tx_bytes += retval;
 	    if (retval != size) {
-	        VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%zd bytes of "
-		             "%zu) on %s", retval, size, netdev_get_name(netdev_));
+	        VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%"PRIdSIZE" bytes of "
+		             "%"PRIuSIZE") on %s", retval, size, netdev_get_name(netdev_));
 		dev->stats.tx_errors++;
 	    }
             return 0;

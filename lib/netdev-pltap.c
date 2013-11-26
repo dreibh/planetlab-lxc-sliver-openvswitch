@@ -562,7 +562,7 @@ netdev_pltap_send(struct netdev *netdev_, const void *buffer, size_t size)
         retval = writev(dev->fd, iov, 2);
         if (retval >= 0) {
 	    if (retval != size + 4) {
-	        VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%zd bytes of %zu) on %s",
+	        VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%"PRIdSIZE" bytes of %"PRIuSIZE") on %s",
 		             retval, size + 4, netdev_get_name(netdev_));
 	    }
             return 0;
