@@ -302,10 +302,6 @@ void ignore(bool x OVS_UNUSED);
 
 /* Bitwise tests. */
 
-int log_2_floor(uint32_t);
-int log_2_ceil(uint32_t);
-unsigned int count_1bits(uint64_t);
-
 /* Returns the number of trailing 0-bits in 'n'.  Undefined if 'n' == 0. */
 #if __GNUC__ >= 4
 static inline int
@@ -318,14 +314,21 @@ raw_ctz(uint64_t n)
             ? __builtin_ctz(n)
             : __builtin_ctzll(n));
 }
+
+static inline int
+raw_clz64(uint64_t n)
+{
+    return __builtin_clzll(n);
+}
 #else
 /* Defined in util.c. */
 int raw_ctz(uint64_t n);
+int raw_clz64(uint64_t n);
 #endif
 
 /* Returns the number of trailing 0-bits in 'n', or 32 if 'n' is 0. */
 static inline int
-ctz(uint32_t n)
+ctz32(uint32_t n)
 {
     return n ? raw_ctz(n) : 32;
 }
@@ -335,6 +338,80 @@ static inline int
 ctz64(uint64_t n)
 {
     return n ? raw_ctz(n) : 64;
+}
+
+/* Returns the number of leading 0-bits in 'n', or 32 if 'n' is 0. */
+static inline int
+clz32(uint32_t n)
+{
+    return n ? raw_clz64(n) - 32 : 32;
+}
+
+/* Returns the number of leading 0-bits in 'n', or 64 if 'n' is 0. */
+static inline int
+clz64(uint64_t n)
+{
+    return n ? raw_clz64(n) : 64;
+}
+
+/* Given a word 'n', calculates floor(log_2('n')).  This is equivalent
+ * to finding the bit position of the most significant one bit in 'n'.  It is
+ * an error to call this function with 'n' == 0. */
+static inline int
+log_2_floor(uint64_t n)
+{
+    return 63 - raw_clz64(n);
+}
+
+/* Given a word 'n', calculates ceil(log_2('n')).  It is an error to
+ * call this function with 'n' == 0. */
+static inline int
+log_2_ceil(uint64_t n)
+{
+    return log_2_floor(n) + !is_pow2(n);
+}
+
+/* Returns the number of 1-bits in 'x', between 0 and 32 inclusive. */
+static inline unsigned int
+count_1bits_32(uint32_t x)
+{
+#if __GNUC__ >= 4 && defined(__corei7)
+    /* __builtin_popcount() is fast only when supported by the CPU. */
+    return __builtin_popcount(x);
+#else
+    extern const uint8_t count_1bits_8[256];
+    /* This portable implementation is the fastest one we know of for 32 bits,
+     * and faster than GCC __builtin_popcount(). */
+    return (count_1bits_8[x & 0xff] +
+            count_1bits_8[(x >> 8) & 0xff] +
+            count_1bits_8[(x >> 16) & 0xff] +
+            count_1bits_8[x >> 24]);
+#endif
+}
+
+/* Returns the number of 1-bits in 'x', between 0 and 64 inclusive. */
+static inline unsigned int
+count_1bits(uint64_t x)
+{
+    if (sizeof(void *) == 8) { /* 64-bit CPU */
+#if __GNUC__ >= 4 && defined(__corei7)
+        /* __builtin_popcountll() is fast only when supported by the CPU. */
+        return __builtin_popcountll(x);
+#else
+        /* This portable implementation is the fastest one we know of for 64
+         * bits, and about 3x faster than GCC 4.7 __builtin_popcountll(). */
+        const uint64_t h55 = UINT64_C(0x5555555555555555);
+        const uint64_t h33 = UINT64_C(0x3333333333333333);
+        const uint64_t h0F = UINT64_C(0x0F0F0F0F0F0F0F0F);
+        const uint64_t h01 = UINT64_C(0x0101010101010101);
+        x -= (x >> 1) & h55;               /* Count of each 2 bits in-place. */
+        x = (x & h33) + ((x >> 2) & h33);  /* Count of each 4 bits in-place. */
+        x = (x + (x >> 4)) & h0F;          /* Count of each 8 bits in-place. */
+        return (x * h01) >> 56;            /* Sum of all bytes. */
+#endif
+    } else { /* 32-bit CPU */
+        return count_1bits_32(x) + count_1bits_32(x >> 32);
+    }
 }
 
 /* Returns the rightmost 1-bit in 'x' (e.g. 01011000 => 00001000), or 0 if 'x'
@@ -361,10 +438,10 @@ zero_rightmost_1bit(uintmax_t x)
 static inline uint32_t
 rightmost_1bit_idx(uint32_t x)
 {
-    return x ? ctz(x) : 32;
+    return ctz32(x);
 }
 
-/* Returns the index of the rightmost 1-bit in 'x' (e.g. 01011000 => 6), or 32
+/* Returns the index of the leftmost 1-bit in 'x' (e.g. 01011000 => 6), or 32
  * if 'x' is 0.
  *
  * This function only works with 32-bit integers. */

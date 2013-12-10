@@ -61,11 +61,11 @@ test_log_2_floor(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 }
 
 static void
-check_ctz(uint32_t x, int n)
+check_ctz32(uint32_t x, int n)
 {
-    if (ctz(x) != n) {
-        fprintf(stderr, "ctz(%"PRIu32") is %d but should be %d\n",
-                x, ctz(x), n);
+    if (ctz32(x) != n) {
+        fprintf(stderr, "ctz32(%"PRIu32") is %d but should be %d\n",
+                x, ctz32(x), n);
         abort();
     }
 }
@@ -87,13 +87,13 @@ test_ctz(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 
     for (n = 0; n < 32; n++) {
         /* Check minimum x such that f(x) == n. */
-        check_ctz(1 << n, n);
+        check_ctz32(1 << n, n);
 
         /* Check maximum x such that f(x) == n. */
-        check_ctz(UINT32_MAX << n, n);
+        check_ctz32(UINT32_MAX << n, n);
 
         /* Check a random value in the middle. */
-        check_ctz((random_uint32() | 1) << n, n);
+        check_ctz32((random_uint32() | 1) << n, n);
     }
 
 
@@ -109,8 +109,60 @@ test_ctz(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
     }
 
     /* Check ctz(0). */
-    check_ctz(0, 32);
+    check_ctz32(0, 32);
     check_ctz64(0, 64);
+}
+
+static void
+check_clz32(uint32_t x, int n)
+{
+    if (clz32(x) != n) {
+        fprintf(stderr, "clz32(%"PRIu32") is %d but should be %d\n",
+                x, clz32(x), n);
+        abort();
+    }
+}
+
+static void
+check_clz64(uint64_t x, int n)
+{
+    if (clz64(x) != n) {
+        fprintf(stderr, "clz64(%"PRIu64") is %d but should be %d\n",
+                x, clz64(x), n);
+        abort();
+    }
+}
+
+static void
+test_clz(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
+{
+    int n;
+
+    for (n = 0; n < 32; n++) {
+        /* Check minimum x such that f(x) == n. */
+        check_clz32((1u << 31) >> n, n);
+
+        /* Check maximum x such that f(x) == n. */
+        check_clz32(UINT32_MAX >> n, n);
+
+        /* Check a random value in the middle. */
+        check_clz32((random_uint32() | 1u << 31) >> n, n);
+    }
+
+    for (n = 0; n < 64; n++) {
+        /* Check minimum x such that f(x) == n. */
+        check_clz64((UINT64_C(1) << 63) >> n, n);
+
+        /* Check maximum x such that f(x) == n. */
+        check_clz64(UINT64_MAX >> n, n);
+
+        /* Check a random value in the middle. */
+        check_clz64((random_uint64() | UINT64_C(1) << 63) >> n, n);
+    }
+
+    /* Check clz(0). */
+    check_clz32(0, 32);
+    check_clz64(0, 64);
 }
 
 /* Returns a random number in the range 'min'...'max' inclusive. */
@@ -964,6 +1016,7 @@ test_ovs_scan(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 
 static const struct command commands[] = {
     {"ctz", 0, 0, test_ctz},
+    {"clz", 0, 0, test_clz},
     {"round_up_pow2", 0, 0, test_round_up_pow2},
     {"round_down_pow2", 0, 0, test_round_down_pow2},
     {"count_1bits", 0, 0, test_count_1bits},

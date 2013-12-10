@@ -232,6 +232,7 @@ enum OVS_PACKED_ENUM mf_string {
     MFS_OFP_PORT_OXM,           /* An OpenFlow port number or name (32-bit). */
     MFS_FRAG,                   /* no, yes, first, later, not_later */
     MFS_TNL_FLAGS,              /* FLOW_TNL_F_* flags */
+    MFS_TCP_FLAGS,              /* TCP_* flags */
 };
 
 struct mf_field {
@@ -377,8 +378,6 @@ enum ofputil_protocol mf_set(const struct mf_field *,
                              struct match *);
 
 void mf_set_wild(const struct mf_field *, struct match *);
-
-void mf_random_value(const struct mf_field *, union mf_value *value);
 
 /* Subfields. */
 void mf_write_subfield_flow(const struct mf_subfield *,

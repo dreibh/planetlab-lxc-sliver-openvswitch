@@ -425,7 +425,7 @@ eth_addr_bitand(const uint8_t src[ETH_ADDR_LEN],
 int
 ip_count_cidr_bits(ovs_be32 netmask)
 {
-    return 32 - ctz(ntohl(netmask));
+    return 32 - ctz32(ntohl(netmask));
 }
 
 void
@@ -906,6 +906,39 @@ packet_get_tcp_flags(const struct ofpbuf *packet, const struct flow *flow)
         return TCP_FLAGS(tcp->tcp_ctl);
     } else {
         return 0;
+    }
+}
+
+const char *
+packet_tcp_flag_to_string(uint32_t flag)
+{
+    switch (flag) {
+    case TCP_FIN:
+        return "fin";
+    case TCP_SYN:
+        return "syn";
+    case TCP_RST:
+        return "rst";
+    case TCP_PSH:
+        return "psh";
+    case TCP_ACK:
+        return "ack";
+    case TCP_URG:
+        return "urg";
+    case TCP_ECE:
+        return "ece";
+    case TCP_CWR:
+        return "cwr";
+    case TCP_NS:
+        return "ns";
+    case 0x200:
+        return "[200]";
+    case 0x400:
+        return "[400]";
+    case 0x800:
+        return "[800]";
+    default:
+        return NULL;
     }
 }
 

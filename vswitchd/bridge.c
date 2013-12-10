@@ -21,7 +21,6 @@
 #include "async-append.h"
 #include "bfd.h"
 #include "bitmap.h"
-#include "bond.h"
 #include "cfm.h"
 #include "coverage.h"
 #include "daemon.h"
@@ -39,6 +38,7 @@
 #include "ofp-print.h"
 #include "ofp-util.h"
 #include "ofpbuf.h"
+#include "ofproto/bond.h"
 #include "ofproto/ofproto.h"
 #include "poll-loop.h"
 #include "sha1.h"
@@ -3594,10 +3594,9 @@ iface_set_mac(struct iface *iface)
 static void
 iface_set_ofport(const struct ovsrec_interface *if_cfg, ofp_port_t ofport)
 {
-    int64_t port_;
-    port_ = (ofport == OFPP_NONE) ? -1 : ofp_to_u16(ofport);
     if (if_cfg && !ovsdb_idl_row_is_synthetic(&if_cfg->header_)) {
-        ovsrec_interface_set_ofport(if_cfg, &port_, 1);
+        int64_t port = ofport == OFPP_NONE ? -1 : ofp_to_u16(ofport);
+        ovsrec_interface_set_ofport(if_cfg, &port, 1);
     }
 }
 

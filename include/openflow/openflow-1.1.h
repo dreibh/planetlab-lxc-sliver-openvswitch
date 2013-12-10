@@ -443,18 +443,6 @@ struct ofp11_table_mod {
 };
 OFP_ASSERT(sizeof(struct ofp11_table_mod) == 8);
 
-/* Flags to indicate behavior of the flow table for unmatched packets.
-   These flags are used in ofp_table_stats messages to describe the current
-   configuration and in ofp_table_mod messages to configure table behavior.  */
-enum ofp11_table_config {
-    OFPTC11_TABLE_MISS_CONTROLLER = 0 << 0, /* Send to controller. */
-    OFPTC11_TABLE_MISS_CONTINUE = 1 << 0, /* Continue to the next table in the
-                                             pipeline (OpenFlow 1.0
-                                             behavior). */
-    OFPTC11_TABLE_MISS_DROP = 2 << 0,     /* Drop the packet. */
-#define OFPTC11_TABLE_MISS_MASK (3 << 0)
-};
-
 /* Flow setup and teardown (controller -> datapath). */
 struct ofp11_flow_mod {
     ovs_be64 cookie;             /* Opaque controller-issued identifier. */
@@ -753,12 +741,7 @@ struct ofp11_packet_in {
     ovs_be16 total_len;     /* Full length of frame. */
     uint8_t reason;         /* Reason packet is being sent (one of OFPR_*) */
     uint8_t table_id;       /* ID of the table that was looked up */
-    /* uint8_t data[0];        Ethernet frame, halfway through 32-bit word,
-                               so the IP header is 32-bit aligned. The
-                               amount of data is inferred from the length
-                               field in the header. Because of padding,
-                               offsetof(struct ofp_packet_in, data) ==
-                               sizeof(struct ofp_packet_in) - 2. */
+    /* Followed by Ethernet frame. */
 };
 OFP_ASSERT(sizeof(struct ofp11_packet_in) == 16);
 

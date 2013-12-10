@@ -73,7 +73,7 @@ void ovs_flow_mask_key(struct sw_flow_key *dst, const struct sw_flow_key *src,
 		*d++ = *s++ & *m++;
 }
 
-struct sw_flow *ovs_flow_alloc(void)
+struct sw_flow *ovs_flow_alloc(bool percpu_stats)
 {
 	struct sw_flow *flow;
 	int cpu;
@@ -85,11 +85,30 @@ struct sw_flow *ovs_flow_alloc(void)
 	flow->sf_acts = NULL;
 	flow->mask = NULL;
 
-	memset(flow->stats, 0, num_possible_cpus() * sizeof(struct sw_flow_stats));
-	for_each_possible_cpu(cpu)
-		spin_lock_init(&flow->stats[cpu].lock);
+	flow->stats.is_percpu = percpu_stats;
 
+	if (!percpu_stats) {
+		flow->stats.stat = kzalloc(sizeof(*flow->stats.stat), GFP_KERNEL);
+		if (!flow->stats.stat)
+			goto err;
+
+		spin_lock_init(&flow->stats.stat->lock);
+	} else {
+		flow->stats.cpu_stats = alloc_percpu(struct flow_stats);
+		if (!flow->stats.cpu_stats)
+			goto err;
+
+		for_each_possible_cpu(cpu) {
+			struct flow_stats *cpu_stats;
+
+			cpu_stats = per_cpu_ptr(flow->stats.cpu_stats, cpu);
+			spin_lock_init(&cpu_stats->lock);
+		}
+	}
 	return flow;
+err:
+	kfree(flow);
+	return ERR_PTR(-ENOMEM);
 }
 
 int ovs_flow_tbl_count(struct flow_table *table)
@@ -123,6 +142,10 @@ static struct flex_array *alloc_buckets(unsigned int n_buckets)
 static void flow_free(struct sw_flow *flow)
 {
 	kfree((struct sf_flow_acts __force *)flow->sf_acts);
+	if (flow->stats.is_percpu)
+		free_percpu(flow->stats.cpu_stats);
+	else
+		kfree(flow->stats.stat);
 	kmem_cache_free(flow_cache, flow);
 }
 
@@ -438,7 +461,7 @@ struct sw_flow *ovs_flow_tbl_lookup_stats(struct flow_table *tbl,
 				    const struct sw_flow_key *key,
 				    u32 *n_mask_hit)
 {
-	struct table_instance *ti = rcu_dereference(tbl->ti);
+	struct table_instance *ti = rcu_dereference_ovsl(tbl->ti);
 	struct sw_flow_mask *mask;
 	struct sw_flow *flow;
 
@@ -583,15 +606,11 @@ int ovs_flow_tbl_insert(struct flow_table *table, struct sw_flow *flow,
  * Returns zero if successful or a negative error code. */
 int ovs_flow_init(void)
 {
-	int flow_size;
-
 	BUILD_BUG_ON(__alignof__(struct sw_flow_key) % __alignof__(long));
 	BUILD_BUG_ON(sizeof(struct sw_flow_key) % sizeof(long));
 
-	flow_size = sizeof(struct sw_flow) +
-		    (num_possible_cpus() * sizeof(struct sw_flow_stats));
-
-	flow_cache = kmem_cache_create("sw_flow", flow_size, 0, 0, NULL);
+	flow_cache = kmem_cache_create("sw_flow", sizeof(struct sw_flow), 0,
+					0, NULL);
 	if (flow_cache == NULL)
 		return -ENOMEM;
 

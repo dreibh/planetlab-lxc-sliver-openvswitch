@@ -565,7 +565,7 @@ const struct mf_field mf_fields[MFF_N_IDS] = {
         MFF_TCP_FLAGS, "tcp_flags", NULL,
         2, 12,
         MFM_FULLY,
-        MFS_HEXADECIMAL,
+        MFS_TCP_FLAGS,
         MFP_TCP,
         false,
         NXM_NX_TCP_FLAGS, "NXM_NX_TCP_FLAGS",
@@ -2215,115 +2215,6 @@ mf_get(const struct mf_field *mf, const struct match *match,
     mf_get_mask(mf, &match->wc, mask);
 }
 
-/* Assigns a random value for field 'mf' to 'value'. */
-void
-mf_random_value(const struct mf_field *mf, union mf_value *value)
-{
-    random_bytes(value, mf->n_bytes);
-
-    switch (mf->id) {
-    case MFF_TUN_ID:
-    case MFF_TUN_SRC:
-    case MFF_TUN_DST:
-    case MFF_TUN_TOS:
-    case MFF_TUN_TTL:
-    case MFF_TUN_FLAGS:
-    case MFF_METADATA:
-    case MFF_IN_PORT:
-    case MFF_PKT_MARK:
-    case MFF_SKB_PRIORITY:
-    CASE_MFF_REGS:
-    case MFF_ETH_SRC:
-    case MFF_ETH_DST:
-    case MFF_ETH_TYPE:
-    case MFF_VLAN_TCI:
-    case MFF_IPV4_SRC:
-    case MFF_IPV4_DST:
-    case MFF_IPV6_SRC:
-    case MFF_IPV6_DST:
-    case MFF_IP_PROTO:
-    case MFF_IP_TTL:
-    case MFF_ARP_SPA:
-    case MFF_ARP_TPA:
-    case MFF_ARP_SHA:
-    case MFF_ARP_THA:
-    case MFF_TCP_SRC:
-    case MFF_TCP_DST:
-    case MFF_UDP_SRC:
-    case MFF_UDP_DST:
-    case MFF_SCTP_SRC:
-    case MFF_SCTP_DST:
-    case MFF_ICMPV4_TYPE:
-    case MFF_ICMPV4_CODE:
-    case MFF_ICMPV6_TYPE:
-    case MFF_ICMPV6_CODE:
-    case MFF_ND_TARGET:
-    case MFF_ND_SLL:
-    case MFF_ND_TLL:
-        break;
-
-    case MFF_TCP_FLAGS:
-        value->be16 &= htons(0x0fff);
-        break;
-
-    case MFF_IN_PORT_OXM:
-        value->be32 = ofputil_port_to_ofp11(u16_to_ofp(ntohs(value->be16)));
-        break;
-
-    case MFF_IPV6_LABEL:
-        value->be32 &= htonl(IPV6_LABEL_MASK);
-        break;
-
-    case MFF_IP_DSCP:
-        value->u8 &= IP_DSCP_MASK;
-        break;
-
-    case MFF_IP_DSCP_SHIFTED:
-        value->u8 &= IP_DSCP_MASK >> 2;
-        break;
-
-    case MFF_IP_ECN:
-        value->u8 &= IP_ECN_MASK;
-        break;
-
-    case MFF_IP_FRAG:
-        value->u8 &= FLOW_NW_FRAG_MASK;
-        break;
-
-    case MFF_ARP_OP:
-        value->be16 &= htons(0xff);
-        break;
-
-    case MFF_DL_VLAN:
-        value->be16 &= htons(VLAN_VID_MASK);
-        break;
-    case MFF_VLAN_VID:
-        value->be16 &= htons(VLAN_VID_MASK | VLAN_CFI);
-        break;
-
-    case MFF_DL_VLAN_PCP:
-    case MFF_VLAN_PCP:
-        value->u8 &= 0x07;
-        break;
-
-    case MFF_MPLS_LABEL:
-        value->be32 &= htonl(MPLS_LABEL_MASK >> MPLS_LABEL_SHIFT);
-        break;
-
-    case MFF_MPLS_TC:
-        value->u8 &= MPLS_TC_MASK >> MPLS_TC_SHIFT;
-        break;
-
-    case MFF_MPLS_BOS:
-        value->u8 &= MPLS_BOS_MASK >> MPLS_BOS_SHIFT;
-        break;
-
-    case MFF_N_IDS:
-    default:
-        NOT_REACHED();
-    }
-}
-
 static char *
 mf_from_integer_string(const struct mf_field *mf, const char *s,
                        uint8_t *valuep, uint8_t *maskp)
@@ -2595,6 +2486,81 @@ mf_from_tun_flags_string(const char *s, ovs_be16 *valuep, ovs_be16 *maskp)
                      "\"csum\", \"key\")", s);
 }
 
+static char *
+mf_from_tcp_flags_string(const char *s, ovs_be16 *flagsp, ovs_be16 *maskp)
+{
+    uint16_t flags = 0;
+    uint16_t mask = 0;
+    uint16_t bit;
+    int n;
+
+    if (ovs_scan(s, "%"SCNi16"/%"SCNi16"%n", &flags, &mask, &n) && !s[n]) {
+        *flagsp = htons(flags);
+        *maskp = htons(mask);
+        return NULL;
+    }
+    if (ovs_scan(s, "%"SCNi16"%n", &flags, &n) && !s[n]) {
+        *flagsp = htons(flags);
+        *maskp = OVS_BE16_MAX;
+        return NULL;
+    }
+
+    while (*s != '\0') {
+        bool set;
+        int name_len;
+
+        switch (*s) {
+        case '+':
+            set = true;
+            break;
+        case '-':
+            set = false;
+            break;
+        default:
+            return xasprintf("%s: TCP flag must be preceded by '+' (for SET) "
+                             "or '-' (NOT SET)", s);
+        }
+        s++;
+
+        name_len = strcspn(s,"+-");
+
+        for (bit = 1; bit; bit <<= 1) {
+            const char *fname = packet_tcp_flag_to_string(bit);
+            size_t len;
+
+            if (!fname) {
+                continue;
+            }
+
+            len = strlen(fname);
+            if (len != name_len) {
+                continue;
+            }
+            if (!strncmp(s, fname, len)) {
+                if (mask & bit) {
+                    return xasprintf("%s: Each TCP flag can be specified only "
+                                     "once", s);
+                }
+                if (set) {
+                    flags |= bit;
+                }
+                mask |= bit;
+                break;
+            }
+        }
+
+        if (!bit) {
+            return xasprintf("%s: unknown TCP flag(s)", s);
+        }
+        s += name_len;
+    }
+
+    *flagsp = htons(flags);
+    *maskp = htons(mask);
+    return NULL;
+}
+
+
 /* Parses 's', a string value for field 'mf', into 'value' and 'mask'.  Returns
  * NULL if successful, otherwise a malloc()'d string describing the error. */
 char *
@@ -2643,6 +2609,11 @@ mf_parse(const struct mf_field *mf, const char *s,
     case MFS_TNL_FLAGS:
         ovs_assert(mf->n_bytes == sizeof(ovs_be16));
         error = mf_from_tun_flags_string(s, &value->be16, &mask->be16);
+        break;
+
+    case MFS_TCP_FLAGS:
+        ovs_assert(mf->n_bytes == sizeof(ovs_be16));
+        error = mf_from_tcp_flags_string(s, &value->be16, &mask->be16);
         break;
 
     default:
@@ -2731,6 +2702,13 @@ mf_format_tnl_flags_string(const ovs_be16 *valuep, struct ds *s)
     format_flags(s, flow_tun_flag_to_string, ntohs(*valuep), '|');
 }
 
+static void
+mf_format_tcp_flags_string(ovs_be16 value, ovs_be16 mask, struct ds *s)
+{
+    format_flags_masked(s, NULL, packet_tcp_flag_to_string, ntohs(value),
+                        TCP_FLAGS(mask));
+}
+
 /* Appends to 's' a string representation of field 'mf' whose value is in
  * 'value' and 'mask'.  'mask' may be NULL to indicate an exact match. */
 void
@@ -2785,6 +2763,11 @@ mf_format(const struct mf_field *mf,
 
     case MFS_TNL_FLAGS:
         mf_format_tnl_flags_string(&value->be16, s);
+        break;
+
+    case MFS_TCP_FLAGS:
+        mf_format_tcp_flags_string(value->be16,
+                                   mask ? mask->be16 : OVS_BE16_MAX, s);
         break;
 
     default:
