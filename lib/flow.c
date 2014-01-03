@@ -519,6 +519,18 @@ flow_zero_wildcards(struct flow *flow, const struct flow_wildcards *wildcards)
     }
 }
 
+void
+flow_unwildcard_tp_ports(const struct flow *flow, struct flow_wildcards *wc)
+{
+    if (flow->nw_proto != IPPROTO_ICMP) {
+        memset(&wc->masks.tp_src, 0xff, sizeof wc->masks.tp_src);
+        memset(&wc->masks.tp_dst, 0xff, sizeof wc->masks.tp_dst);
+    } else {
+        wc->masks.tp_src = htons(0xff);
+        wc->masks.tp_dst = htons(0xff);
+    }
+}
+
 /* Initializes 'fmd' with the metadata found in 'flow'. */
 void
 flow_get_metadata(const struct flow *flow, struct flow_metadata *fmd)
@@ -630,6 +642,15 @@ flow_wildcards_init_catchall(struct flow_wildcards *wc)
     memset(&wc->masks, 0, sizeof wc->masks);
 }
 
+/* Clear the metadata and register wildcard masks. They are not packet
+ * header fields. */
+void
+flow_wildcards_clear_non_packet_fields(struct flow_wildcards *wc)
+{
+    memset(&wc->masks.metadata, 0, sizeof wc->masks.metadata);
+    memset(&wc->masks.regs, 0, sizeof wc->masks.regs);
+}
+
 /* Returns true if 'wc' matches every packet, false if 'wc' fixes any bits or
  * fields. */
 bool
@@ -704,24 +725,22 @@ flow_wildcards_fold_minimask(struct flow_wildcards *wc,
     flow_union_with_miniflow(&wc->masks, &mask->masks);
 }
 
-inline uint64_t
+uint64_t
 miniflow_get_map_in_range(const struct miniflow *miniflow,
-                          uint8_t start, uint8_t end, const uint32_t **data)
+                          uint8_t start, uint8_t end, unsigned int *offset)
 {
     uint64_t map = miniflow->map;
-    uint32_t *p = miniflow->values;
+    *offset = 0;
 
     if (start > 0) {
         uint64_t msk = (UINT64_C(1) << start) - 1; /* 'start' LSBs set */
-        p += count_1bits(map & msk);  /* Skip to start. */
+        *offset = count_1bits(map & msk);
         map &= ~msk;
     }
     if (end < FLOW_U32S) {
         uint64_t msk = (UINT64_C(1) << end) - 1; /* 'end' LSBs set */
         map &= msk;
     }
-
-    *data = p;
     return map;
 }
 
@@ -733,8 +752,10 @@ flow_wildcards_fold_minimask_range(struct flow_wildcards *wc,
                                    uint8_t start, uint8_t end)
 {
     uint32_t *dst_u32 = (uint32_t *)&wc->masks;
-    const uint32_t *p;
-    uint64_t map = miniflow_get_map_in_range(&mask->masks, start, end, &p);
+    unsigned int offset;
+    uint64_t map = miniflow_get_map_in_range(&mask->masks, start, end,
+                                             &offset);
+    const uint32_t *p = mask->masks.values + offset;
 
     for (; map; map = zero_rightmost_1bit(map)) {
         dst_u32[raw_ctz(map)] |= *p++;
@@ -913,14 +934,13 @@ flow_mask_hash_fields(const struct flow *flow, struct flow_wildcards *wc,
         }
         if (is_ip_any(flow)) {
             memset(&wc->masks.nw_proto, 0xff, sizeof wc->masks.nw_proto);
-            memset(&wc->masks.tp_src, 0xff, sizeof wc->masks.tp_src);
-            memset(&wc->masks.tp_dst, 0xff, sizeof wc->masks.tp_dst);
+            flow_unwildcard_tp_ports(flow, wc);
         }
         wc->masks.vlan_tci |= htons(VLAN_VID_MASK | VLAN_CFI);
         break;
 
     default:
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
 }
 
@@ -938,7 +958,7 @@ flow_hash_fields(const struct flow *flow, enum nx_hash_fields fields,
         return flow_hash_symmetric_l4(flow, basis);
     }
 
-    NOT_REACHED();
+    OVS_NOT_REACHED();
 }
 
 /* Returns a string representation of 'fields'. */
@@ -1241,12 +1261,16 @@ miniflow_alloc_values(struct miniflow *flow, int n)
 
 /* Completes an initialization of 'dst' as a miniflow copy of 'src' begun by
  * the caller.  The caller must have already initialized 'dst->map' properly
- * to indicate the nonzero uint32_t elements of 'src'.  'n' must be the number
- * of 1-bits in 'dst->map'.
+ * to indicate the significant uint32_t elements of 'src'.  'n' must be the
+ * number of 1-bits in 'dst->map'.
+ *
+ * Normally the significant elements are the ones that are non-zero.  However,
+ * when a miniflow is initialized from a (mini)mask, the values can be zeroes,
+ * so that the flow and mask always have the same maps.
  *
  * This function initializes 'dst->values' (either inline if possible or with
- * malloc() otherwise) and copies the nonzero uint32_t elements of 'src' into
- * it. */
+ * malloc() otherwise) and copies the uint32_t elements of 'src' indicated by
+ * 'dst->map' into it. */
 static void
 miniflow_init__(struct miniflow *dst, const struct flow *src, int n)
 {
@@ -1492,11 +1516,7 @@ miniflow_hash_in_minimask(const struct miniflow *flow,
     hash = basis;
 
     for (map = mask->masks.map; map; map = zero_rightmost_1bit(map)) {
-        if (*p) {
-            int ofs = raw_ctz(map);
-            hash = mhash_add(hash, miniflow_get(flow, ofs) & *p);
-        }
-        p++;
+        hash = mhash_add(hash, miniflow_get(flow, raw_ctz(map)) & *p++);
     }
 
     return mhash_finish(hash, (p - mask->masks.values) * 4);
@@ -1518,10 +1538,7 @@ flow_hash_in_minimask(const struct flow *flow, const struct minimask *mask,
 
     hash = basis;
     for (map = mask->masks.map; map; map = zero_rightmost_1bit(map)) {
-        if (*p) {
-            hash = mhash_add(hash, flow_u32[raw_ctz(map)] & *p);
-        }
-        p++;
+        hash = mhash_add(hash, flow_u32[raw_ctz(map)] & *p++);
     }
 
     return mhash_finish(hash, (p - mask->masks.values) * 4);
@@ -1538,15 +1555,14 @@ flow_hash_in_minimask_range(const struct flow *flow,
                             uint8_t start, uint8_t end, uint32_t *basis)
 {
     const uint32_t *flow_u32 = (const uint32_t *)flow;
-    const uint32_t *p;
-    uint64_t map = miniflow_get_map_in_range(&mask->masks, start, end, &p);
+    unsigned int offset;
+    uint64_t map = miniflow_get_map_in_range(&mask->masks, start, end,
+                                             &offset);
+    const uint32_t *p = mask->masks.values + offset;
     uint32_t hash = *basis;
 
     for (; map; map = zero_rightmost_1bit(map)) {
-        if (*p) {
-            hash = mhash_add(hash, flow_u32[raw_ctz(map)] & *p);
-        }
-        p++;
+        hash = mhash_add(hash, flow_u32[raw_ctz(map)] & *p++);
     }
 
     *basis = hash; /* Allow continuation from the unfinished value. */

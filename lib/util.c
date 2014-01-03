@@ -67,7 +67,7 @@ ovs_assert_failure(const char *where, const char *function,
     case 0:
         VLOG_ABORT("%s: assertion %s failed in %s()",
                    where, condition, function);
-        NOT_REACHED();
+        OVS_NOT_REACHED();
 
     case 1:
         fprintf(stderr, "%s: assertion %s failed in %s()",
@@ -537,24 +537,6 @@ str_to_llong(const char *s, int base, long long *x)
     }
 }
 
-bool
-str_to_uint(const char *s, int base, unsigned int *u)
-{
-    return str_to_int(s, base, (int *) u);
-}
-
-bool
-str_to_ulong(const char *s, int base, unsigned long *ul)
-{
-    return str_to_long(s, base, (long *) ul);
-}
-
-bool
-str_to_ullong(const char *s, int base, unsigned long long *ull)
-{
-    return str_to_llong(s, base, (long long *) ull);
-}
-
 /* Converts floating-point string 's' into a double.  If successful, stores
  * the double in '*d' and returns true; on failure, stores 0 in '*d' and
  * returns false.
@@ -901,7 +883,7 @@ raw_clz64(uint64_t n)
 }
 #endif
 
-#if !(__GNUC__ >= 4 && defined(__corei7))
+#if NEED_COUNT_1BITS_8
 #define INIT1(X)                                \
     ((((X) & (1 << 0)) != 0) +                  \
      (((X) & (1 << 1)) != 0) +                  \
@@ -1378,7 +1360,7 @@ scan_float(const char *s, const struct scan_spec *spec, va_list *args)
     case SCAN_INTMAX_T:
     case SCAN_PTRDIFF_T:
     case SCAN_SIZE_T:
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
     return s;
 }
@@ -1483,7 +1465,7 @@ scan_chars(const char *s, const struct scan_spec *spec, va_list *args)
 /* This is an implementation of the standard sscanf() function, with the
  * following exceptions:
  *
- *   - It returns true if the entire template was successfully scanned and
+ *   - It returns true if the entire format was successfully scanned and
  *     converted, false if any conversion failed.
  *
  *   - The standard doesn't define sscanf() behavior when an out-of-range value
@@ -1500,15 +1482,15 @@ scan_chars(const char *s, const struct scan_spec *spec, va_list *args)
  *   - %p is not supported.
  */
 bool
-ovs_scan(const char *s, const char *template, ...)
+ovs_scan(const char *s, const char *format, ...)
 {
     const char *const start = s;
     bool ok = false;
     const char *p;
     va_list args;
 
-    va_start(args, template);
-    p = template;
+    va_start(args, format);
+    p = format;
     while (*p != '\0') {
         struct scan_spec spec;
         unsigned char c = *p++;

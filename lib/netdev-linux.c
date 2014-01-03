@@ -48,6 +48,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "connectivity.h"
 #include "coverage.h"
 #include "dpif-linux.h"
 #include "dynamic-string.h"
@@ -65,6 +66,7 @@
 #include "packets.h"
 #include "poll-loop.h"
 #include "rtnetlink-link.h"
+#include "seq.h"
 #include "shash.h"
 #include "socket-util.h"
 #include "sset.h"
@@ -357,7 +359,6 @@ struct netdev_linux {
     struct ovs_mutex mutex;
 
     unsigned int cache_valid;
-    unsigned int change_seq;
 
     bool miimon;                    /* Link status of last poll. */
     long long int miimon_interval;  /* Miimon Poll rate. Disabled if <= 0. */
@@ -426,8 +427,7 @@ static int do_set_addr(struct netdev *netdev,
                        struct in_addr addr);
 static int get_etheraddr(const char *netdev_name, uint8_t ea[ETH_ADDR_LEN]);
 static int set_etheraddr(const char *netdev_name, const uint8_t[ETH_ADDR_LEN]);
-static int get_stats_via_netlink(int ifindex, struct netdev_stats *stats);
-static int get_stats_via_proc(const char *netdev_name, struct netdev_stats *stats);
+static int get_stats_via_netlink(const struct netdev *, struct netdev_stats *);
 static int af_packet_sock(void);
 static bool netdev_linux_miimon_enabled(void);
 static void netdev_linux_miimon_run(void);
@@ -585,10 +585,7 @@ netdev_linux_changed(struct netdev_linux *dev,
                      unsigned int ifi_flags, unsigned int mask)
     OVS_REQUIRES(dev->mutex)
 {
-    dev->change_seq++;
-    if (!dev->change_seq) {
-        dev->change_seq++;
-    }
+    seq_change(connectivity_seq_get());
 
     if ((dev->ifi_flags ^ ifi_flags) & IFF_RUNNING) {
         dev->carrier_resets++;
@@ -640,7 +637,6 @@ static void
 netdev_linux_common_construct(struct netdev_linux *netdev)
 {
     ovs_mutex_init(&netdev->mutex);
-    netdev->change_seq = 1;
 }
 
 /* Creates system and internal devices. */
@@ -1315,34 +1311,6 @@ netdev_linux_miimon_wait(void)
     shash_destroy(&device_shash);
 }
 
-/* Check whether we can we use RTM_GETLINK to get network device statistics.
- * In pre-2.6.19 kernels, this was only available if wireless extensions were
- * enabled. */
-static bool
-check_for_working_netlink_stats(void)
-{
-    /* Decide on the netdev_get_stats() implementation to use.  Netlink is
-     * preferable, so if that works, we'll use it. */
-    int ifindex = do_get_ifindex("lo");
-    if (ifindex < 0) {
-        VLOG_WARN("failed to get ifindex for lo, "
-                  "obtaining netdev stats from proc");
-        return false;
-    } else {
-        struct netdev_stats stats;
-        int error = get_stats_via_netlink(ifindex, &stats);
-        if (!error) {
-            VLOG_DBG("obtaining netdev stats via rtnetlink");
-            return true;
-        } else {
-            VLOG_INFO("RTM_GETLINK failed (%s), obtaining netdev stats "
-                      "via proc (you are probably running a pre-2.6.19 "
-                      "kernel)", ovs_strerror(error));
-            return false;
-        }
-    }
-}
-
 static void
 swap_uint64(uint64_t *a, uint64_t *b)
 {
@@ -1424,38 +1392,6 @@ get_stats_via_vport(const struct netdev *netdev_,
     }
 }
 
-static int
-netdev_linux_sys_get_stats(const struct netdev *netdev_,
-                           struct netdev_stats *stats)
-{
-    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
-    static int use_netlink_stats;
-    int error;
-
-    if (ovsthread_once_start(&once)) {
-        use_netlink_stats = check_for_working_netlink_stats();
-        ovsthread_once_done(&once);
-    }
-
-    if (use_netlink_stats) {
-        int ifindex;
-
-        error = get_ifindex(netdev_, &ifindex);
-        if (!error) {
-            error = get_stats_via_netlink(ifindex, stats);
-        }
-    } else {
-        error = get_stats_via_proc(netdev_get_name(netdev_), stats);
-    }
-
-    if (error) {
-        VLOG_WARN_RL(&rl, "%s: linux-sys get stats failed %d",
-                      netdev_get_name(netdev_), error);
-    }
-    return error;
-
-}
-
 /* Retrieves current device stats for 'netdev-linux'. */
 static int
 netdev_linux_get_stats(const struct netdev *netdev_,
@@ -1467,7 +1403,7 @@ netdev_linux_get_stats(const struct netdev *netdev_,
 
     ovs_mutex_lock(&netdev->mutex);
     get_stats_via_vport(netdev_, stats);
-    error = netdev_linux_sys_get_stats(netdev_, &dev_stats);
+    error = get_stats_via_netlink(netdev_, &dev_stats);
     if (error) {
         if (!netdev->vport_stats_error) {
             error = 0;
@@ -1510,7 +1446,7 @@ netdev_tap_get_stats(const struct netdev *netdev_, struct netdev_stats *stats)
 
     ovs_mutex_lock(&netdev->mutex);
     get_stats_via_vport(netdev_, stats);
-    error = netdev_linux_sys_get_stats(netdev_, &dev_stats);
+    error = get_stats_via_netlink(netdev_, &dev_stats);
     if (error) {
         if (!netdev->vport_stats_error) {
             error = 0;
@@ -2597,19 +2533,6 @@ netdev_linux_update_flags(struct netdev *netdev_, enum netdev_flags off,
     return error;
 }
 
-static unsigned int
-netdev_linux_change_seq(const struct netdev *netdev_)
-{
-    struct netdev_linux *netdev = netdev_linux_cast(netdev_);
-    unsigned int change_seq;
-
-    ovs_mutex_lock(&netdev->mutex);
-    change_seq = netdev->change_seq;
-    ovs_mutex_unlock(&netdev->mutex);
-
-    return change_seq;
-}
-
 #define NETDEV_LINUX_CLASS(NAME, CONSTRUCT, GET_STATS, SET_STATS,  \
                            GET_FEATURES, GET_STATUS)            \
 {                                                               \
@@ -2667,8 +2590,6 @@ netdev_linux_change_seq(const struct netdev *netdev_)
     netdev_linux_arp_lookup,                                    \
                                                                 \
     netdev_linux_update_flags,                                  \
-                                                                \
-    netdev_linux_change_seq,                                    \
                                                                 \
     netdev_linux_rx_alloc,                                      \
     netdev_linux_rx_construct,                                  \
@@ -4491,110 +4412,41 @@ netdev_stats_from_rtnl_link_stats(struct netdev_stats *dst,
 }
 
 static int
-get_stats_via_netlink(int ifindex, struct netdev_stats *stats)
+get_stats_via_netlink(const struct netdev *netdev_, struct netdev_stats *stats)
 {
-    /* Policy for RTNLGRP_LINK messages.
-     *
-     * There are *many* more fields in these messages, but currently we only
-     * care about these fields. */
-    static const struct nl_policy rtnlgrp_link_policy[] = {
-        [IFLA_IFNAME] = { .type = NL_A_STRING, .optional = false },
-        [IFLA_STATS] = { .type = NL_A_UNSPEC, .optional = true,
-                         .min_len = sizeof(struct rtnl_link_stats) },
-    };
-
     struct ofpbuf request;
     struct ofpbuf *reply;
-    struct ifinfomsg *ifi;
-    struct nlattr *attrs[ARRAY_SIZE(rtnlgrp_link_policy)];
     int error;
 
     ofpbuf_init(&request, 0);
-    nl_msg_put_nlmsghdr(&request, sizeof *ifi, RTM_GETLINK, NLM_F_REQUEST);
-    ifi = ofpbuf_put_zeros(&request, sizeof *ifi);
-    ifi->ifi_family = PF_UNSPEC;
-    ifi->ifi_index = ifindex;
+    nl_msg_put_nlmsghdr(&request,
+                        sizeof(struct ifinfomsg) + NL_ATTR_SIZE(IFNAMSIZ),
+                        RTM_GETLINK, NLM_F_REQUEST);
+    ofpbuf_put_zeros(&request, sizeof(struct ifinfomsg));
+    nl_msg_put_string(&request, IFLA_IFNAME, netdev_get_name(netdev_));
     error = nl_transact(NETLINK_ROUTE, &request, &reply);
     ofpbuf_uninit(&request);
     if (error) {
         return error;
     }
 
-    if (!nl_policy_parse(reply, NLMSG_HDRLEN + sizeof(struct ifinfomsg),
-                         rtnlgrp_link_policy,
-                         attrs, ARRAY_SIZE(rtnlgrp_link_policy))) {
-        ofpbuf_delete(reply);
-        return EPROTO;
+    if (ofpbuf_try_pull(reply, NLMSG_HDRLEN + sizeof(struct ifinfomsg))) {
+        const struct nlattr *a = nl_attr_find(reply, 0, IFLA_STATS);
+        if (a && nl_attr_get_size(a) >= sizeof(struct rtnl_link_stats)) {
+            netdev_stats_from_rtnl_link_stats(stats, nl_attr_get(a));
+            error = 0;
+        } else {
+            VLOG_WARN_RL(&rl, "RTM_GETLINK reply lacks stats");
+            error = EPROTO;
+        }
+    } else {
+        VLOG_WARN_RL(&rl, "short RTM_GETLINK reply");
+        error = EPROTO;
     }
 
-    if (!attrs[IFLA_STATS]) {
-        VLOG_WARN_RL(&rl, "RTM_GETLINK reply lacks stats");
-        ofpbuf_delete(reply);
-        return EPROTO;
-    }
-
-    netdev_stats_from_rtnl_link_stats(stats, nl_attr_get(attrs[IFLA_STATS]));
 
     ofpbuf_delete(reply);
-
-    return 0;
-}
-
-static int
-get_stats_via_proc(const char *netdev_name, struct netdev_stats *stats)
-{
-    static const char fn[] = "/proc/net/dev";
-    char line[1024];
-    FILE *stream;
-    int ln;
-
-    stream = fopen(fn, "r");
-    if (!stream) {
-        VLOG_WARN_RL(&rl, "%s: open failed: %s", fn, ovs_strerror(errno));
-        return errno;
-    }
-
-    ln = 0;
-    while (fgets(line, sizeof line, stream)) {
-        if (++ln >= 3) {
-            char devname[16];
-#define X64 "%"SCNu64
-            if (!ovs_scan(line,
-                          " %15[^:]:"
-                          X64 X64 X64 X64 X64 X64 X64 "%*u"
-                          X64 X64 X64 X64 X64 X64 X64 "%*u",
-                          devname,
-                          &stats->rx_bytes,
-                          &stats->rx_packets,
-                          &stats->rx_errors,
-                          &stats->rx_dropped,
-                          &stats->rx_fifo_errors,
-                          &stats->rx_frame_errors,
-                          &stats->multicast,
-                          &stats->tx_bytes,
-                          &stats->tx_packets,
-                          &stats->tx_errors,
-                          &stats->tx_dropped,
-                          &stats->tx_fifo_errors,
-                          &stats->collisions,
-                          &stats->tx_carrier_errors)) {
-                VLOG_WARN_RL(&rl, "%s:%d: parse error", fn, ln);
-            } else if (!strcmp(devname, netdev_name)) {
-                stats->rx_length_errors = UINT64_MAX;
-                stats->rx_over_errors = UINT64_MAX;
-                stats->rx_crc_errors = UINT64_MAX;
-                stats->rx_missed_errors = UINT64_MAX;
-                stats->tx_aborted_errors = UINT64_MAX;
-                stats->tx_heartbeat_errors = UINT64_MAX;
-                stats->tx_window_errors = UINT64_MAX;
-                fclose(stream);
-                return 0;
-            }
-        }
-    }
-    VLOG_WARN_RL(&rl, "%s: no stats for %s", fn, netdev_name);
-    fclose(stream);
-    return ENODEV;
+    return error;
 }
 
 static int

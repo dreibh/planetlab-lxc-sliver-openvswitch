@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "dpif.h"
 #include "netlink.h"
 #include "ofpbuf.h"
 #include "odp-util.h"
@@ -29,7 +30,8 @@
 #include "util.h"
 
 static void
-odp_eth_set_addrs(struct ofpbuf *packet, const struct ovs_key_ethernet *eth_key)
+odp_eth_set_addrs(struct ofpbuf *packet,
+                  const struct ovs_key_ethernet *eth_key)
 {
     struct eth_header *eh = packet->l2;
 
@@ -60,7 +62,7 @@ set_arp(struct ofpbuf *packet, const struct ovs_key_arp *arp_key)
 
 static void
 odp_execute_set_action(struct ofpbuf *packet, const struct nlattr *a,
-                       struct flow *flow)
+                       struct pkt_metadata *md)
 {
     enum ovs_key_attr type = nl_attr_type(a);
     const struct ovs_key_ipv4 *ipv4_key;
@@ -71,15 +73,15 @@ odp_execute_set_action(struct ofpbuf *packet, const struct nlattr *a,
 
     switch (type) {
     case OVS_KEY_ATTR_PRIORITY:
-        flow->skb_priority = nl_attr_get_u32(a);
+        md->skb_priority = nl_attr_get_u32(a);
         break;
 
     case OVS_KEY_ATTR_TUNNEL:
-        odp_set_tunnel_action(a, &flow->tunnel);
+        odp_set_tunnel_action(a, &md->tunnel);
         break;
 
     case OVS_KEY_ATTR_SKB_MARK:
-        flow->pkt_mark = nl_attr_get_u32(a);
+        md->pkt_mark = nl_attr_get_u32(a);
         break;
 
     case OVS_KEY_ATTR_ETHERNET:
@@ -134,19 +136,19 @@ odp_execute_set_action(struct ofpbuf *packet, const struct nlattr *a,
     case OVS_KEY_ATTR_TCP_FLAGS:
     case __OVS_KEY_ATTR_MAX:
     default:
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
 }
 
 static void
-odp_execute_sample(void *dp, struct ofpbuf *packet, struct flow *key,
+odp_execute_actions__(void *dp, struct ofpbuf *packet, struct pkt_metadata *,
+                      const struct nlattr *actions, size_t actions_len,
+                      odp_execute_cb dp_execute_action, bool more_actions);
+
+static void
+odp_execute_sample(void *dp, struct ofpbuf *packet, struct pkt_metadata *md,
                    const struct nlattr *action,
-                   void (*output)(void *dp, struct ofpbuf *packet,
-                                  const struct flow *key,
-                                  odp_port_t out_port),
-                   void (*userspace)(void *dp, struct ofpbuf *packet,
-                                     const struct flow *key,
-                                     const struct nlattr *action))
+                   odp_execute_cb dp_execute_action, bool more_actions)
 {
     const struct nlattr *subactions = NULL;
     const struct nlattr *a;
@@ -169,23 +171,19 @@ odp_execute_sample(void *dp, struct ofpbuf *packet, struct flow *key,
         case OVS_SAMPLE_ATTR_UNSPEC:
         case __OVS_SAMPLE_ATTR_MAX:
         default:
-            NOT_REACHED();
+            OVS_NOT_REACHED();
         }
     }
 
-    odp_execute_actions(dp, packet, key, nl_attr_get(subactions),
-                        nl_attr_get_size(subactions), output, userspace);
+    odp_execute_actions__(dp, packet, md, nl_attr_get(subactions),
+                          nl_attr_get_size(subactions), dp_execute_action,
+                          more_actions);
 }
 
-void
-odp_execute_actions(void *dp, struct ofpbuf *packet, struct flow *key,
-                    const struct nlattr *actions, size_t actions_len,
-                    void (*output)(void *dp, struct ofpbuf *packet,
-                                   const struct flow *key,
-                                   odp_port_t out_port),
-                    void (*userspace)(void *dp, struct ofpbuf *packet,
-                                      const struct flow *key,
-                                      const struct nlattr *action))
+static void
+odp_execute_actions__(void *dp, struct ofpbuf *packet, struct pkt_metadata *md,
+                      const struct nlattr *actions, size_t actions_len,
+                      odp_execute_cb dp_execute_action, bool more_actions)
 {
     const struct nlattr *a;
     unsigned int left;
@@ -194,18 +192,16 @@ odp_execute_actions(void *dp, struct ofpbuf *packet, struct flow *key,
         int type = nl_attr_type(a);
 
         switch ((enum ovs_action_attr) type) {
+            /* These only make sense in the context of a datapath. */
         case OVS_ACTION_ATTR_OUTPUT:
-            if (output) {
-                output(dp, packet, key, u32_to_odp(nl_attr_get_u32(a)));
+        case OVS_ACTION_ATTR_USERSPACE:
+            if (dp_execute_action) {
+                /* Allow 'dp_execute_action' to steal the packet data if we do
+                 * not need it any more. */
+                bool steal = !more_actions && left <= NLA_ALIGN(a->nla_len);
+                dp_execute_action(dp, packet, md, a, steal);
             }
             break;
-
-        case OVS_ACTION_ATTR_USERSPACE: {
-            if (userspace) {
-                userspace(dp, packet, key, a);
-            }
-            break;
-        }
 
         case OVS_ACTION_ATTR_PUSH_VLAN: {
             const struct ovs_action_push_vlan *vlan = nl_attr_get(a);
@@ -228,16 +224,26 @@ odp_execute_actions(void *dp, struct ofpbuf *packet, struct flow *key,
             break;
 
         case OVS_ACTION_ATTR_SET:
-            odp_execute_set_action(packet, nl_attr_get(a), key);
+            odp_execute_set_action(packet, nl_attr_get(a), md);
             break;
 
         case OVS_ACTION_ATTR_SAMPLE:
-            odp_execute_sample(dp, packet, key, a, output, userspace);
+            odp_execute_sample(dp, packet, md, a, dp_execute_action,
+                               more_actions || left > NLA_ALIGN(a->nla_len));
             break;
 
         case OVS_ACTION_ATTR_UNSPEC:
         case __OVS_ACTION_ATTR_MAX:
-            NOT_REACHED();
+            OVS_NOT_REACHED();
         }
     }
+}
+
+void
+odp_execute_actions(void *dp, struct ofpbuf *packet, struct pkt_metadata *md,
+                    const struct nlattr *actions, size_t actions_len,
+                    odp_execute_cb dp_execute_action)
+{
+    odp_execute_actions__(dp, packet, md, actions, actions_len,
+                          dp_execute_action, false);
 }

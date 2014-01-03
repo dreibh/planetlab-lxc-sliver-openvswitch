@@ -85,6 +85,7 @@ struct ofproto {
     uint16_t alloc_port_no;     /* Last allocated OpenFlow port number. */
     uint16_t max_ports;         /* Max possible OpenFlow port num, plus one. */
     struct hmap ofport_usage;   /* Map ofport to last used time. */
+    uint64_t change_seq;        /* Change sequence for netdev status. */
 
     /* Flow tables. */
     long long int eviction_group_timer; /* For rate limited reheapification. */
@@ -162,6 +163,8 @@ struct ofport *ofproto_get_port(const struct ofproto *, ofp_port_t ofp_port);
 
 /* An OpenFlow port within a "struct ofproto".
  *
+ * The port's name is netdev_get_name(port->netdev).
+ *
  * With few exceptions, ofproto implementations may look at these fields but
  * should not modify them. */
 struct ofport {
@@ -170,7 +173,6 @@ struct ofport {
     struct netdev *netdev;
     struct ofputil_phy_port pp;
     ofp_port_t ofp_port;        /* OpenFlow port number. */
-    unsigned int change_seq;
     long long int created;      /* Time created, in msec. */
     int mtu;
 };
@@ -258,6 +260,9 @@ struct oftable {
     uint32_t eviction_group_id_basis;
     struct hmap eviction_groups_by_id;
     struct heap eviction_groups_by_size;
+
+    /* Table config: contains enum ofp_table_config; accessed atomically. */
+    atomic_uint config;
 };
 
 /* Assigns TABLE to each oftable, in turn, in OFPROTO.
@@ -450,13 +455,13 @@ void rule_collection_ref(struct rule_collection *) OVS_REQUIRES(ofproto_mutex);
 void rule_collection_unref(struct rule_collection *);
 void rule_collection_destroy(struct rule_collection *);
 
-/* Threshold at which to begin flow table eviction. Only affects the
- * ofproto-dpif implementation */
-extern unsigned flow_eviction_threshold;
+/* Limits the number of flows allowed in the datapath. Only affects the
+ * ofproto-dpif implementation. */
+extern unsigned ofproto_flow_limit;
 
-/* Number of upcall handler threads. Only affects the ofproto-dpif
- * implementation. */
-extern unsigned n_handler_threads;
+/* Number of upcall handler and revalidator threads. Only affects the
+ * ofproto-dpif implementation. */
+extern size_t n_handlers, n_revalidators;
 
 /* Determines which model to use for handling misses in the ofproto-dpif
  * implementation */
@@ -686,16 +691,6 @@ struct ofproto_class {
      * Returns 0 if successful, otherwise a positive errno value. */
     int (*type_run)(const char *type);
 
-    /* Performs periodic activity required on ofprotos of type 'type'
-     * that needs to be done with the least possible latency.
-     *
-     * This is run multiple times per main loop.  An ofproto provider may
-     * implement it or not, according to whether it provides a performance
-     * boost for that ofproto implementation.
-     *
-     * Returns 0 if successful, otherwise a positive errno value. */
-    int (*type_run_fast)(const char *type);
-
     /* Causes the poll loop to wake up when a type 'type''s 'run'
      * function needs to be called, e.g. by calling the timer or fd
      * waiting functions in poll-loop.h.
@@ -779,14 +774,6 @@ struct ofproto_class {
      * Returns 0 if successful, otherwise a positive errno value. */
     int (*run)(struct ofproto *ofproto);
 
-    /* Performs periodic activity required by 'ofproto' that needs to be done
-     * with the least possible latency.
-     *
-     * This is run multiple times per main loop.  An ofproto provider may
-     * implement it or not, according to whether it provides a performance
-     * boost for that ofproto implementation. */
-    int (*run_fast)(struct ofproto *ofproto);
-
     /* Causes the poll loop to wake up when 'ofproto''s 'run' function needs to
      * be called, e.g. by calling the timer or fd waiting functions in
      * poll-loop.h.  */
@@ -798,6 +785,12 @@ struct ofproto_class {
      * This function is optional. */
     void (*get_memory_usage)(const struct ofproto *ofproto,
                              struct simap *usage);
+
+    /* Adds some memory usage statistics for the implementation of 'type'
+     * into 'usage', for use with memory_report().
+     *
+     * This function is optional. */
+    void (*type_get_memory_usage)(const char *type, struct simap *usage);
 
     /* Every "struct rule" in 'ofproto' is about to be deleted, one by one.
      * This function may prepare for that, for example by clearing state in
@@ -1529,6 +1522,16 @@ struct ofproto_class {
      * support STP, as does a null pointer. */
     int (*get_stp_port_status)(struct ofport *ofport,
                                struct ofproto_port_stp_status *s);
+
+    /* Retrieves spanning tree protocol (STP) port statistics of 'ofport'.
+     *
+     * Stores STP state for 'ofport' in 's'.  If the 'enabled' member is
+     * false, the other member values are not meaningful.
+     *
+     * EOPNOTSUPP as a return value indicates that this ofproto_class does not
+     * support STP, as does a null pointer. */
+    int (*get_stp_port_stats)(struct ofport *ofport,
+                              struct ofproto_port_stp_stats *s);
 
     /* Registers meta-data associated with the 'n_qdscp' Qualities of Service
      * 'queues' attached to 'ofport'.  This data is not intended to be

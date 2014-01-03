@@ -35,7 +35,7 @@ traffic.
 %setup -q -n openvswitch-%{version}
 
 %build
-./configure --prefix=/usr --sysconfdir=/etc --localstatedir=%{_localstatedir} --enable-ssl %{build_number}
+./configure --prefix=/usr --sysconfdir=/etc --localstatedir=%{_localstatedir} --enable-ssl
 make %{_smp_mflags}
 
 %install
@@ -68,6 +68,9 @@ install python/compat/uuid.py $RPM_BUILD_ROOT/usr/share/openvswitch/python
 install python/compat/argparse.py $RPM_BUILD_ROOT/usr/share/openvswitch/python
 
 install -d -m 755 $RPM_BUILD_ROOT/var/lib/openvswitch
+
+# Get rid of stuff we don't want to make RPM happy.
+(cd "$RPM_BUILD_ROOT" && rm -f usr/lib/lib*)
 
 %clean
 rm -rf $RPM_BUILD_ROOT

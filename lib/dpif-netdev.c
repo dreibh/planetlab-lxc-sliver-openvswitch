@@ -40,6 +40,7 @@
 #include "flow.h"
 #include "hmap.h"
 #include "list.h"
+#include "meta-flow.h"
 #include "netdev.h"
 #include "netdev-vport.h"
 #include "netlink.h"
@@ -165,17 +166,15 @@ static int do_add_port(struct dp_netdev *, const char *devname,
 static int do_del_port(struct dp_netdev *, odp_port_t port_no);
 static int dpif_netdev_open(const struct dpif_class *, const char *name,
                             bool create, struct dpif **);
-static int dp_netdev_output_userspace(struct dp_netdev *, const struct ofpbuf *,
+static int dp_netdev_output_userspace(struct dp_netdev *, struct ofpbuf *,
                                     int queue_no, const struct flow *,
                                     const struct nlattr *userdata);
 static void dp_netdev_execute_actions(struct dp_netdev *, const struct flow *,
-                                      struct ofpbuf *,
+                                      struct ofpbuf *, struct pkt_metadata *,
                                       const struct nlattr *actions,
                                       size_t actions_len);
-static void dp_netdev_port_input(struct dp_netdev *dp,
-                                 struct dp_netdev_port *port,
-                                 struct ofpbuf *packet, uint32_t skb_priority,
-                                 uint32_t pkt_mark, const struct flow_tnl *tnl);
+static void dp_netdev_port_input(struct dp_netdev *dp, struct ofpbuf *packet,
+                                 struct pkt_metadata *md);
 
 static struct dpif_netdev *
 dpif_netdev_cast(const struct dpif *dpif)
@@ -351,6 +350,7 @@ dp_netdev_purge_queues(struct dp_netdev *dp)
 
         while (q->tail != q->head) {
             struct dp_netdev_upcall *u = &q->upcalls[q->tail++ & QUEUE_MASK];
+            ofpbuf_uninit(&u->upcall.packet);
             ofpbuf_uninit(&u->buf);
         }
     }
@@ -413,7 +413,7 @@ dpif_netdev_get_stats(const struct dpif *dpif, struct dpif_dp_stats *stats)
     stats->n_hit = dp->n_hit;
     stats->n_missed = dp->n_missed;
     stats->n_lost = dp->n_lost;
-    stats->n_masks = UINT64_MAX;
+    stats->n_masks = UINT32_MAX;
     stats->n_mask_hit = UINT64_MAX;
     ovs_mutex_unlock(&dp_netdev_mutex);
 
@@ -796,44 +796,49 @@ get_dpif_flow_stats(struct dp_netdev_flow *netdev_flow,
 }
 
 static int
-dpif_netdev_flow_mask_from_nlattrs(const struct nlattr *key, uint32_t key_len,
-                                   const struct nlattr *mask_key,
-                                   uint32_t mask_key_len, struct flow *flow,
-                                   struct flow *mask)
+dpif_netdev_mask_from_nlattrs(const struct nlattr *key, uint32_t key_len,
+                              const struct nlattr *mask_key,
+                              uint32_t mask_key_len, const struct flow *flow,
+                              struct flow *mask)
 {
-    odp_port_t in_port;
+    if (mask_key_len) {
+        if (odp_flow_key_to_mask(mask_key, mask_key_len, mask, flow)) {
+            /* This should not happen: it indicates that
+             * odp_flow_key_from_mask() and odp_flow_key_to_mask()
+             * disagree on the acceptable form of a mask.  Log the problem
+             * as an error, with enough details to enable debugging. */
+            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
 
-    if (odp_flow_key_to_flow(key, key_len, flow)
-        || (mask_key
-            && odp_flow_key_to_mask(mask_key, mask_key_len, mask, flow))) {
-        /* This should not happen: it indicates that odp_flow_key_from_flow()
-         * and odp_flow_key_to_flow() disagree on the acceptable form of a flow
-         * or odp_flow_key_from_mask() and odp_flow_key_to_mask() disagree on
-         * the acceptable form of a mask.  Log the problem as an error, with
-         * enough details to enable debugging. */
-        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+            if (!VLOG_DROP_ERR(&rl)) {
+                struct ds s;
 
-        if (!VLOG_DROP_ERR(&rl)) {
-            struct ds s;
+                ds_init(&s);
+                odp_flow_format(key, key_len, mask_key, mask_key_len, NULL, &s,
+                                true);
+                VLOG_ERR("internal error parsing flow mask %s", ds_cstr(&s));
+                ds_destroy(&s);
+            }
 
-            ds_init(&s);
-            odp_flow_format(key, key_len, mask_key, mask_key_len, NULL, &s,
-                            true);
-            VLOG_ERR("internal error parsing flow key %s", ds_cstr(&s));
-            ds_destroy(&s);
+            return EINVAL;
         }
-
-        return EINVAL;
-    }
-
-    if (mask_key) {
         /* Force unwildcard the in_port. */
         mask->in_port.odp_port = u32_to_odp(UINT32_MAX);
-    }
+    } else {
+        enum mf_field_id id;
+        /* No mask key, unwildcard everything except fields whose
+         * prerequisities are not met. */
+        memset(mask, 0x0, sizeof *mask);
 
-    in_port = flow->in_port.odp_port;
-    if (!is_valid_port_number(in_port) && in_port != ODPP_NONE) {
-        return EINVAL;
+        for (id = 0; id < MFF_N_IDS; ++id) {
+            /* Skip registers and metadata. */
+            if (!(id >= MFF_REG0 && id < MFF_REG0 + FLOW_N_REGS)
+                && id != MFF_METADATA) {
+                const struct mf_field *mf = mf_from_id(id);
+                if (mf_are_prereqs_ok(mf, flow)) {
+                    mf_mask_field(mf, mask);
+                }
+            }
+        }
     }
 
     return 0;
@@ -843,8 +848,33 @@ static int
 dpif_netdev_flow_from_nlattrs(const struct nlattr *key, uint32_t key_len,
                               struct flow *flow)
 {
-    return dpif_netdev_flow_mask_from_nlattrs(key, key_len, NULL, 0, flow,
-                                              NULL);
+    odp_port_t in_port;
+
+    if (odp_flow_key_to_flow(key, key_len, flow)) {
+        /* This should not happen: it indicates that odp_flow_key_from_flow()
+         * and odp_flow_key_to_flow() disagree on the acceptable form of a
+         * flow.  Log the problem as an error, with enough details to enable
+         * debugging. */
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+
+        if (!VLOG_DROP_ERR(&rl)) {
+            struct ds s;
+
+            ds_init(&s);
+            odp_flow_format(key, key_len, NULL, 0, NULL, &s, true);
+            VLOG_ERR("internal error parsing flow key %s", ds_cstr(&s));
+            ds_destroy(&s);
+        }
+
+        return EINVAL;
+    }
+
+    in_port = flow->in_port.odp_port;
+    if (!is_valid_port_number(in_port) && in_port != ODPP_NONE) {
+        return EINVAL;
+    }
+
+    return 0;
 }
 
 static int
@@ -942,8 +972,13 @@ dpif_netdev_flow_put(struct dpif *dpif, const struct dpif_flow_put *put)
     struct flow_wildcards wc;
     int error;
 
-    error = dpif_netdev_flow_mask_from_nlattrs(put->key, put->key_len,
-                put->mask, put->mask_len, &flow, &wc.masks);
+    error = dpif_netdev_flow_from_nlattrs(put->key, put->key_len, &flow);
+    if (error) {
+        return error;
+    }
+    error = dpif_netdev_mask_from_nlattrs(put->key, put->key_len,
+                                          put->mask, put->mask_len,
+                                          &flow, &wc.masks);
     if (error) {
         return error;
     }
@@ -1112,36 +1147,25 @@ dpif_netdev_flow_dump_done(const struct dpif *dpif OVS_UNUSED, void *state_)
 }
 
 static int
-dpif_netdev_execute(struct dpif *dpif, const struct dpif_execute *execute)
+dpif_netdev_execute(struct dpif *dpif, struct dpif_execute *execute)
 {
     struct dp_netdev *dp = get_dp_netdev(dpif);
-    struct flow md;
-    int error;
+    struct pkt_metadata *md = &execute->md;
+    struct flow key;
 
     if (execute->packet->size < ETH_HEADER_LEN ||
         execute->packet->size > UINT16_MAX) {
         return EINVAL;
     }
 
-    /* Get packet metadata. */
-    error = dpif_netdev_flow_from_nlattrs(execute->key, execute->key_len, &md);
-    if (!error) {
-        struct ofpbuf *copy;
-        struct flow key;
-
-        /* Make a deep copy of 'packet', because we might modify its data. */
-        copy = ofpbuf_clone_with_headroom(execute->packet, DP_NETDEV_HEADROOM);
-
-        /* Extract flow key. */
-        flow_extract(copy, md.skb_priority, md.pkt_mark, &md.tunnel,
-                     &md.in_port, &key);
-        ovs_mutex_lock(&dp_netdev_mutex);
-        dp_netdev_execute_actions(dp, &key, copy,
-                                  execute->actions, execute->actions_len);
-        ovs_mutex_unlock(&dp_netdev_mutex);
-        ofpbuf_delete(copy);
-    }
-    return error;
+    /* Extract flow key. */
+    flow_extract(execute->packet, md->skb_priority, md->pkt_mark, &md->tunnel,
+                 (union flow_in_port *)&md->in_port, &key);
+    ovs_mutex_lock(&dp_netdev_mutex);
+    dp_netdev_execute_actions(dp, &key, execute->packet, md, execute->actions,
+                              execute->actions_len);
+    ovs_mutex_unlock(&dp_netdev_mutex);
+    return 0;
 }
 
 static int
@@ -1186,7 +1210,6 @@ dpif_netdev_recv(struct dpif *dpif, struct dpif_upcall *upcall,
         struct dp_netdev_upcall *u = &q->upcalls[q->tail++ & QUEUE_MASK];
 
         *upcall = u->upcall;
-        upcall->packet = buf;
 
         ofpbuf_uninit(buf);
         *buf = u->buf;
@@ -1236,23 +1259,21 @@ dp_netdev_flow_used(struct dp_netdev_flow *netdev_flow,
 }
 
 static void
-dp_netdev_port_input(struct dp_netdev *dp, struct dp_netdev_port *port,
-                     struct ofpbuf *packet, uint32_t skb_priority,
-                     uint32_t pkt_mark, const struct flow_tnl *tnl)
+dp_netdev_port_input(struct dp_netdev *dp, struct ofpbuf *packet,
+                     struct pkt_metadata *md)
 {
     struct dp_netdev_flow *netdev_flow;
     struct flow key;
-    union flow_in_port in_port_;
 
     if (packet->size < ETH_HEADER_LEN) {
         return;
     }
-    in_port_.odp_port = port->port_no;
-    flow_extract(packet, skb_priority, pkt_mark, tnl, &in_port_, &key);
+    flow_extract(packet, md->skb_priority, md->pkt_mark, &md->tunnel,
+                 (union flow_in_port *)&md->in_port, &key);
     netdev_flow = dp_netdev_lookup_flow(dp, &key);
     if (netdev_flow) {
         dp_netdev_flow_used(netdev_flow, packet);
-        dp_netdev_execute_actions(dp, &key, packet,
+        dp_netdev_execute_actions(dp, &key, packet, md,
                                   netdev_flow->actions,
                                   netdev_flow->actions_len);
         dp->n_hit++;
@@ -1268,22 +1289,25 @@ dpif_netdev_run(struct dpif *dpif)
     struct dp_netdev_port *port;
     struct dp_netdev *dp;
     struct ofpbuf packet;
+    size_t buf_size;
 
     ovs_mutex_lock(&dp_netdev_mutex);
     dp = get_dp_netdev(dpif);
-    ofpbuf_init(&packet,
-                DP_NETDEV_HEADROOM + VLAN_ETH_HEADER_LEN + dp->max_mtu);
+    ofpbuf_init(&packet, 0);
+
+    buf_size = DP_NETDEV_HEADROOM + VLAN_ETH_HEADER_LEN + dp->max_mtu;
 
     LIST_FOR_EACH (port, node, &dp->port_list) {
         int error;
 
-        /* Reset packet contents. */
+        /* Reset packet contents. Packet data may have been stolen. */
         ofpbuf_clear(&packet);
-        ofpbuf_reserve(&packet, DP_NETDEV_HEADROOM);
+        ofpbuf_reserve_with_tailroom(&packet, DP_NETDEV_HEADROOM, buf_size);
 
         error = port->rx ? netdev_rx_recv(port->rx, &packet) : EOPNOTSUPP;
         if (!error) {
-            dp_netdev_port_input(dp, port, &packet, 0, 0, NULL);
+            struct pkt_metadata md = PKT_METADATA_INITIALIZER(port->port_no);
+            dp_netdev_port_input(dp, &packet, &md);
         } else if (error != EAGAIN && error != EOPNOTSUPP) {
             static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
 
@@ -1322,8 +1346,18 @@ dpif_netdev_wait(struct dpif *dpif)
     ovs_mutex_unlock(&dp_netdev_mutex);
 }
 
+static void
+dp_netdev_output_port(struct dp_netdev *dp, struct ofpbuf *packet,
+                      odp_port_t out_port)
+{
+    struct dp_netdev_port *p = dp->ports[odp_to_u32(out_port)];
+    if (p) {
+        netdev_send(p->netdev, packet);
+    }
+}
+
 static int
-dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
+dp_netdev_output_userspace(struct dp_netdev *dp, struct ofpbuf *packet,
                            int queue_no, const struct flow *flow,
                            const struct nlattr *userdata)
 {
@@ -1337,7 +1371,7 @@ dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
         upcall->type = queue_no;
 
         /* Allocate buffer big enough for everything. */
-        buf_size = ODPUTIL_FLOW_KEY_BYTES + 2 + packet->size;
+        buf_size = ODPUTIL_FLOW_KEY_BYTES;
         if (userdata) {
             buf_size += NLA_ALIGN(userdata->nla_len);
         }
@@ -1354,15 +1388,10 @@ dp_netdev_output_userspace(struct dp_netdev *dp, const struct ofpbuf *packet,
                                           NLA_ALIGN(userdata->nla_len));
         }
 
-        /* Put packet.
-         *
-         * We adjust 'data' and 'size' in 'buf' so that only the packet itself
-         * is visible in 'upcall->packet'.  The ODP flow and (if present)
-         * userdata become part of the headroom. */
-        ofpbuf_put_zeros(buf, 2);
-        buf->data = ofpbuf_put(buf, packet->data, packet->size);
-        buf->size = packet->size;
-        upcall->packet = buf;
+        /* Steal packet data. */
+        ovs_assert(packet->source == OFPBUF_MALLOC);
+        upcall->packet = *packet;
+        ofpbuf_use(packet, NULL, 0);
 
         seq_change(dp->queue_seq);
 
@@ -1379,40 +1408,54 @@ struct dp_netdev_execute_aux {
 };
 
 static void
-dp_netdev_action_output(void *aux_, struct ofpbuf *packet,
-                        const struct flow *flow OVS_UNUSED,
-                        odp_port_t out_port)
+dp_execute_cb(void *aux_, struct ofpbuf *packet,
+              const struct pkt_metadata *md OVS_UNUSED,
+              const struct nlattr *a, bool may_steal)
 {
     struct dp_netdev_execute_aux *aux = aux_;
-    struct dp_netdev_port *p = aux->dp->ports[odp_to_u32(out_port)];
-    if (p) {
-        netdev_send(p->netdev, packet);
+    int type = nl_attr_type(a);
+
+    switch ((enum ovs_action_attr)type) {
+    case OVS_ACTION_ATTR_OUTPUT:
+        dp_netdev_output_port(aux->dp, packet, u32_to_odp(nl_attr_get_u32(a)));
+        break;
+
+    case OVS_ACTION_ATTR_USERSPACE: {
+        const struct nlattr *userdata;
+
+        userdata = nl_attr_find_nested(a, OVS_USERSPACE_ATTR_USERDATA);
+
+        /* Make a copy if we are not allowed to steal the packet's data. */
+        if (!may_steal) {
+            packet = ofpbuf_clone_with_headroom(packet, DP_NETDEV_HEADROOM);
+        }
+        dp_netdev_output_userspace(aux->dp, packet, DPIF_UC_ACTION, aux->key,
+                                   userdata);
+        if (!may_steal) {
+            ofpbuf_uninit(packet);
+        }
+        break;
+    }
+    case OVS_ACTION_ATTR_PUSH_VLAN:
+    case OVS_ACTION_ATTR_POP_VLAN:
+    case OVS_ACTION_ATTR_PUSH_MPLS:
+    case OVS_ACTION_ATTR_POP_MPLS:
+    case OVS_ACTION_ATTR_SET:
+    case OVS_ACTION_ATTR_SAMPLE:
+    case OVS_ACTION_ATTR_UNSPEC:
+    case __OVS_ACTION_ATTR_MAX:
+        OVS_NOT_REACHED();
     }
 }
 
 static void
-dp_netdev_action_userspace(void *aux_, struct ofpbuf *packet,
-                           const struct flow *flow OVS_UNUSED,
-                           const struct nlattr *a)
-{
-    struct dp_netdev_execute_aux *aux = aux_;
-    const struct nlattr *userdata;
-
-    userdata = nl_attr_find_nested(a, OVS_USERSPACE_ATTR_USERDATA);
-    dp_netdev_output_userspace(aux->dp, packet, DPIF_UC_ACTION, aux->key,
-                               userdata);
-}
-
-static void
 dp_netdev_execute_actions(struct dp_netdev *dp, const struct flow *key,
-                          struct ofpbuf *packet,
+                          struct ofpbuf *packet, struct pkt_metadata *md,
                           const struct nlattr *actions, size_t actions_len)
 {
     struct dp_netdev_execute_aux aux = {dp, key};
-    struct flow md = *key;   /* Packet metadata, may be modified by actions. */
 
-    odp_execute_actions(&aux, packet, &md, actions, actions_len,
-                        dp_netdev_action_output, dp_netdev_action_userspace);
+    odp_execute_actions(&aux, packet, md, actions, actions_len, dp_execute_cb);
 }
 
 #define DPIF_NETDEV_CLASS_FUNCTIONS			\

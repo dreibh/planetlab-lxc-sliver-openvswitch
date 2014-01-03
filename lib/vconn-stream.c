@@ -64,10 +64,6 @@ vconn_stream_new(struct stream *stream, int connect_status,
     s->txbuf = NULL;
     s->rxbuf = NULL;
     s->n_packets = 0;
-    s->vconn.remote_ip = stream_get_remote_ip(stream);
-    s->vconn.remote_port = stream_get_remote_port(stream);
-    s->vconn.local_ip = stream_get_local_ip(stream);
-    s->vconn.local_port = stream_get_local_port(stream);
     return &s->vconn;
 }
 
@@ -281,7 +277,7 @@ vconn_stream_wait(struct vconn *vconn, enum vconn_wait_type wait)
         break;
 
     default:
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
 }
 

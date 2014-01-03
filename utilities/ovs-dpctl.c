@@ -350,7 +350,6 @@ dpctl_add_if(int argc OVS_UNUSED, char *argv[])
 
         error = netdev_set_config(netdev, &args);
         if (error) {
-            ovs_error(error, "%s: failed to configure network device", name);
             goto next;
         }
 
@@ -459,7 +458,6 @@ dpctl_set_if(int argc, char *argv[])
         error = netdev_set_config(netdev, &args);
         smap_destroy(&args);
         if (error) {
-            ovs_error(error, "%s: failed to configure network device", name);
             goto next;
         }
 
@@ -563,11 +561,11 @@ show_dpif(struct dpif *dpif)
         printf("\tlookups: hit:%"PRIu64" missed:%"PRIu64" lost:%"PRIu64"\n"
                "\tflows: %"PRIu64"\n",
                stats.n_hit, stats.n_missed, stats.n_lost, stats.n_flows);
-        if (stats.n_masks != UINT64_MAX) {
+        if (stats.n_masks != UINT32_MAX) {
             uint64_t n_pkts = stats.n_hit + stats.n_missed;
             double avg = n_pkts ? (double) stats.n_mask_hit / n_pkts : 0.0;
 
-            printf("\tmasks: hit:%"PRIu64" total:%"PRIu64" hit/pkt:%.2f\n",
+            printf("\tmasks: hit:%"PRIu64" total:%"PRIu32" hit/pkt:%.2f\n",
                    stats.n_mask_hit, stats.n_masks, avg);
         }
     }

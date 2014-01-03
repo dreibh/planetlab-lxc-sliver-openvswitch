@@ -540,7 +540,7 @@ ofp_print_switch_features(struct ds *string, const struct ofp_header *oh)
     case OFP13_VERSION:
         return; /* no ports in ofp13_switch_features */
     default:
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
 
     ofp_print_phy_ports(string, oh->version, &b);
@@ -860,10 +860,26 @@ static void
 ofp_print_duration(struct ds *string, unsigned int sec, unsigned int nsec)
 {
     ds_put_format(string, "%u", sec);
+
+    /* If there are no fractional seconds, don't print any decimals.
+     *
+     * If the fractional seconds can be expressed exactly as milliseconds,
+     * print 3 decimals.  Open vSwitch provides millisecond precision for most
+     * time measurements, so printing 3 decimals every time makes it easier to
+     * spot real changes in flow dumps that refresh themselves quickly.
+     *
+     * If the fractional seconds are more precise than milliseconds, print the
+     * number of decimals needed to express them exactly.
+     */
     if (nsec > 0) {
-        ds_put_format(string, ".%09u", nsec);
-        while (string->string[string->length - 1] == '0') {
-            string->length--;
+        unsigned int msec = nsec / 1000000;
+        if (msec * 1000000 == nsec) {
+            ds_put_format(string, ".%03u", msec);
+        } else {
+            ds_put_format(string, ".%09u", nsec);
+            while (string->string[string->length - 1] == '0') {
+                string->length--;
+            }
         }
     }
     ds_put_char(string, 's');
@@ -1789,7 +1805,7 @@ ofp_print_ofpst_table_reply(struct ds *string, const struct ofp_header *oh,
         break;
 
     default:
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
 }
 
@@ -1937,7 +1953,7 @@ ofp_print_role_generic(struct ds *string, enum ofp12_controller_role role,
         ds_put_cstr(string, "slave");
         break;
     default:
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
 
     if (generation_id != UINT64_MAX) {
@@ -1987,7 +2003,7 @@ ofp_print_role_status_message(struct ds *string, const struct ofp_header *oh)
         ds_put_cstr(string, "experimenter_data_changed");
         break;
     default:
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
 }
 

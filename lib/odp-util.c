@@ -26,6 +26,7 @@
 #include <string.h>
 #include "byte-order.h"
 #include "coverage.h"
+#include "dpif.h"
 #include "dynamic-string.h"
 #include "flow.h"
 #include "netlink.h"
@@ -845,7 +846,7 @@ odp_tun_key_from_attr(const struct nlattr *attr, struct flow_tnl *tun)
         return ODP_FIT_ERROR;
     }
     if (unknown) {
-            return ODP_FIT_TOO_MUCH;
+        return ODP_FIT_TOO_MUCH;
     }
     return ODP_FIT_PERFECT;
 }
@@ -2596,6 +2597,74 @@ odp_flow_key_from_mask(struct ofpbuf *buf, const struct flow *mask,
     odp_flow_key_from_flow__(buf, mask, flow, u32_to_odp(odp_in_port_mask));
 }
 
+/* Generate ODP flow key from the given packet metadata */
+void
+odp_key_from_pkt_metadata(struct ofpbuf *buf, const struct pkt_metadata *md)
+{
+    nl_msg_put_u32(buf, OVS_KEY_ATTR_PRIORITY, md->skb_priority);
+
+    if (md->tunnel.ip_dst) {
+        tun_key_to_attr(buf, &md->tunnel);
+    }
+
+    nl_msg_put_u32(buf, OVS_KEY_ATTR_SKB_MARK, md->pkt_mark);
+
+    /* Add an ingress port attribute if 'odp_in_port' is not the magical
+     * value "ODPP_NONE". */
+    if (md->in_port != ODPP_NONE) {
+        nl_msg_put_odp_port(buf, OVS_KEY_ATTR_IN_PORT, md->in_port);
+    }
+}
+
+/* Generate packet metadata from the given ODP flow key. */
+void
+odp_key_to_pkt_metadata(const struct nlattr *key, size_t key_len,
+                        struct pkt_metadata *md)
+{
+    const struct nlattr *nla;
+    size_t left;
+    uint32_t wanted_attrs = 1u << OVS_KEY_ATTR_PRIORITY |
+        1u << OVS_KEY_ATTR_SKB_MARK | 1u << OVS_KEY_ATTR_TUNNEL |
+        1u << OVS_KEY_ATTR_IN_PORT;
+
+    memset(md, 0, sizeof *md);
+    md->in_port = ODPP_NONE;
+
+    NL_ATTR_FOR_EACH (nla, left, key, key_len) {
+        uint16_t type = nl_attr_type(nla);
+        size_t len = nl_attr_get_size(nla);
+        int expected_len = odp_flow_key_attr_len(type);
+
+        if (len != expected_len && expected_len >= 0) {
+            continue;
+        }
+
+        if (type == OVS_KEY_ATTR_PRIORITY) {
+            md->skb_priority = nl_attr_get_u32(nla);
+            wanted_attrs &= ~(1u << OVS_KEY_ATTR_PRIORITY);
+        } else if (type == OVS_KEY_ATTR_SKB_MARK) {
+            md->pkt_mark = nl_attr_get_u32(nla);
+            wanted_attrs &= ~(1u << OVS_KEY_ATTR_SKB_MARK);
+        } else if (type == OVS_KEY_ATTR_TUNNEL) {
+            enum odp_key_fitness res;
+
+            res = odp_tun_key_from_attr(nla, &md->tunnel);
+            if (res == ODP_FIT_ERROR) {
+                memset(&md->tunnel, 0, sizeof md->tunnel);
+            } else if (res == ODP_FIT_PERFECT) {
+                wanted_attrs &= ~(1u << OVS_KEY_ATTR_TUNNEL);
+            }
+        } else if (type == OVS_KEY_ATTR_IN_PORT) {
+            md->in_port = nl_attr_get_odp_port(nla);
+            wanted_attrs &= ~(1u << OVS_KEY_ATTR_IN_PORT);
+        }
+
+        if (!wanted_attrs) {
+            return; /* Have everything. */
+        }
+    }
+}
+
 uint32_t
 odp_flow_key_hash(const struct nlattr *key, size_t key_len)
 {
@@ -3035,7 +3104,9 @@ parse_8021q_onward(const struct nlattr *attrs[OVS_KEY_ATTR_MAX + 1],
     if (!is_mask && !(present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_VLAN))) {
         return ODP_FIT_TOO_LITTLE;
     } else {
-        tci = nl_attr_get_be16(attrs[OVS_KEY_ATTR_VLAN]);
+        tci = (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_VLAN)
+               ? nl_attr_get_be16(attrs[OVS_KEY_ATTR_VLAN])
+               : htons(0));
         if (!is_mask) {
             if (tci == htons(0)) {
                 /* Corner case for a truncated 802.1Q header. */
@@ -3146,8 +3217,9 @@ odp_flow_key_to_flow__(const struct nlattr *key, size_t key_len,
         return ODP_FIT_ERROR;
     }
 
-    if ((is_mask && (src_flow->vlan_tci & htons(VLAN_CFI))) ||
-        (!is_mask && src_flow->dl_type == htons(ETH_TYPE_VLAN))) {
+    if (is_mask
+        ? (src_flow->vlan_tci & htons(VLAN_CFI)) != 0
+        : src_flow->dl_type == htons(ETH_TYPE_VLAN)) {
         return parse_8021q_onward(attrs, present_attrs, out_of_range_attr,
                                   expected_attrs, flow, key, key_len, src_flow);
     }
@@ -3383,7 +3455,7 @@ commit_mpls_action(const struct flow *flow, struct flow *base,
         break;
     }
     default:
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
 
     base->dl_type = flow->dl_type;

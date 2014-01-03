@@ -23,7 +23,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "cfm.h"
+#include "classifier.h"
 #include "flow.h"
+#include "meta-flow.h"
 #include "netflow.h"
 #include "sset.h"
 #include "stp.h"
@@ -36,12 +38,12 @@ struct bfd_cfg;
 struct cfm_settings;
 struct cls_rule;
 struct netdev;
-struct ofproto;
+struct netdev_stats;
 struct ofport;
+struct ofproto;
 struct shash;
 struct simap;
 struct smap;
-struct netdev_stats;
 
 struct ofproto_controller_info {
     bool is_connected;
@@ -53,13 +55,6 @@ struct ofproto_controller_info {
     } pairs;
 };
 
-struct ofexpired {
-    struct flow flow;
-    uint64_t packet_count;      /* Packets from subrules. */
-    uint64_t byte_count;        /* Bytes from subrules. */
-    long long int used;         /* Last-used time (0 if never used). */
-};
-
 struct ofproto_sflow_options {
     struct sset targets;
     uint32_t sampling_rate;
@@ -69,7 +64,6 @@ struct ofproto_sflow_options {
     char *agent_device;
     char *control_ip;
 };
-
 
 struct ofproto_ipfix_bridge_exporter_options {
     struct sset targets;
@@ -115,6 +109,10 @@ struct ofproto_port_stp_status {
     enum stp_state state;
     unsigned int sec_in_state;
     enum stp_role role;
+};
+
+struct ofproto_port_stp_stats {
+    bool enabled;               /* If false, ignore other members. */
     int tx_count;               /* Number of BPDUs transmitted. */
     int rx_count;               /* Number of valid BPDUs received. */
     int error_count;            /* Number of bad BPDUs received. */
@@ -167,7 +165,6 @@ struct iface_hint {
 void ofproto_init(const struct shash *iface_hints);
 
 int ofproto_type_run(const char *datapath_type);
-int ofproto_type_run_fast(const char *datapath_type);
 void ofproto_type_wait(const char *datapath_type);
 
 int ofproto_create(const char *datapath, const char *datapath_type,
@@ -176,11 +173,11 @@ void ofproto_destroy(struct ofproto *);
 int ofproto_delete(const char *name, const char *type);
 
 int ofproto_run(struct ofproto *);
-int ofproto_run_fast(struct ofproto *);
 void ofproto_wait(struct ofproto *);
 bool ofproto_is_alive(const struct ofproto *);
 
 void ofproto_get_memory_usage(const struct ofproto *, struct simap *);
+void ofproto_type_get_memory_usage(const char *datapath_type, struct simap *);
 
 /* A port within an OpenFlow switch.
  *
@@ -216,8 +213,7 @@ int ofproto_port_dump_done(struct ofproto_port_dump *);
           : (ofproto_port_dump_done(DUMP), false));         \
         )
 
-#define OFPROTO_FLOW_EVICTION_THRESHOLD_DEFAULT  2500
-#define OFPROTO_FLOW_EVICTION_THRESHOLD_MIN 100
+#define OFPROTO_FLOW_LIMIT_DEFAULT 200000
 
 /* How flow misses should be handled in ofproto-dpif */
 enum ofproto_flow_miss_model {
@@ -246,12 +242,12 @@ void ofproto_reconnect_controllers(struct ofproto *);
 void ofproto_set_extra_in_band_remotes(struct ofproto *,
                                        const struct sockaddr_in *, size_t n);
 void ofproto_set_in_band_queue(struct ofproto *, int queue_id);
-void ofproto_set_flow_eviction_threshold(unsigned threshold);
+void ofproto_set_flow_limit(unsigned limit);
 void ofproto_set_flow_miss_model(unsigned model);
 void ofproto_set_forward_bpdu(struct ofproto *, bool forward_bpdu);
 void ofproto_set_mac_table_config(struct ofproto *, unsigned idle_time,
                                   size_t max_entries);
-void ofproto_set_n_handler_threads(unsigned limit);
+void ofproto_set_threads(size_t n_handlers, size_t n_revalidators);
 void ofproto_set_dp_desc(struct ofproto *, const char *dp_desc);
 int ofproto_set_snoops(struct ofproto *, const struct sset *snoops);
 int ofproto_set_netflow(struct ofproto *,
@@ -281,6 +277,8 @@ int ofproto_port_set_stp(struct ofproto *, ofp_port_t ofp_port,
                          const struct ofproto_port_stp_settings *);
 int ofproto_port_get_stp_status(struct ofproto *, ofp_port_t ofp_port,
                                 struct ofproto_port_stp_status *);
+int ofproto_port_get_stp_stats(struct ofproto *, ofp_port_t ofp_port,
+                               struct ofproto_port_stp_stats *);
 int ofproto_port_set_queues(struct ofproto *, ofp_port_t ofp_port,
                             const struct ofproto_port_queue *,
                             size_t n_queues);
@@ -381,6 +379,12 @@ struct ofproto_table_settings {
      * distinguished by different values for the subfields within 'groups'. */
     struct mf_subfield *groups;
     size_t n_groups;
+
+    /*
+     * Fields for which prefix trie lookup is maintained.
+     */
+    unsigned int n_prefix_fields;
+    enum mf_field_id prefix_fields[CLS_MAX_TRIES];
 };
 
 int ofproto_get_n_tables(const struct ofproto *);

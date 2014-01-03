@@ -5,9 +5,12 @@
 # notice and this notice are preserved.  This file is offered as-is,
 # without warranty of any kind.
 
-noinst_LIBRARIES += lib/libopenvswitch.a
+lib_LTLIBRARIES += lib/libopenvswitch.la
 
-lib_libopenvswitch_a_SOURCES = \
+lib_libopenvswitch_la_LIBADD = $(SSL_LIBS)
+lib_libopenvswitch_la_LDFLAGS = -release $(VERSION)
+
+lib_libopenvswitch_la_SOURCES = \
 	lib/aes128.c \
 	lib/aes128.h \
 	lib/async-append.h \
@@ -29,6 +32,8 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/command-line.c \
 	lib/command-line.h \
 	lib/compiler.h \
+	lib/connectivity.c \
+	lib/connectivity.h \
 	lib/coverage.c \
 	lib/coverage.h \
 	lib/crc32c.c \
@@ -193,8 +198,8 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/stream-unix.c \
 	lib/stream.c \
 	lib/stream.h \
+	lib/stdio.c \
 	lib/string.c \
-	lib/string.h \
 	lib/svec.c \
 	lib/svec.h \
 	lib/table.c \
@@ -234,29 +239,34 @@ lib_libopenvswitch_a_SOURCES = \
 	lib/vswitch-idl.h \
 	lib/vtep-idl.c \
 	lib/vtep-idl.h
+EXTRA_DIST += \
+	lib/stdio.h.in \
+	lib/string.h.in
 
-nodist_lib_libopenvswitch_a_SOURCES = \
+nodist_lib_libopenvswitch_la_SOURCES = \
 	lib/dirs.c
-CLEANFILES += $(nodist_lib_libopenvswitch_a_SOURCES)
+CLEANFILES += $(nodist_lib_libopenvswitch_la_SOURCES)
 
-noinst_LIBRARIES += lib/libsflow.a
-lib_libsflow_a_SOURCES = \
+lib_LTLIBRARIES += lib/libsflow.la
+lib_libsflow_la_LDFLAGS = -release $(VERSION)
+lib_libsflow_la_SOURCES = \
 	lib/sflow_api.h \
 	lib/sflow.h \
 	lib/sflow_agent.c \
 	lib/sflow_sampler.c \
 	lib/sflow_poller.c \
 	lib/sflow_receiver.c
-lib_libsflow_a_CFLAGS = $(AM_CFLAGS)
+lib_libsflow_la_CPPFLAGS = $(AM_CPPFLAGS)
+lib_libsflow_la_CFLAGS = $(AM_CFLAGS)
 if HAVE_WNO_UNUSED
-lib_libsflow_a_CFLAGS += -Wno-unused
+lib_libsflow_la_CFLAGS += -Wno-unused
 endif
 if HAVE_WNO_UNUSED_PARAMETER
-lib_libsflow_a_CFLAGS += -Wno-unused-parameter
+lib_libsflow_la_CFLAGS += -Wno-unused-parameter
 endif
 
 if LINUX_DATAPATH
-lib_libopenvswitch_a_SOURCES += \
+lib_libopenvswitch_la_SOURCES += \
 	lib/dpif-linux.c \
 	lib/dpif-linux.h \
 	lib/netdev-linux.c \
@@ -273,18 +283,18 @@ lib_libopenvswitch_a_SOURCES += \
 endif
 
 if HAVE_POSIX_AIO
-lib_libopenvswitch_a_SOURCES += lib/async-append-aio.c
+lib_libopenvswitch_la_SOURCES += lib/async-append-aio.c
 else
-lib_libopenvswitch_a_SOURCES += lib/async-append-null.c
+lib_libopenvswitch_la_SOURCES += lib/async-append-null.c
 endif
 
 if ESX
-lib_libopenvswitch_a_SOURCES += \
+lib_libopenvswitch_la_SOURCES += \
         lib/route-table-stub.c
 endif
 
 if HAVE_IF_DL
-lib_libopenvswitch_a_SOURCES += \
+lib_libopenvswitch_la_SOURCES += \
 	lib/netdev-bsd.c \
 	lib/rtbsd.c \
 	lib/rtbsd.h \
@@ -292,8 +302,8 @@ lib_libopenvswitch_a_SOURCES += \
 endif
 
 if HAVE_OPENSSL
-lib_libopenvswitch_a_SOURCES += lib/stream-ssl.c
-nodist_lib_libopenvswitch_a_SOURCES += lib/dhparams.c
+lib_libopenvswitch_la_SOURCES += lib/stream-ssl.c
+nodist_lib_libopenvswitch_la_SOURCES += lib/dhparams.c
 lib/dhparams.c: lib/dh1024.pem lib/dh2048.pem lib/dh4096.pem
 	(echo '#include "lib/dhparams.h"' &&				\
 	 openssl dhparam -C -in $(srcdir)/lib/dh1024.pem -noout &&	\
@@ -302,7 +312,7 @@ lib/dhparams.c: lib/dh1024.pem lib/dh2048.pem lib/dh4096.pem
 	| sed 's/\(get_dh[0-9]*\)()/\1(void)/' > lib/dhparams.c.tmp
 	mv lib/dhparams.c.tmp lib/dhparams.c
 else
-lib_libopenvswitch_a_SOURCES += lib/stream-nossl.c
+lib_libopenvswitch_la_SOURCES += lib/stream-nossl.c
 endif
 
 EXTRA_DIST += \
@@ -395,25 +405,3 @@ lib-install-data-local:
 	$(MKDIR_P) $(DESTDIR)$(LOGDIR)
 	$(MKDIR_P) $(DESTDIR)$(DBDIR)
 
-if !USE_LINKER_SECTIONS
-# All distributed sources, with names adjust properly for referencing
-# from $(builddir).
-all_sources = \
-	`for file in $(DIST_SOURCES); do \
-		if test -f $$file; then \
-			echo $$file; \
-		else \
-			echo $(VPATH)/$$file; \
-		fi; \
-	 done`
-
-lib/coverage.$(OBJEXT): lib/coverage.def
-lib/coverage.def: $(DIST_SOURCES)
-	sed -n 's|^COVERAGE_DEFINE(\([_a-zA-Z0-9]\{1,\}\)).*$$|COVERAGE_COUNTER(\1)|p' $(all_sources) | LC_ALL=C sort -u > $@
-CLEANFILES += lib/coverage.def
-
-lib/vlog.$(OBJEXT): lib/vlog-modules.def
-lib/vlog-modules.def: $(DIST_SOURCES)
-	sed -n 's|^VLOG_DEFINE_\(THIS_\)\{0,1\}MODULE(\([_a-zA-Z0-9]\{1,\}\)).*$$|VLOG_MODULE(\2)|p' $(all_sources) | LC_ALL=C sort -u > $@
-CLEANFILES += lib/vlog-modules.def
-endif

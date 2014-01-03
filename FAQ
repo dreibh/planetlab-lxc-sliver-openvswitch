@@ -173,22 +173,17 @@ Q: Should userspace or kernel be upgraded first to minimize downtime?
 Q: What features are not available in the Open vSwitch kernel datapath
    that ships as part of the upstream Linux kernel?
 
-A: The kernel module in upstream Linux 3.3 and later does not include
-   tunnel virtual ports, that is, interfaces with type "gre",
-   "ipsec_gre", "gre64", "ipsec_gre64", "vxlan", or "lisp".  It is
-   possible to create tunnels in Linux and attach them to Open vSwitch
-   as system devices.  However, they cannot be dynamically created
-   through the OVSDB protocol or set the tunnel ids as a flow action.
-
-   Work is in progress in adding tunnel virtual ports to the upstream
-   Linux version of the Open vSwitch kernel module.  For now, if you
-   need these features, use the kernel module from the Open vSwitch
+A: The kernel module in upstream Linux does not include support for
+   LISP. Work is in progress to add support for LISP to the upstream
+   Linux version of the Open vSwitch kernel module. For now, if you
+   need this feature, use the kernel module from the Open vSwitch
    distribution instead of the upstream Linux kernel module.
 
-   The upstream kernel module does not include patch ports, but this
-   only matters for Open vSwitch 1.9 and earlier, because Open vSwitch
-   1.10 and later implement patch ports without using this kernel
-   feature.
+   Certain features require kernel support to function or to have
+   reasonable performance. If the ovs-vswitchd log file indicates that
+   a feature is not supported, consider upgrading to a newer upstream
+   Linux release or using the kernel module paired with the userspace
+   distribution.
 
 Q: What features are not available when using the userspace datapath?
 
@@ -723,6 +718,19 @@ A: Did you install OpenFlow flows that use your queues?  This is the
 
    Refer to the previous question for an example.
 
+Q: I'd like to take advantage of some QoS feature that Open vSwitch
+   doesn't yet support.  How do I do that?
+
+A: Open vSwitch does not implement QoS itself.  Instead, it can
+   configure some, but not all, of the QoS features built into the
+   Linux kernel.  If you need some QoS feature that OVS cannot
+   configure itself, then the first step is to figure out whether
+   Linux QoS supports that feature.  If it does, then you can submit a
+   patch to support Open vSwitch configuration for that feature, or
+   you can use "tc" directly to configure the feature in Linux.  (If
+   Linux QoS doesn't support the feature you want, then first you have
+   to add that support to Linux.)
+
 Q: I configured QoS, correctly, but my measurements show that it isn't
    working as well as I expect.
 
@@ -935,6 +943,50 @@ A: Yes.  Use an "internal port" configured as an access port.  For
        ovs-vsctl add-port br0 vlan9 tag=9 -- set interface vlan9 type=internal
        ifconfig vlan9 192.168.0.7
 
+   See also the following question.
+
+Q: I configured one IP address on VLAN 0 and another on VLAN 9, like
+   this:
+
+       ovs-vsctl add-br br0
+       ovs-vsctl add-port br0 eth0
+       ifconfig br0 192.168.0.5
+       ovs-vsctl add-port br0 vlan9 tag=9 -- set interface vlan9 type=internal
+       ifconfig vlan9 192.168.0.9
+
+   but other hosts that are only on VLAN 0 can reach the IP address
+   configured on VLAN 9.  What's going on?
+
+A: RFC 1122 section 3.3.4.2 "Multihoming Requirements" describes two
+   approaches to IP address handling in Internet hosts:
+
+       - In the "Strong ES Model", where an ES is a host ("End
+         System"), an IP address is primarily associated with a
+         particular interface.  The host discards packets that arrive
+         on interface A if they are destined for an IP address that is
+         configured on interface B.  The host never sends packets from
+         interface A using a source address configured on interface B.
+
+       - In the "Weak ES Model", an IP address is primarily associated
+         with a host.  The host accepts packets that arrive on any
+         interface if they are destined for any of the host's IP
+         addresses, even if the address is configured on some
+         interface other than the one on which it arrived.  The host
+         does not restrict itself to sending packets from an IP
+         address associated with the originating interface.
+
+   Linux uses the weak ES model.  That means that when packets
+   destined to the VLAN 9 IP address arrive on eth0 and are bridged to
+   br0, the kernel IP stack accepts them there for the VLAN 9 IP
+   address, even though they were not received on vlan9, the network
+   device for vlan9.
+
+   To simulate the strong ES model on Linux, one may add iptables rule
+   to filter packets based on source and destination address and
+   adjust ARP configuration with sysctls.
+
+   BSD uses the strong ES model.
+
 Q: My OpenFlow controller doesn't see the VLANs that I expect.
 
 A: The configuration for VLANs in the Open vSwitch database (e.g. via
@@ -1030,7 +1082,7 @@ A: Open vSwitch 1.9 and earlier support only OpenFlow 1.0 (plus
 
        ovs-vsctl set bridge br0 protocols=OpenFlow10,OpenFlow12,OpenFlow13
 
-   Open vSwitch version 1.12 and later will have experimental support
+   Open vSwitch version 2.0 and later will have experimental support
    for OpenFlow 1.1, 1.2, and 1.3.  On these versions of Open vSwitch,
    the following command enables OpenFlow 1.0, 1.1, 1.2, and 1.3 on
    bridge br0:

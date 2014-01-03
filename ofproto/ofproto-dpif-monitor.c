@@ -53,7 +53,7 @@ struct mport {
 };
 
 /* hmap that contains "struct mport"s. */
-static struct hmap monitor_hmap;
+static struct hmap monitor_hmap = HMAP_INITIALIZER(&monitor_hmap);
 
 /* heap for ordering mport based on bfd/cfm wakeup time. */
 static struct heap monitor_heap;
@@ -63,11 +63,9 @@ static pthread_t monitor_tid;
 /* True if the monitor thread is running. */
 static bool monitor_running;
 
-static struct seq *monitor_seq;
 static struct latch monitor_exit_latch;
 static struct ovs_rwlock monitor_rwlock = OVS_RWLOCK_INITIALIZER;
 
-static void monitor_init(void);
 static void *monitor_main(void *);
 static void monitor_run(void);
 
@@ -149,26 +147,12 @@ mport_update(struct mport *mport, struct bfd *bfd, struct cfm *cfm,
         memcpy(mport->hw_addr, hw_addr, ETH_ADDR_LEN);
     }
     /* If bfd/cfm is added or reconfigured, move the mport on top of the heap
-     * and wakes up the monitor thread. */
+     * so that the monitor thread can run the mport next time it wakes up. */
     if (mport->bfd || mport->cfm) {
         heap_change(&monitor_heap, &mport->heap_node, LLONG_MAX);
-        seq_change(monitor_seq);
     }
 }
 
-
-/* Initializes the global variables.  This will only run once. */
-static void
-monitor_init(void)
-{
-    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
-
-    if (ovsthread_once_start(&once)) {
-        hmap_init(&monitor_hmap);
-        monitor_seq = seq_create();
-        ovsthread_once_done(&once);
-    }
-}
 
 /* The 'main' function for the monitor thread. */
 static void *
@@ -177,16 +161,17 @@ monitor_main(void * args OVS_UNUSED)
     set_subprogram_name("monitor");
     VLOG_INFO("monitor thread created");
     while (!latch_is_set(&monitor_exit_latch)) {
-        uint64_t seq = seq_read(monitor_seq);
-
         monitor_run();
         latch_wait(&monitor_exit_latch);
-        seq_wait(monitor_seq, seq);
         poll_block();
     }
     VLOG_INFO("monitor thread terminated");
     return NULL;
 }
+
+/* The monitor thread should wake up this often to ensure that newly added or
+ * reconfigured monitoring ports are run in a timely manner. */
+#define MONITOR_INTERVAL_MSEC 100
 
 /* Checks the sending of control packets on mports that have timed out.
  * Sends the control packets if needed.  Executes bfd and cfm periodic
@@ -199,7 +184,7 @@ monitor_run(void)
     struct ofpbuf packet;
 
     ofpbuf_use_stub(&packet, stub, sizeof stub);
-    ovs_rwlock_rdlock(&monitor_rwlock);
+    ovs_rwlock_wrlock(&monitor_rwlock);
     prio_now = MSEC_TO_PRIO(time_msec());
     /* Peeks the top of heap and checks if we should run this mport. */
     while (!heap_is_empty(&monitor_heap)
@@ -227,14 +212,19 @@ monitor_run(void)
             bfd_wait(mport->bfd);
         }
         /* Computes the next wakeup time for this mport. */
-        next_wake_time = MIN(bfd_wake_time(mport->bfd), cfm_wake_time(mport->cfm));
-        heap_change(&monitor_heap, heap_max(&monitor_heap),
+        next_wake_time = MIN(bfd_wake_time(mport->bfd),
+                             cfm_wake_time(mport->cfm));
+        heap_change(&monitor_heap, &mport->heap_node,
                     MSEC_TO_PRIO(next_wake_time));
     }
 
     /* Waits on the earliest next wakeup time. */
     if (!heap_is_empty(&monitor_heap)) {
-        poll_timer_wait_until(PRIO_TO_MSEC(heap_max(&monitor_heap)->priority));
+        long long int next_timeout, next_mport_wakeup;
+
+        next_timeout = time_msec() + MONITOR_INTERVAL_MSEC;
+        next_mport_wakeup = PRIO_TO_MSEC(heap_max(&monitor_heap)->priority);
+        poll_timer_wait_until(MIN(next_timeout, next_mport_wakeup));
     }
     ovs_rwlock_unlock(&monitor_rwlock);
     ofpbuf_uninit(&packet);
@@ -250,7 +240,6 @@ ofproto_dpif_monitor_port_update(const struct ofport_dpif *ofport,
                                  struct bfd *bfd, struct cfm *cfm,
                                  uint8_t hw_addr[ETH_ADDR_LEN])
 {
-    monitor_init();
     ovs_rwlock_wrlock(&monitor_rwlock);
     if (!cfm && !bfd) {
         mport_unregister(ofport);
@@ -271,5 +260,28 @@ ofproto_dpif_monitor_port_update(const struct ofport_dpif *ofport,
         xpthread_join(monitor_tid, NULL);
         latch_destroy(&monitor_exit_latch);
         monitor_running = false;
+    }
+}
+
+/* Moves the mport on top of the heap.  This is necessary when
+ * for example, bfd POLL is received and the mport should
+ * immediately send FINAL back. */
+void
+ofproto_dpif_monitor_port_send_soon_safe(const struct ofport_dpif *ofport)
+{
+    ovs_rwlock_wrlock(&monitor_rwlock);
+    ofproto_dpif_monitor_port_send_soon(ofport);
+    ovs_rwlock_unlock(&monitor_rwlock);
+}
+
+void
+ofproto_dpif_monitor_port_send_soon(const struct ofport_dpif *ofport)
+    OVS_REQ_WRLOCK(monitor_rwlock)
+{
+    struct mport *mport;
+
+    mport = mport_find(ofport);
+    if (mport) {
+        heap_change(&monitor_heap, &mport->heap_node, LLONG_MAX);
     }
 }

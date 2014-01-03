@@ -6,6 +6,29 @@ AT_CHECK([ovs-ofctl -vwarn probe br0])
 OVS_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([ofproto - handling messages with bad version])
+OVS_VSWITCHD_START
+
+# Start a monitor running OpenFlow 1.0, then send the switch an OF1.1 features
+# request
+AT_CHECK([ovs-ofctl -P openflow10 monitor br0 --detach --no-chdir --pidfile])
+ovs-appctl -t ovs-ofctl ofctl/set-output-file monitor.log
+AT_CAPTURE_FILE([monitor.log])
+ovs-appctl -t ovs-ofctl ofctl/send 0205000801234567
+ovs-appctl -t ovs-ofctl ofctl/barrier
+ovs-appctl -t ovs-ofctl exit
+
+AT_CHECK([sed 's/ (xid=0x[[0-9a-fA-F]]*)//
+/ECHO/d' monitor.log], [0], [dnl
+send: OFPT_FEATURES_REQUEST (OF1.1):
+OFPT_ERROR (OF1.1): OFPBRC_BAD_VERSION
+OFPT_FEATURES_REQUEST (OF1.1):
+OFPT_BARRIER_REPLY:
+])
+
+OVS_VSWITCHD_STOP(["/received OpenFlow version 0x02 != expected 01/d"])
+AT_CLEANUP
+
 AT_SETUP([ofproto - feature request, config request])
 OVS_VSWITCHD_START
 AT_CHECK([ovs-ofctl -vwarn show br0], [0], [stdout])
@@ -1658,31 +1681,34 @@ AT_CHECK([ovs-ofctl -O OpenFlow12 monitor br0 --detach --no-chdir --pidfile])
 ovs-appctl -t ovs-ofctl ofctl/barrier
 ovs-appctl -t ovs-ofctl ofctl/set-output-file monitor.log
 : > expout
+: > experr
 
 # find out current role
 ovs-appctl -t ovs-ofctl ofctl/send 031800180000000200000000000000000000000000000000
-echo >>expout "send: OFPT_ROLE_REQUEST (OF1.2) (xid=0x2): role=nochange"
+echo >>experr "send: OFPT_ROLE_REQUEST (OF1.2) (xid=0x2): role=nochange"
 echo >>expout "OFPT_ROLE_REPLY (OF1.2) (xid=0x2): role=equal"
 
 # Become slave (generation_id is initially undefined, so 2^63+2 should not be stale)
 ovs-appctl -t ovs-ofctl ofctl/send 031800180000000300000003000000008000000000000002
-echo >>expout "send: OFPT_ROLE_REQUEST (OF1.2) (xid=0x3): role=slave generation_id=9223372036854775810"
+echo >>experr "send: OFPT_ROLE_REQUEST (OF1.2) (xid=0x3): role=slave generation_id=9223372036854775810"
 echo >>expout "OFPT_ROLE_REPLY (OF1.2) (xid=0x3): role=slave generation_id=9223372036854775810"
 
 # Try to become the master using a stale generation ID
 ovs-appctl -t ovs-ofctl ofctl/send 031800180000000400000002000000000000000000000002
-echo >>expout "send: OFPT_ROLE_REQUEST (OF1.2) (xid=0x4): role=master generation_id=2"
+echo >>experr "send: OFPT_ROLE_REQUEST (OF1.2) (xid=0x4): role=master generation_id=2"
 echo >>expout "OFPT_ERROR (OF1.2) (xid=0x4): OFPRRFC_STALE"
 echo >>expout "OFPT_ROLE_REQUEST (OF1.2) (xid=0x4): role=master generation_id=2"
 
 # Become master using a valid generation ID
 ovs-appctl -t ovs-ofctl ofctl/send 031800180000000500000002000000000000000000000001
-echo >>expout "send: OFPT_ROLE_REQUEST (OF1.2) (xid=0x5): role=master generation_id=1"
+echo >>experr "send: OFPT_ROLE_REQUEST (OF1.2) (xid=0x5): role=master generation_id=1"
 echo >>expout "OFPT_ROLE_REPLY (OF1.2) (xid=0x5): role=master generation_id=1"
 ovs-appctl -t ovs-ofctl ofctl/barrier
 echo >>expout "OFPT_BARRIER_REPLY (OF1.2) (xid=0x3):"
 
-AT_CHECK([cat monitor.log], [0], [expout])
+AT_CHECK([grep -v '^send:' monitor.log], [0], [expout])
+mv experr expout
+AT_CHECK([grep '^send:' monitor.log], [0], [expout])
 
 ovs-appctl -t ovs-ofctl exit
 OVS_VSWITCHD_STOP
@@ -2150,5 +2176,60 @@ OFPT_GET_ASYNC_REPLY (OF1.3):
 OFPT_BARRIER_REPLY (OF1.3):
 ])
 
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+AT_SETUP([ofproto - ofport_request])
+OVS_VSWITCHD_START
+ADD_OF_PORTS([br0], [1], [2], [3])
+
+set_and_check_specific_ofports () {
+    ovs-vsctl set Interface p1 ofport_request="$1" -- \
+	      set Interface p2 ofport_request="$2" -- \
+	      set Interface p3 ofport_request="$3"
+    ofports=`ovs-vsctl get Interface p1 ofport -- \
+		       get Interface p2 ofport -- \
+		       get Interface p3 ofport`
+    AT_CHECK_UNQUOTED([echo $ofports], [0], [$1 $2 $3
+])
+}
+for pre in      '1 2 3' '1 3 2' '2 1 3' '2 3 1' '3 1 2' '3 2 1'; do
+    for post in '1 2 3' '1 3 2' '2 1 3' '2 3 1' '3 1 2' '3 2 1'; do
+        echo -----------------------------------------------------------
+        echo "Check changing port numbers from $pre to $post"
+	set_and_check_ofports $pre
+	set_and_check_ofports $post
+    done
+done
+
+ovs-vsctl del-port p3
+
+set_and_check_poorly_specified_ofports () {
+    ovs-vsctl set Interface p1 ofport_request="$1" -- \
+	      set Interface p2 ofport_request="$2"
+    p1=`ovs-vsctl get Interface p1 ofport`
+    p2=`ovs-vsctl get Interface p2 ofport`
+    echo $p1 $p2
+
+    AT_CHECK([test "$p1" != "$p2"])
+    if test "$1" = "$2" && test "$1" != '[[]]'; then
+        # One port number must be the requested one.
+	AT_CHECK([test "$p1" = "$1" || test "$p2" = "$1"])
+	# The other port number must be different (already tested above).
+    else
+        AT_CHECK([test "$1" = '[[]]' || test "$p1" == "$1"])
+        AT_CHECK([test "$2" = '[[]]' || test "$p2" == "$2"])
+    fi
+}
+for pre in      '1 2' '[[]] 2' '1 [[]]' '[[]] [[]]' '2 1' '[[]] 1' '2 [[]]' \
+                '1 1' '2 2'; do
+    for post in '1 2' '[[]] 2' '1 [[]]' '[[]] [[]]' '2 1' '[[]] 1' '2 [[]]' \
+                '1 1' '2 2'; do
+        echo -----------------------------------------------------------
+        echo "Check changing port numbers from $pre to $post"
+        set_and_check_poorly_specified_ofports $pre
+        set_and_check_poorly_specified_ofports $post
+    done
+done
 OVS_VSWITCHD_STOP
 AT_CLEANUP

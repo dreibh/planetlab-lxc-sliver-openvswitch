@@ -191,7 +191,7 @@ tcls_remove(struct tcls *cls, const struct test_rule *rule)
             return;
         }
     }
-    NOT_REACHED();
+    OVS_NOT_REACHED();
 }
 
 static bool
@@ -245,7 +245,7 @@ match(const struct cls_rule *wild_, const struct flow *fixed)
                     ^ wild.flow.in_port.ofp_port)
                    & wild.wc.masks.in_port.ofp_port);
         } else {
-            NOT_REACHED();
+            OVS_NOT_REACHED();
         }
 
         if (!eq) {
@@ -558,7 +558,7 @@ make_rule(int wc_fields, unsigned int priority, int value_pat)
         } else if (f_idx == CLS_F_IDX_IN_PORT) {
             match.wc.masks.in_port.ofp_port = u16_to_ofp(UINT16_MAX);
         } else {
-            NOT_REACHED();
+            OVS_NOT_REACHED();
         }
     }
 
@@ -609,6 +609,10 @@ shuffle_u32s(uint32_t *p, size_t n)
 
 /* Classifier tests. */
 
+static enum mf_field_id trie_fields[2] = {
+    MFF_IPV4_DST, MFF_IPV4_SRC
+};
+
 /* Tests an empty classifier. */
 static void
 test_empty(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
@@ -617,7 +621,8 @@ test_empty(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
     struct tcls tcls;
 
     classifier_init(&cls, flow_segment_u32s);
-    ovs_rwlock_rdlock(&cls.rwlock);
+    ovs_rwlock_wrlock(&cls.rwlock);
+    classifier_set_prefix_fields(&cls, trie_fields, ARRAY_SIZE(trie_fields));
     tcls_init(&tcls);
     assert(classifier_is_empty(&cls));
     assert(tcls_is_empty(&tcls));
@@ -650,6 +655,8 @@ test_single_rule(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 
         classifier_init(&cls, flow_segment_u32s);
         ovs_rwlock_wrlock(&cls.rwlock);
+        classifier_set_prefix_fields(&cls, trie_fields,
+                                     ARRAY_SIZE(trie_fields));
         tcls_init(&tcls);
 
         tcls_rule = tcls_insert(&tcls, rule);
@@ -689,6 +696,8 @@ test_rule_replacement(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 
         classifier_init(&cls, flow_segment_u32s);
         ovs_rwlock_wrlock(&cls.rwlock);
+        classifier_set_prefix_fields(&cls, trie_fields,
+                                     ARRAY_SIZE(trie_fields));
         tcls_init(&tcls);
         tcls_insert(&tcls, rule1);
         classifier_insert(&cls, &rule1->cls_rule);
@@ -801,6 +810,8 @@ test_many_rules_in_one_list (int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 
             classifier_init(&cls, flow_segment_u32s);
             ovs_rwlock_wrlock(&cls.rwlock);
+            classifier_set_prefix_fields(&cls, trie_fields,
+                                         ARRAY_SIZE(trie_fields));
             tcls_init(&tcls);
 
             for (i = 0; i < ARRAY_SIZE(ops); i++) {
@@ -903,6 +914,8 @@ test_many_rules_in_one_table(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 
         classifier_init(&cls, flow_segment_u32s);
         ovs_rwlock_wrlock(&cls.rwlock);
+        classifier_set_prefix_fields(&cls, trie_fields,
+                                     ARRAY_SIZE(trie_fields));
         tcls_init(&tcls);
 
         for (i = 0; i < N_RULES; i++) {
@@ -965,6 +978,8 @@ test_many_rules_in_n_tables(int n_tables)
 
         classifier_init(&cls, flow_segment_u32s);
         ovs_rwlock_wrlock(&cls.rwlock);
+        classifier_set_prefix_fields(&cls, trie_fields,
+                                     ARRAY_SIZE(trie_fields));
         tcls_init(&tcls);
 
         for (i = 0; i < MAX_RULES; i++) {
@@ -1098,7 +1113,7 @@ next_random_flow(struct flow *flow, unsigned int idx)
                 }
             }
         }
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
 
     /* 16 randomly chosen flows with N >= 3 nonzero values. */

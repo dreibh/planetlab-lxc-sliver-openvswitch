@@ -637,12 +637,13 @@ connmgr_set_controllers(struct connmgr *mgr,
 
     shash_destroy(&new_controllers);
 
+    ovs_mutex_unlock(&ofproto_mutex);
+
     update_in_band_remotes(mgr);
     update_fail_open(mgr);
     if (had_controllers != connmgr_has_controllers(mgr)) {
         ofproto_flush_flows(mgr->ofproto);
     }
-    ovs_mutex_unlock(&ofproto_mutex);
 }
 
 /* Drops the connections between 'mgr' and all of its primary and secondary
@@ -1549,8 +1550,13 @@ do_send_packet_ins(struct ofconn *ofconn, struct list *txq)
     LIST_FOR_EACH_SAFE (pin, next_pin, list_node, txq) {
         list_remove(&pin->list_node);
 
-        rconn_send_with_limit(ofconn->rconn, pin,
-                              ofconn->packet_in_counter, 100);
+        if (rconn_send_with_limit(ofconn->rconn, pin,
+                                  ofconn->packet_in_counter, 100) == EAGAIN) {
+            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 5);
+
+            VLOG_INFO_RL(&rl, "%s: dropping packet-in due to queue overflow",
+                         rconn_get_name(ofconn->rconn));
+        }
     }
 }
 
@@ -1965,7 +1971,7 @@ ofmonitor_report(struct connmgr *mgr, struct rule *rule,
 
     default:
     case NXFME_ABBREV:
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
 
     LIST_FOR_EACH (ofconn, node, &mgr->all_conns) {

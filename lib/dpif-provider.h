@@ -311,12 +311,10 @@ struct dpif_class {
     int (*flow_dump_done)(const struct dpif *dpif, void *state);
 
     /* Performs the 'execute->actions_len' bytes of actions in
-     * 'execute->actions' on the Ethernet frame specified in 'execute->packet'
-     * taken from the flow specified in the 'execute->key_len' bytes of
-     * 'execute->key'.  ('execute->key' is mostly redundant with
-     * 'execute->packet', but it contains some metadata that cannot be
-     * recovered from 'execute->packet', such as tunnel and in_port.) */
-    int (*execute)(struct dpif *dpif, const struct dpif_execute *execute);
+     * 'execute->actions' on the Ethernet frame in 'execute->packet'
+     * and on the packet metadata in 'execute->md'.
+     * May modify both packet and metadata. */
+    int (*execute)(struct dpif *dpif, struct dpif_execute *execute);
 
     /* Executes each of the 'n_ops' operations in 'ops' on 'dpif', in the order
      * in which they are specified, placing each operation's results in the
@@ -341,11 +339,17 @@ struct dpif_class {
      * '*upcall', using 'buf' for storage.  Should only be called if 'recv_set'
      * has been used to enable receiving packets from 'dpif'.
      *
-     * The implementation should point 'upcall->packet' and 'upcall->key' into
-     * data in the caller-provided 'buf'.  If necessary to make room, the
-     * implementation may expand the data in 'buf'.  (This is hardly a great
-     * way to do things but it works out OK for the dpif providers that exist
-     * so far.)
+     * The implementation should point 'upcall->key' and 'upcall->userdata'
+     * (if any) into data in the caller-provided 'buf'.  The implementation may
+     * also use 'buf' for storing the data of 'upcall->packet'.  If necessary
+     * to make room, the implementation may reallocate the data in 'buf'.
+     *
+     * The caller owns the data of 'upcall->packet' and may modify it.  If
+     * packet's headroom is exhausted as it is manipulated, 'upcall->packet'
+     * will be reallocated.  This requires the data of 'upcall->packet' to be
+     * released with ofpbuf_uninit() before 'upcall' is destroyed.  However,
+     * when an error is returned, the 'upcall->packet' may be uninitialized
+     * and should not be released.
      *
      * This function must not block.  If no upcall is pending when it is
      * called, it should return EAGAIN without blocking. */

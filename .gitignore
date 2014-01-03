@@ -40,11 +40,14 @@
 /depcomp
 /distfiles
 /install-sh
+/libtool
 /manpage-check
 /missing
 /missing-distfiles
 /package.m4
 /stamp-h1
+/_build-gcc
+/_build-clang
 Module.symvers
 TAGS
 cscope.*
