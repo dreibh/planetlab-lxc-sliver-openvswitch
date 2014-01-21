@@ -57,6 +57,11 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Tue Dec 10 2013 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-2.0.90-1
+- merge with upstream
+- switch to version 2, multi-threaded - specifically 2.0.90
+- simple connectivity test - run with 'make test'
+
 * Sat Jul 06 2013 Giuseppe Lettieri <g.lettieri@iet.unipi.it> - sliver-openvswitch-1.11.90-1
 - merge with mainstream
 
