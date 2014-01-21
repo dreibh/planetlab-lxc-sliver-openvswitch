@@ -96,8 +96,8 @@
  *    - OVS_REQUIRES(MUTEX) indicate that the function may only be called with
  *      MUTEX held and that the function does not release MUTEX.
  *
- *    - OVS_LOCKS_EXCLUDED(MUTEX) indicates that the function may only be
- *      called when MUTEX is not held.
+ *    - OVS_EXCLUDED(MUTEX) indicates that the function may only be called when
+ *      MUTEX is not held.
  *
  *
  * The following variants, with the same syntax, apply to reader-writer locks:
@@ -108,7 +108,7 @@
  *    OVS_RELEASES         OVS_RELEASES         OVS_RELEASES
  *    OVS_TRY_LOCK         OVS_TRY_RDLOCK       OVS_TRY_WRLOCK
  *    OVS_REQUIRES         OVS_REQ_RDLOCK       OVS_REQ_WRLOCK
- *    OVS_LOCKS_EXCLUDED   OVS_LOCKS_EXCLUDED   OVS_LOCKS_EXCLUDED
+ *    OVS_EXCLUDED         OVS_EXCLUDED         OVS_EXCLUDED
  */
 #define OVS_LOCKABLE __attribute__((lockable))
 #define OVS_REQ_RDLOCK(...) __attribute__((shared_locks_required(__VA_ARGS__)))
@@ -177,6 +177,19 @@
 #define OVS_PACKED(DECL) DECL __attribute__((__packed__))
 #else
 #define OVS_PACKED(DECL) __pragma(pack(push, 1)) DECL __pragma(pack(pop))
+#endif
+
+#ifdef _MSC_VER
+#define CCALL __cdecl
+#pragma section(".CRT$XCU",read)
+#define OVS_CONSTRUCTOR(f) \
+    static void __cdecl f(void); \
+    __declspec(allocate(".CRT$XCU")) void (__cdecl*f##_)(void) = f; \
+    static void __cdecl f(void)
+#else
+#define OVS_CONSTRUCTOR(f) \
+    static void f(void) __attribute__((constructor)); \
+    static void f(void)
 #endif
 
 #endif /* compiler.h */

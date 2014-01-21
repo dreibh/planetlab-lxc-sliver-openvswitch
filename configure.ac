@@ -1,4 +1,4 @@
-# Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
+# Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013, 2014 Nicira, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 # limitations under the License.
 
 AC_PREREQ(2.64)
-AC_INIT(openvswitch, 2.0.90, ovs-bugs@openvswitch.org)
+AC_INIT(openvswitch, 2.1.90, ovs-bugs@openvswitch.org)
 AC_CONFIG_SRCDIR([datapath/datapath.c])
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_AUX_DIR([build-aux])
@@ -24,7 +24,6 @@ AM_INIT_AUTOMAKE
 AC_PROG_CC
 AM_PROG_CC_C_O
 AC_PROG_CPP
-AC_PROG_RANLIB
 AC_PROG_MKDIR_P
 AC_PROG_FGREP
 AC_PROG_EGREP
@@ -41,6 +40,9 @@ AC_USE_SYSTEM_EXTENSIONS
 AC_C_BIGENDIAN
 AC_SYS_LARGEFILE
 
+LT_INIT([disable-shared])
+m4_pattern_forbid([LT_INIT]) dnl Make autoconf fail if libtool is missing.
+
 AC_SEARCH_LIBS([pow], [m])
 AC_SEARCH_LIBS([clock_gettime], [rt])
 AC_SEARCH_LIBS([timer_create], [rt])
@@ -55,8 +57,6 @@ OVS_CHECK_NETLINK
 OVS_CHECK_OPENSSL
 OVS_CHECK_LOGDIR
 OVS_CHECK_PYTHON
-OVS_CHECK_PYUIC4
-OVS_CHECK_OVSDBMONITOR
 OVS_CHECK_PYTHON_COMPAT
 OVS_CHECK_DOT
 OVS_CHECK_IF_PACKET
@@ -78,7 +78,6 @@ OVS_CHECK_BACKTRACE
 OVS_CHECK_MALLOC_HOOKS
 OVS_CHECK_VALGRIND
 OVS_CHECK_SOCKET_LIBS
-OVS_CHECK_LINKER_SECTIONS
 OVS_CHECK_XENSERVER_VERSION
 OVS_CHECK_GROFF
 OVS_CHECK_GNU_MAKE
@@ -91,6 +90,9 @@ OVS_CHECK_ATOMIC_ALWAYS_LOCK_FREE(4)
 OVS_CHECK_ATOMIC_ALWAYS_LOCK_FREE(8)
 OVS_CHECK_POSIX_AIO
 OVS_CHECK_PTHREAD_SET_NAME
+
+OVS_CHECK_INCLUDE_NEXT([stdio.h string.h])
+AC_CONFIG_FILES([lib/stdio.h lib/string.h])
 
 OVS_ENABLE_OPTION([-Wall])
 OVS_ENABLE_OPTION([-Wextra])
@@ -128,7 +130,6 @@ AC_CONFIG_FILES(tests/atlocal)
 dnl This makes sure that include/openflow gets created in the build directory.
 AC_CONFIG_COMMANDS([include/openflow/openflow.h.stamp])
 
-AC_CONFIG_COMMANDS([ovsdb/ovsdbmonitor/dummy], [:])
 AC_CONFIG_COMMANDS([utilities/bugtool/dummy], [:])
 
 AM_CONDITIONAL([LINUX_DATAPATH], [test "$HAVE_NETLINK" = yes && test "$ESX" = no])

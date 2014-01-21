@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <math.h>
 
+#include "connectivity.h"
 #include "coverage.h"
 #include "dynamic-string.h"
 #include "flow.h"
@@ -34,6 +35,7 @@
 #include "ofpbuf.h"
 #include "packets.h"
 #include "poll-loop.h"
+#include "seq.h"
 #include "shash.h"
 #include "timeval.h"
 #include "unixctl.h"
@@ -101,7 +103,7 @@ struct bond {
     long long int next_fake_iface_update; /* LLONG_MAX if disabled. */
     bool lacp_fallback_ab; /* Fallback to active-backup on LACP failure. */
 
-    atomic_int ref_cnt;
+    struct ovs_refcount ref_cnt;
 };
 
 static struct ovs_rwlock rwlock = OVS_RWLOCK_INITIALIZER;
@@ -162,7 +164,7 @@ bond_mode_to_string(enum bond_mode balance) {
     case BM_AB:
         return "active-backup";
     }
-    NOT_REACHED();
+    OVS_NOT_REACHED();
 }
 
 
@@ -179,7 +181,7 @@ bond_create(const struct bond_settings *s)
     bond = xzalloc(sizeof *bond);
     hmap_init(&bond->slaves);
     bond->next_fake_iface_update = LLONG_MAX;
-    atomic_init(&bond->ref_cnt, 1);
+    ovs_refcount_init(&bond->ref_cnt);
 
     bond_reconfigure(bond, s);
     return bond;
@@ -191,9 +193,7 @@ bond_ref(const struct bond *bond_)
     struct bond *bond = CONST_CAST(struct bond *, bond_);
 
     if (bond) {
-        int orig;
-        atomic_add(&bond->ref_cnt, 1, &orig);
-        ovs_assert(orig > 0);
+        ovs_refcount_ref(&bond->ref_cnt);
     }
     return bond;
 }
@@ -203,15 +203,8 @@ void
 bond_unref(struct bond *bond)
 {
     struct bond_slave *slave, *next_slave;
-    int orig;
 
-    if (!bond) {
-        return;
-    }
-
-    atomic_sub(&bond->ref_cnt, 1, &orig);
-    ovs_assert(orig > 0);
-    if (orig != 1) {
+    if (!bond || ovs_refcount_unref(&bond->ref_cnt) != 1) {
         return;
     }
 
@@ -229,6 +222,7 @@ bond_unref(struct bond *bond)
 
     free(bond->hash);
     free(bond->name);
+    ovs_refcount_destroy(&bond->ref_cnt);
     free(bond);
 }
 
@@ -441,7 +435,7 @@ bond_run(struct bond *bond, enum lacp_status lacp_status)
     /* Enable slaves based on link status and LACP feedback. */
     HMAP_FOR_EACH (slave, hmap_node, &bond->slaves) {
         bond_link_status_update(slave);
-        slave->change_seq = netdev_change_seq(slave->netdev);
+        slave->change_seq = seq_read(connectivity_seq_get());
     }
     if (!bond->active_slave || !bond->active_slave->enabled) {
         bond_choose_active_slave(bond);
@@ -472,9 +466,7 @@ bond_wait(struct bond *bond)
             poll_timer_wait_until(slave->delay_expires);
         }
 
-        if (slave->change_seq != netdev_change_seq(slave->netdev)) {
-            poll_immediate_wake();
-        }
+        seq_wait(connectivity_seq_get(), slave->change_seq);
     }
 
     if (bond->next_fake_iface_update != LLONG_MAX) {
@@ -549,7 +541,7 @@ bond_compose_learning_packet(struct bond *bond,
     packet = ofpbuf_new(0);
     compose_rarp(packet, eth_src);
     if (vlan) {
-        eth_push_vlan(packet, htons(vlan));
+        eth_push_vlan(packet, htons(ETH_TYPE_VLAN), htons(vlan));
     }
 
     *port_aux = slave->aux;
@@ -647,7 +639,7 @@ bond_check_admissibility(struct bond *bond, const void *slave_,
         goto out;
     }
 
-    NOT_REACHED();
+    OVS_NOT_REACHED();
 out:
     ovs_rwlock_unlock(&rwlock);
     return verdict;
@@ -1468,7 +1460,7 @@ choose_output_slave(const struct bond *bond, const struct flow *flow,
         return e->slave;
 
     default:
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
 }
 

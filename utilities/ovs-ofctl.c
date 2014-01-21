@@ -325,7 +325,8 @@ usage(void)
            "  benchmark TARGET N COUNT    bandwidth of COUNT N-byte echos\n"
            "SWITCH or TARGET is an active OpenFlow connection method.\n"
            "\nOther commands:\n"
-           "  ofp-parse FILE              print messages read from FILE\n",
+           "  ofp-parse FILE              print messages read from FILE\n"
+           "  ofp-parse-pcap PCAP         print OpenFlow read from PCAP\n",
            program_name, program_name);
     vconn_usage(true, false, false);
     daemon_usage();
@@ -1539,7 +1540,7 @@ ofctl_monitor(int argc, char *argv[])
         case OFP13_VERSION:
             break;
         default:
-            NOT_REACHED();
+            OVS_NOT_REACHED();
         }
     }
 
@@ -1601,7 +1602,7 @@ ofctl_packet_out(int argc, char *argv[])
     struct vconn *vconn;
     char *error;
     int i;
-    enum ofputil_protocol usable_protocols; /* TODO: Use in proto selection */
+    enum ofputil_protocol usable_protocols; /* XXX: Use in proto selection */
 
     ofpbuf_init(&ofpacts, 64);
     error = parse_ofpacts(argv[3], &ofpacts, &usable_protocols);
@@ -1823,6 +1824,92 @@ ofctl_ofp_parse(int argc OVS_UNUSED, char *argv[])
     if (file != stdin) {
         fclose(file);
     }
+}
+
+static bool
+is_openflow_port(ovs_be16 port_, char *ports[])
+{
+    uint16_t port = ntohs(port_);
+    if (ports[0]) {
+        int i;
+
+        for (i = 0; ports[i]; i++) {
+            if (port == atoi(ports[i])) {
+                return true;
+            }
+        }
+        return false;
+    } else {
+        return port == OFP_PORT || port == OFP_OLD_PORT;
+    }
+}
+
+static void
+ofctl_ofp_parse_pcap(int argc OVS_UNUSED, char *argv[])
+{
+    struct tcp_reader *reader;
+    FILE *file;
+    int error;
+    bool first;
+
+    file = pcap_open(argv[1], "rb");
+    if (!file) {
+        ovs_fatal(errno, "%s: open failed", argv[1]);
+    }
+
+    reader = tcp_reader_open();
+    first = true;
+    for (;;) {
+        struct ofpbuf *packet;
+        long long int when;
+        struct flow flow;
+
+        error = pcap_read(file, &packet, &when);
+        if (error) {
+            break;
+        }
+        flow_extract(packet, 0, 0, NULL, NULL, &flow);
+        if (flow.dl_type == htons(ETH_TYPE_IP)
+            && flow.nw_proto == IPPROTO_TCP
+            && (is_openflow_port(flow.tp_src, argv + 2) ||
+                is_openflow_port(flow.tp_dst, argv + 2))) {
+            struct ofpbuf *payload = tcp_reader_run(reader, &flow, packet);
+            if (payload) {
+                while (payload->size >= sizeof(struct ofp_header)) {
+                    const struct ofp_header *oh;
+                    int length;
+
+                    /* Align OpenFlow on 8-byte boundary for safe access. */
+                    ofpbuf_shift(payload, -((intptr_t) payload->data & 7));
+
+                    oh = payload->data;
+                    length = ntohs(oh->length);
+                    if (payload->size < length) {
+                        break;
+                    }
+
+                    if (!first) {
+                        putchar('\n');
+                    }
+                    first = false;
+
+                    if (timestamp) {
+                        char *s = xastrftime_msec("%H:%M:%S.### ", when, true);
+                        fputs(s, stdout);
+                        free(s);
+                    }
+
+                    printf(IP_FMT".%"PRIu16" > "IP_FMT".%"PRIu16":\n",
+                           IP_ARGS(flow.nw_src), ntohs(flow.tp_src),
+                           IP_ARGS(flow.nw_dst), ntohs(flow.tp_dst));
+                    ofp_print(stdout, payload->data, length, verbosity + 1);
+                    ofpbuf_pull(payload, length);
+                }
+            }
+        }
+        ofpbuf_delete(packet);
+    }
+    tcp_reader_close(reader);
 }
 
 static void
@@ -2165,13 +2252,13 @@ fte_free_all(struct classifier *cls)
     struct cls_cursor cursor;
     struct fte *fte, *next;
 
-    ovs_rwlock_wrlock(&cls->rwlock);
+    fat_rwlock_wrlock(&cls->rwlock);
     cls_cursor_init(&cursor, cls, NULL);
     CLS_CURSOR_FOR_EACH_SAFE (fte, next, rule, &cursor) {
         classifier_remove(cls, &fte->rule);
         fte_free(fte);
     }
-    ovs_rwlock_unlock(&cls->rwlock);
+    fat_rwlock_unlock(&cls->rwlock);
     classifier_destroy(cls);
 }
 
@@ -2190,9 +2277,9 @@ fte_insert(struct classifier *cls, const struct match *match,
     cls_rule_init(&fte->rule, match, priority);
     fte->versions[index] = version;
 
-    ovs_rwlock_wrlock(&cls->rwlock);
+    fat_rwlock_wrlock(&cls->rwlock);
     old = fte_from_cls_rule(classifier_replace(cls, &fte->rule));
-    ovs_rwlock_unlock(&cls->rwlock);
+    fat_rwlock_unlock(&cls->rwlock);
     if (old) {
         fte_version_free(old->versions[index]);
         fte->versions[!index] = old->versions[!index];
@@ -2403,7 +2490,7 @@ ofctl_replace_flows(int argc OVS_UNUSED, char *argv[])
     list_init(&requests);
 
     /* Delete flows that exist on the switch but not in the file. */
-    ovs_rwlock_rdlock(&cls.rwlock);
+    fat_rwlock_rdlock(&cls.rwlock);
     cls_cursor_init(&cursor, &cls, NULL);
     CLS_CURSOR_FOR_EACH (fte, rule, &cursor) {
         struct fte_version *file_ver = fte->versions[FILE_IDX];
@@ -2427,7 +2514,7 @@ ofctl_replace_flows(int argc OVS_UNUSED, char *argv[])
             fte_make_flow_mod(fte, FILE_IDX, OFPFC_ADD, protocol, &requests);
         }
     }
-    ovs_rwlock_unlock(&cls.rwlock);
+    fat_rwlock_unlock(&cls.rwlock);
     transact_multiple_noreply(vconn, &requests);
     vconn_close(vconn);
 
@@ -2469,7 +2556,7 @@ ofctl_diff_flows(int argc OVS_UNUSED, char *argv[])
     ds_init(&a_s);
     ds_init(&b_s);
 
-    ovs_rwlock_rdlock(&cls.rwlock);
+    fat_rwlock_rdlock(&cls.rwlock);
     cls_cursor_init(&cursor, &cls, NULL);
     CLS_CURSOR_FOR_EACH (fte, rule, &cursor) {
         struct fte_version *a = fte->versions[0];
@@ -2489,7 +2576,7 @@ ofctl_diff_flows(int argc OVS_UNUSED, char *argv[])
             }
         }
     }
-    ovs_rwlock_unlock(&cls.rwlock);
+    fat_rwlock_unlock(&cls.rwlock);
 
     ds_destroy(&a_s);
     ds_destroy(&b_s);
@@ -3122,7 +3209,7 @@ ofctl_parse_pcap(int argc OVS_UNUSED, char *argv[])
         struct flow flow;
         int error;
 
-        error = pcap_read(pcap, &packet);
+        error = pcap_read(pcap, &packet, NULL);
         if (error == EOF) {
             break;
         } else if (error) {
@@ -3365,10 +3452,12 @@ static const struct command all_commands[] = {
     { "mod-table", 3, 3, ofctl_mod_table },
     { "get-frags", 1, 1, ofctl_get_frags },
     { "set-frags", 2, 2, ofctl_set_frags },
-    { "ofp-parse", 1, 1, ofctl_ofp_parse },
     { "probe", 1, 1, ofctl_probe },
     { "ping", 1, 2, ofctl_ping },
     { "benchmark", 3, 3, ofctl_benchmark },
+
+    { "ofp-parse", 1, 1, ofctl_ofp_parse },
+    { "ofp-parse-pcap", 1, INT_MAX, ofctl_ofp_parse_pcap },
 
     { "add-group", 1, 2, ofctl_add_group },
     { "add-groups", 1, 2, ofctl_add_groups },

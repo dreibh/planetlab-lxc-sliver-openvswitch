@@ -264,8 +264,9 @@ netdev_tunnel_rx_dealloc(struct netdev_rx *rx_)
 }
 
 static int
-netdev_tunnel_rx_recv(struct netdev_rx *rx_, void *buffer, size_t size)
+netdev_tunnel_rx_recv(struct netdev_rx *rx_, struct ofpbuf *buffer)
 {
+    size_t size = ofpbuf_tailroom(buffer);
     struct netdev_rx_tunnel *rx = netdev_rx_tunnel_cast(rx_);
     struct netdev_tunnel *netdev =
         netdev_tunnel_cast(rx_->netdev);
@@ -273,12 +274,12 @@ netdev_tunnel_rx_recv(struct netdev_rx *rx_, void *buffer, size_t size)
         return -EAGAIN;
     for (;;) {
         ssize_t retval;
-        retval = recv(rx->fd, buffer, size, MSG_TRUNC);
+        retval = recv(rx->fd, buffer->data, size, MSG_TRUNC);
 	    VLOG_DBG("%s: recv(%"PRIxPTR", %"PRIuSIZE", MSG_TRUNC) = %"PRIdSIZE,
-		    netdev_rx_get_name(rx_), (uintptr_t)buffer, size, retval);
+		    netdev_rx_get_name(rx_), (uintptr_t)buffer->data, size, retval);
         if (retval >= 0) {
-	    netdev->stats.rx_packets++;
-	    netdev->stats.rx_bytes += retval;
+	        netdev->stats.rx_packets++;
+	        netdev->stats.rx_bytes += retval;
             if (retval <= size) {
 	    	    return retval;
             } else {
@@ -614,12 +615,10 @@ const struct netdev_class netdev_tunnel_class = {
     NULL,                       /* get_in6 */
     NULL,                       /* add_router */
     NULL,                       /* get_next_hop */
-    NULL,                       /* get_drv_info */
+    NULL,                       /* get_status */
     NULL,                       /* arp_lookup */
 
     netdev_tunnel_update_flags,
-
-    netdev_tunnel_change_seq,
 
     netdev_tunnel_rx_alloc,
     netdev_tunnel_rx_construct,

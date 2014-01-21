@@ -148,7 +148,18 @@ struct netdev *netdev_rx_get_netdev(const struct netdev_rx *);
  * Each "dealloc" function frees raw memory that was allocated by the the
  * "alloc" function.  The memory's base and derived members might not have ever
  * been initialized (but if "construct" returned successfully, then it has been
- * "destruct"ed already).  The "dealloc" function is not allowed to fail. */
+ * "destruct"ed already).  The "dealloc" function is not allowed to fail.
+ *
+ *
+ * Device Change Notification
+ * ==========================
+ *
+ * Minimally, implementations are required to report changes to netdev flags,
+ * features, ethernet address or carrier through connectivity_seq. Changes to
+ * other properties are allowed to cause notification through this interface,
+ * although implementations should try to avoid this. connectivity_seq_get()
+ * can be used to acquire a reference to the struct seq. The interface is
+ * described in detail in seq.h. */
 struct netdev_class {
     /* Type of netdevs in this class, e.g. "system", "tap", "gre", etc.
      *
@@ -609,17 +620,6 @@ struct netdev_class {
     int (*update_flags)(struct netdev *netdev, enum netdev_flags off,
                         enum netdev_flags on, enum netdev_flags *old_flags);
 
-    /* Returns a sequence number which indicates changes in one of 'netdev''s
-     * properties.  The returned sequence number must be nonzero so that
-     * callers have a value which they may use as a reset when tracking
-     * 'netdev'.
-     *
-     * Minimally, the returned sequence number is required to change whenever
-     * 'netdev''s flags, features, ethernet address, or carrier changes.  The
-     * returned sequence number is allowed to change even when 'netdev' doesn't
-     * change, although implementations should try to avoid this. */
-    unsigned int (*change_seq)(const struct netdev *netdev);
-
 /* ## ------------------- ## */
 /* ## netdev_rx Functions ## */
 /* ## ------------------- ## */
@@ -634,16 +634,28 @@ struct netdev_class {
     void (*rx_destruct)(struct netdev_rx *);
     void (*rx_dealloc)(struct netdev_rx *);
 
-    /* Attempts to receive a packet from 'rx' into the 'size' bytes in
-     * 'buffer'.  If successful, returns the number of bytes in the received
-     * packet, otherwise a negative errno value.  Returns -EAGAIN immediately
-     * if no packet is ready to be received.
+    /* Attempts to receive a packet from 'rx' into the tailroom of 'buffer',
+     * which should initially be empty.  If successful, returns 0 and
+     * increments 'buffer->size' by the number of bytes in the received packet,
+     * otherwise a positive errno value.  Returns EAGAIN immediately if no
+     * packet is ready to be received.
      *
-     * Must return -EMSGSIZE, and discard the packet, if the received packet
-     * is longer than 'size' bytes.
+     * Must return EMSGSIZE, and discard the packet, if the received packet
+     * is longer than 'ofpbuf_tailroom(buffer)'.
      *
-     * Specify NULL if this */
-    int (*rx_recv)(struct netdev_rx *rx, void *buffer, size_t size);
+     * Implementations may make use of VLAN_HEADER_LEN bytes of tailroom to
+     * add a VLAN header which is obtained out-of-band to the packet. If
+     * this occurs then VLAN_HEADER_LEN bytes of tailroom will no longer be
+     * available for the packet, otherwise it may be used for the packet
+     * itself.
+     *
+     * It is advised that the tailroom of 'buffer' should be
+     * VLAN_HEADER_LEN bytes longer than the MTU to allow space for an
+     * out-of-band VLAN header to be added to the packet.
+     *
+     * This function may be set to null if it would always return EOPNOTSUPP
+     * anyhow. */
+    int (*rx_recv)(struct netdev_rx *rx, struct ofpbuf *buffer);
 
     /* Registers with the poll loop to wake up from the next call to
      * poll_block() when a packet is ready to be received with netdev_rx_recv()

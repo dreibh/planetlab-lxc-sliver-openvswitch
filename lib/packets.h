@@ -31,6 +31,17 @@
 struct ofpbuf;
 struct ds;
 
+/* Datapath packet metadata */
+struct pkt_metadata {
+    struct flow_tnl tunnel;     /* Encapsulating tunnel parameters. */
+    uint32_t skb_priority;      /* Packet priority for QoS. */
+    uint32_t pkt_mark;          /* Packet mark. */
+    odp_port_t in_port;         /* Input port. */
+};
+
+#define PKT_METADATA_INITIALIZER(PORT) \
+    (struct pkt_metadata){ { 0, 0, 0, 0, 0, 0}, 0, 0, (PORT) }
+
 bool dpid_from_string(const char *s, uint64_t *dpidp);
 
 #define ETH_ADDR_LEN           6
@@ -140,7 +151,7 @@ bool eth_addr_from_string(const char *, uint8_t ea[ETH_ADDR_LEN]);
 
 void compose_rarp(struct ofpbuf *, const uint8_t eth_src[ETH_ADDR_LEN]);
 
-void eth_push_vlan(struct ofpbuf *, ovs_be16 tci);
+void eth_push_vlan(struct ofpbuf *, ovs_be16 tpid, ovs_be16 tci);
 void eth_pop_vlan(struct ofpbuf *);
 
 void set_ethertype(struct ofpbuf *packet, ovs_be16 eth_type);

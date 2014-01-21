@@ -35,10 +35,10 @@
  * The terms written in quotes below are defined in later sections.
  *
  * When a datapath "port" receives a packet, it extracts the headers (the
- * "flow").  If the datapath's "flow table" contains a "flow entry" whose flow
- * is the same as the packet's, then it executes the "actions" in the flow
- * entry and increments the flow's statistics.  If there is no matching flow
- * entry, the datapath instead appends the packet to an "upcall" queue.
+ * "flow").  If the datapath's "flow table" contains a "flow entry" matching
+ * the packet, then it executes the "actions" in the flow entry and increments
+ * the flow's statistics.  If there is no matching flow entry, the datapath
+ * instead appends the packet to an "upcall" queue.
  *
  *
  * Ports
@@ -368,8 +368,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "openflow/openflow.h"
 #include "netdev.h"
+#include "ofpbuf.h"
+#include "openflow/openflow.h"
+#include "packets.h"
 #include "util.h"
 
 #ifdef  __cplusplus
@@ -380,7 +382,6 @@ struct dpif;
 struct ds;
 struct flow;
 struct nlattr;
-struct ofpbuf;
 struct sset;
 struct dpif_class;
 
@@ -413,9 +414,9 @@ struct dpif_dp_stats {
     uint64_t n_missed;          /* Number of flow table misses. */
     uint64_t n_lost;            /* Number of misses not sent to userspace. */
     uint64_t n_flows;           /* Number of flows present. */
-    uint64_t n_masks;           /* Number of mega flow masks. */
     uint64_t n_mask_hit;        /* Number of mega flow masks visited for
                                    flow table matches. */
+    uint32_t n_masks;           /* Number of mega flow masks. */
 };
 int dpif_get_dp_stats(const struct dpif *, struct dpif_dp_stats *);
 
@@ -516,14 +517,6 @@ bool dpif_flow_dump_next(struct dpif_flow_dump *,
                          const struct dpif_flow_stats **);
 int dpif_flow_dump_done(struct dpif_flow_dump *);
 
-/* Packet operations. */
-
-int dpif_execute(struct dpif *,
-                 const struct nlattr *key, size_t key_len,
-                 const struct nlattr *actions, size_t actions_len,
-                 const struct ofpbuf *,
-                 bool needs_help);
-
 /* Operation batching interface.
  *
  * Some datapaths are faster at performing N operations together than the same
@@ -561,11 +554,10 @@ struct dpif_flow_del {
 
 struct dpif_execute {
     /* Raw support for execute passed along to the provider. */
-    const struct nlattr *key;       /* Partial flow key (only for metadata). */
-    size_t key_len;                 /* Length of 'key' in bytes. */
     const struct nlattr *actions;   /* Actions to execute on packet. */
     size_t actions_len;             /* Length of 'actions' in bytes. */
-    const struct ofpbuf *packet;    /* Packet to execute. */
+    struct ofpbuf *packet;          /* Packet to execute. */
+    struct pkt_metadata md;         /* Packet metadata. */
 
     /* Some dpif providers do not implement every action.  The Linux kernel
      * datapath, in particular, does not implement ARP field modification.
@@ -576,6 +568,8 @@ struct dpif_execute {
      * dpif implementation. */
     bool needs_help;
 };
+
+int dpif_execute(struct dpif *, struct dpif_execute *);
 
 struct dpif_op {
     enum dpif_op_type type;
@@ -601,15 +595,17 @@ const char *dpif_upcall_type_to_string(enum dpif_upcall_type);
 
 /* A packet passed up from the datapath to userspace.
  *
- * If 'key', 'actions', or 'userdata' is nonnull, then it points into data
- * owned by 'packet', so their memory cannot be freed separately.  (This is
- * hardly a great way to do things but it works out OK for the dpif providers
- * and clients that exist so far.)
+ * The 'packet', 'key' and 'userdata' may point into data in a buffer
+ * provided by the caller, so the buffer should be released only after the
+ * upcall processing has been finished.
+ *
+ * While being processed, the 'packet' may be reallocated, so the packet must
+ * be separately released with ofpbuf_uninit().
  */
 struct dpif_upcall {
     /* All types. */
     enum dpif_upcall_type type;
-    struct ofpbuf *packet;      /* Packet data. */
+    struct ofpbuf packet;       /* Packet data. */
     struct nlattr *key;         /* Flow key. */
     size_t key_len;             /* Length of 'key' in bytes. */
 

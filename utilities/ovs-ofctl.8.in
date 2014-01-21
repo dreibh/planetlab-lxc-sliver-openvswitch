@@ -487,6 +487,21 @@ series of OpenFlow messages in the binary format used on an OpenFlow
 connection, and prints them to the console.  This can be useful for
 printing OpenFlow messages captured from a TCP stream.
 .
+.IP "\fBofp\-parse\-pcap\fR \fIfile\fR [\fIport\fR...]"
+Reads \fIfile\fR, which must be in the PCAP format used by network
+capture tools such as \fBtcpdump\fR or \fBwireshark\fR, extracts all
+the TCP streams for OpenFlow connections, and prints the OpenFlow
+messages in those connections in human-readable format on
+\fBstdout\fR.
+.IP
+OpenFlow connections are distinguished by TCP port number.
+Non-OpenFlow packets are ignored.  By default, data on TCP ports 6633
+and 6653 are considered to be OpenFlow.  Specify one or more
+\fIport\fR arguments to override the default.
+.IP
+This command cannot usefully print SSL encrypted traffic.  It does not
+understand IPv6.
+.
 .SS "Flow Syntax"
 .PP
 Some \fBovs\-ofctl\fR commands accept an argument that describes a flow or
@@ -1195,14 +1210,14 @@ allows isn't supported at the moment.)
 A priority of zero and the tag of zero are used for the new tag.
 .
 .IP \fBpush_mpls\fR:\fIethertype\fR
-If the packet does not already contain any MPLS labels, changes the
-packet's Ethertype to \fIethertype\fR, which must be either the MPLS
-unicast Ethertype \fB0x8847\fR or the MPLS multicast Ethertype
-\fB0x8848\fR, and then pushes an initial label stack entry.  The label
-stack entry's default label is 2 if the packet contains IPv6 and 0
-otherwise, its default traffic control value is the low 3 bits of the
-packet's DSCP value (0 if the packet is not IP), and its TTL is copied
-from the IP TTL (64 if the packet is not IP).
+Changes the packet's Ethertype to \fIethertype\fR, which must be either
+\fB0x8847\fR or \fB0x8848\fR, and pushes an MPLS LSE.
+.IP
+If the packet does not already contain any MPLS labels then an initial
+label stack entry is pushed.  The label stack entry's label is 2 if the
+packet contains IPv6 and 0 otherwise, its default traffic control value is
+the low 3 bits of the packet's DSCP value (0 if the packet is not IP), and
+its TTL is copied from the IP TTL (64 if the packet is not IP).
 .IP
 If the packet does already contain an MPLS label, pushes a new
 outermost label as a copy of the existing outermost label.
@@ -2011,7 +2026,8 @@ affects the \fBmonitor\fR command.
 .
 .IP "\fB\-\-timestamp\fR"
 Print a timestamp before each received packet.  This option only
-affects the \fBmonitor\fR and \fBsnoop\fR commands.
+affects the \fBmonitor\fR, \fBsnoop\fR, and \fBofp\-parse\-pcap\fR
+commands.
 .
 .IP "\fB\-m\fR"
 .IQ "\fB\-\-more\fR"

@@ -84,8 +84,8 @@
  * that.
  *
  *
- * Initialization
- * ==============
+ * Life Cycle
+ * ==========
  *
  * To initialize an atomic variable at its point of definition, use
  * ATOMIC_VAR_INIT:
@@ -97,6 +97,15 @@
  *     static atomic_int ai;
  * ...
  *     atomic_init(&ai, 123);
+ *
+ * C11 does not hav an destruction function for atomic types, but some
+ * implementations of the OVS atomics do need them.  Thus, the following
+ * function is provided for destroying non-static atomic objects (A is any
+ * atomic type):
+ *
+ *     void atomic_destroy(A *object);
+ *
+ *         Destroys 'object'.
  *
  *
  * Barriers
@@ -204,8 +213,30 @@
  * atomic_flag is a typedef for a type with two states, set and clear, that
  * provides atomic test-and-set functionality.
  *
+ *
+ * Life Cycle
+ * ----------
+ *
  * ATOMIC_FLAG_INIT is an initializer for atomic_flag.  The initial state is
  * "clear".
+ *
+ * C11 does not have an initialization or destruction function for atomic_flag,
+ * because implementations should not need one (one may simply
+ * atomic_flag_clear() an uninitialized atomic_flag), but some implementations
+ * of the OVS atomics do need them.  Thus, the following two functions are
+ * provided for initializing and destroying non-static atomic_flags:
+ *
+ *     void atomic_flag_init(volatile atomic_flag *object);
+ *
+ *         Initializes 'object'.  The initial state is "clear".
+ *
+ *     void atomic_flag_destroy(volatile atomic_flag *object);
+ *
+ *         Destroys 'object'.
+ *
+ *
+ * Operations
+ * ----------
  *
  * The following functions are available.
  *
@@ -248,5 +279,66 @@
         #include "ovs-atomic-pthreads.h"
     #endif
 #undef IN_OVS_ATOMIC_H
+
+/* Reference count. */
+struct ovs_refcount {
+    atomic_uint count;
+};
+
+/* Initializes 'refcount'.  The reference count is initially 1. */
+static inline void
+ovs_refcount_init(struct ovs_refcount *refcount)
+{
+    atomic_init(&refcount->count, 1);
+}
+
+/* Destroys 'refcount'. */
+static inline void
+ovs_refcount_destroy(struct ovs_refcount *refcount)
+{
+    atomic_destroy(&refcount->count);
+}
+
+/* Increments 'refcount'. */
+static inline void
+ovs_refcount_ref(struct ovs_refcount *refcount)
+{
+    unsigned int old_refcount;
+
+    atomic_add(&refcount->count, 1, &old_refcount);
+    ovs_assert(old_refcount > 0);
+}
+
+/* Decrements 'refcount' and returns the previous reference count.  Often used
+ * in this form:
+ *
+ * if (ovs_refcount_unref(&object->ref_cnt) == 1) {
+ *     // ...uninitialize object...
+ *     free(object);
+ * }
+ */
+static inline unsigned int
+ovs_refcount_unref(struct ovs_refcount *refcount)
+{
+    unsigned int old_refcount;
+
+    atomic_sub(&refcount->count, 1, &old_refcount);
+    ovs_assert(old_refcount > 0);
+    return old_refcount;
+}
+
+/* Reads and returns 'ref_count_''s current reference count.
+ *
+ * Rarely useful. */
+static inline unsigned int
+ovs_refcount_read(const struct ovs_refcount *refcount_)
+{
+    struct ovs_refcount *refcount
+        = CONST_CAST(struct ovs_refcount *, refcount_);
+    unsigned int count;
+
+    atomic_read(&refcount->count, &count);
+    return count;
+}
 
 #endif /* ovs-atomic.h */

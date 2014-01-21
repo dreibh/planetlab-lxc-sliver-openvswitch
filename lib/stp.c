@@ -26,8 +26,10 @@
 #include <inttypes.h>
 #include <stdlib.h>
 #include "byte-order.h"
+#include "connectivity.h"
 #include "ofpbuf.h"
 #include "packets.h"
+#include "seq.h"
 #include "unixctl.h"
 #include "util.h"
 #include "vlog.h"
@@ -141,7 +143,7 @@ struct stp {
     void (*send_bpdu)(struct ofpbuf *bpdu, int port_no, void *aux);
     void *aux;
 
-    atomic_int ref_cnt;
+    struct ovs_refcount ref_cnt;
 };
 
 static struct ovs_mutex mutex;
@@ -304,7 +306,7 @@ stp_create(const char *name, stp_identifier bridge_id,
         p->path_cost = 19;      /* Recommended default for 100 Mb/s link. */
         stp_initialize_port(p, STP_DISABLED);
     }
-    atomic_init(&stp->ref_cnt, 1);
+    ovs_refcount_init(&stp->ref_cnt);
 
     list_push_back(all_stps, &stp->node);
     ovs_mutex_unlock(&mutex);
@@ -316,9 +318,7 @@ stp_ref(const struct stp *stp_)
 {
     struct stp *stp = CONST_CAST(struct stp *, stp_);
     if (stp) {
-        int orig;
-        atomic_add(&stp->ref_cnt, 1, &orig);
-        ovs_assert(orig > 0);
+        ovs_refcount_ref(&stp->ref_cnt);
     }
     return stp;
 }
@@ -327,19 +327,12 @@ stp_ref(const struct stp *stp_)
 void
 stp_unref(struct stp *stp)
 {
-    int orig;
-
-    if (!stp) {
-        return;
-    }
-
-    atomic_sub(&stp->ref_cnt, 1, &orig);
-    ovs_assert(orig > 0);
-    if (orig == 1) {
+    if (stp && ovs_refcount_unref(&stp->ref_cnt) == 1) {
         ovs_mutex_lock(&mutex);
         list_remove(&stp->node);
         ovs_mutex_unlock(&mutex);
         free(stp->name);
+        ovs_refcount_destroy(&stp->ref_cnt);
         free(stp);
     }
 }
@@ -666,7 +659,7 @@ stp_state_name(enum stp_state state)
     case STP_BLOCKING:
         return "blocking";
     default:
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
 }
 
@@ -707,7 +700,7 @@ stp_role_name(enum stp_role role)
     case STP_ROLE_DISABLED:
         return "disabled";
     default:
-        NOT_REACHED();
+        OVS_NOT_REACHED();
     }
 }
 
@@ -1127,6 +1120,7 @@ stp_configuration_update(struct stp *stp) OVS_REQUIRES(mutex)
 {
     stp_root_selection(stp);
     stp_designated_port_selection(stp);
+    seq_change(connectivity_seq_get());
 }
 
 static bool
@@ -1257,6 +1251,7 @@ stp_set_port_state(struct stp_port *p, enum stp_state state)
         if (p < p->stp->first_changed_port) {
             p->stp->first_changed_port = p;
         }
+        seq_change(connectivity_seq_get());
     }
     p->state = state;
 }
@@ -1275,6 +1270,7 @@ stp_topology_change_detection(struct stp *stp) OVS_REQUIRES(mutex)
     }
     stp->fdb_needs_flush = true;
     stp->topology_change_detected = true;
+    seq_change(connectivity_seq_get());
     VLOG_INFO_RL(&rl, "%s: detected topology change.", stp->name);
 }
 

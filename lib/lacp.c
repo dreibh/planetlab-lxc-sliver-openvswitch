@@ -18,12 +18,14 @@
 
 #include <stdlib.h>
 
+#include "connectivity.h"
 #include "dynamic-string.h"
 #include "hash.h"
 #include "hmap.h"
 #include "ofpbuf.h"
 #include "packets.h"
 #include "poll-loop.h"
+#include "seq.h"
 #include "shash.h"
 #include "timer.h"
 #include "timeval.h"
@@ -104,7 +106,7 @@ struct lacp {
     bool update;             /* True if lacp_update() needs to be called. */
     bool fallback_ab; /* True if fallback to active-backup on LACP failure. */
 
-    atomic_int ref_cnt;
+    struct ovs_refcount ref_cnt;
 };
 
 struct slave {
@@ -214,7 +216,7 @@ lacp_create(void) OVS_EXCLUDED(mutex)
 
     lacp = xzalloc(sizeof *lacp);
     hmap_init(&lacp->slaves);
-    atomic_init(&lacp->ref_cnt, 1);
+    ovs_refcount_init(&lacp->ref_cnt);
 
     ovs_mutex_lock(&mutex);
     list_push_back(all_lacps, &lacp->node);
@@ -227,9 +229,7 @@ lacp_ref(const struct lacp *lacp_)
 {
     struct lacp *lacp = CONST_CAST(struct lacp *, lacp_);
     if (lacp) {
-        int orig;
-        atomic_add(&lacp->ref_cnt, 1, &orig);
-        ovs_assert(orig > 0);
+        ovs_refcount_ref(&lacp->ref_cnt);
     }
     return lacp;
 }
@@ -238,15 +238,7 @@ lacp_ref(const struct lacp *lacp_)
 void
 lacp_unref(struct lacp *lacp) OVS_EXCLUDED(mutex)
 {
-    int orig;
-
-    if (!lacp) {
-        return;
-    }
-
-    atomic_sub(&lacp->ref_cnt, 1, &orig);
-    ovs_assert(orig > 0);
-    if (orig == 1) {
+    if (lacp && ovs_refcount_unref(&lacp->ref_cnt) == 1) {
         struct slave *slave, *next;
 
         ovs_mutex_lock(&mutex);
@@ -257,6 +249,7 @@ lacp_unref(struct lacp *lacp) OVS_EXCLUDED(mutex)
         hmap_destroy(&lacp->slaves);
         list_remove(&lacp->node);
         free(lacp->name);
+        ovs_refcount_destroy(&lacp->ref_cnt);
         free(lacp);
         ovs_mutex_unlock(&mutex);
     }
@@ -509,10 +502,15 @@ lacp_run(struct lacp *lacp, lacp_send_pdu *send_pdu) OVS_EXCLUDED(mutex)
     ovs_mutex_lock(&mutex);
     HMAP_FOR_EACH (slave, node, &lacp->slaves) {
         if (timer_expired(&slave->rx)) {
+            enum slave_status old_status = slave->status;
+
             if (slave->status == LACP_CURRENT) {
                 slave_set_expired(slave);
             } else if (slave->status == LACP_EXPIRED) {
                 slave_set_defaulted(slave);
+            }
+            if (slave->status != old_status) {
+                seq_change(connectivity_seq_get());
             }
         }
     }
@@ -544,6 +542,7 @@ lacp_run(struct lacp *lacp, lacp_send_pdu *send_pdu) OVS_EXCLUDED(mutex)
                         : LACP_SLOW_TIME_TX);
 
             timer_set_duration(&slave->tx, duration);
+            seq_change(connectivity_seq_get());
         }
     }
     ovs_mutex_unlock(&mutex);
@@ -897,7 +896,7 @@ lacp_print_details(struct ds *ds, struct lacp *lacp) OVS_REQUIRES(mutex)
             status = "defaulted";
             break;
         default:
-            NOT_REACHED();
+            OVS_NOT_REACHED();
         }
 
         ds_put_format(ds, "\nslave: %s: %s %s\n", slave->name, status,

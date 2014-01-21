@@ -1,4 +1,4 @@
-# Copyright (C) 2007, 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
+# Copyright (C) 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014 Nicira, Inc.
 #
 # Copying and distribution of this file, with or without modification,
 # are permitted in any medium without royalty provided the copyright
@@ -10,6 +10,11 @@ ACLOCAL_AMFLAGS = -I m4
 SUBDIRS = datapath
 
 AM_CPPFLAGS = $(SSL_CFLAGS)
+
+if WIN32
+AM_CPPFLAGS += -I $(top_srcdir)/include/windows
+endif
+
 AM_CPPFLAGS += -I $(top_srcdir)/include
 AM_CPPFLAGS += -I $(top_srcdir)/lib
 AM_CPPFLAGS += -I $(top_builddir)/lib
@@ -56,6 +61,7 @@ EXTRA_DIST = \
 	INSTALL.Fedora \
 	INSTALL.KVM \
 	INSTALL.Libvirt \
+	INSTALL.NetBSD \
 	INSTALL.RHEL \
 	INSTALL.SSL \
 	INSTALL.XenServer \
@@ -93,7 +99,7 @@ MAN_FRAGMENTS =
 MAN_ROOTS =
 noinst_DATA =
 noinst_HEADERS =
-noinst_LIBRARIES =
+lib_LTLIBRARIES =
 noinst_man_MANS =
 noinst_PROGRAMS =
 noinst_SCRIPTS =
@@ -134,7 +140,6 @@ SUFFIXES += .in
                 -e 's,[@]bindir[@],$(bindir),g' \
                 -e 's,[@]sbindir[@],$(sbindir),g' \
                 -e 's,[@]abs_top_srcdir[@],$(abs_top_srcdir),g' \
-                -e 's,[@]ovsdbmonitordir[@],$(ovsdbmonitordir),g' \
             > $@.tmp
 	@if head -n 1 $@.tmp | grep '#!' > /dev/null; then \
 	    echo chmod +x $@.tmp; \
@@ -159,10 +164,10 @@ dist-hook-git: distfiles
 	@if test -e $(srcdir)/.git && (git --version) >/dev/null 2>&1; then \
 	  (cd datapath && $(MAKE) distfiles);				    \
 	  (cat distfiles; sed 's|^|datapath/|' datapath/distfiles) |	    \
-	    sort -u > all-distfiles;					    \
+	    LC_ALL=C sort -u > all-distfiles;					    \
 	  (cd $(srcdir) && git ls-files) | grep -vFf $(srcdir)/.non-distfiles |	    \
-	    sort -u > all-gitfiles;					    \
-	  comm -1 -3 all-distfiles all-gitfiles > missing-distfiles;	    \
+	    LC_ALL=C sort -u > all-gitfiles;					    \
+	  LC_ALL=C comm -1 -3 all-distfiles all-gitfiles > missing-distfiles;	    \
 	  if test -s missing-distfiles; then				    \
 	    echo "The distribution is missing the following files:";	    \
 	    cat missing-distfiles;					    \
@@ -177,7 +182,8 @@ distfiles: Makefile
 	list='$(DISTFILES)'; \
 	for file in $$list; do echo $$file; done | \
 	  sed -e "s|^$$srcdirstrip/||;t" \
-	      -e "s|^$$topsrcdirstrip/|$(top_builddir)/|;t" | sort -u > $@
+	      -e "s|^$$topsrcdirstrip/|$(top_builddir)/|;t" | \
+          LC_ALL=C sort -u > $@
 CLEANFILES += distfiles
 endif
 .PHONY: dist-hook-git
@@ -284,6 +290,7 @@ if LINUX_ENABLED
 	cd datapath/linux && $(MAKE) modules_install
 endif
 
+include m4/automake.mk
 include lib/automake.mk
 include ofproto/automake.mk
 include utilities/automake.mk

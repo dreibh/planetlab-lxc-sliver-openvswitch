@@ -1,6 +1,6 @@
 # -*- autoconf -*-
 
-# Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
+# Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013, 2014 Nicira, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -64,6 +64,9 @@ AC_DEFUN([OVS_CHECK_WIN32],
    AM_CONDITIONAL([WIN32], [test "$WIN32" = yes])
    if test "$WIN32" = yes; then
       AC_DEFINE([WIN32], [1], [Define to 1 if building on WIN32.])
+      AH_BOTTOM([#ifdef WIN32
+#include "include/windows/windefs.h"
+#endif])
    fi])
 
 dnl Checks for Netlink support.
@@ -239,21 +242,6 @@ AC_DEFUN([OVS_CHECK_DOT],
      fi])
    AM_CONDITIONAL([HAVE_DOT], [test "$ovs_cv_dot" = yes])])
 
-dnl Checks for pyuic4.
-AC_DEFUN([OVS_CHECK_PYUIC4],
-  [AC_CACHE_CHECK(
-    [for pyuic4],
-    [ovs_cv_pyuic4],
-    [if (pyuic4 --version) >/dev/null 2>&1; then
-       ovs_cv_pyuic4=pyuic4
-     else
-       ovs_cv_pyuic4=no
-     fi])
-   AM_MISSING_PROG([PYUIC4], [pyuic4])
-   if test $ovs_cv_pyuic4 != no; then
-     PYUIC4=$ovs_cv_pyuic4
-   fi])
-
 dnl Checks whether $PYTHON supports the module given as $1
 AC_DEFUN([OVS_CHECK_PYTHON_MODULE],
   [AC_REQUIRE([OVS_CHECK_PYTHON])
@@ -272,30 +260,6 @@ sys.exit(0)' >&AS_MESSAGE_LOG_FD 2>&1; then
         fi
       fi])])
 
-dnl Checks for Python modules needed by ovsdbmonitor.
-AC_DEFUN([OVS_CHECK_OVSDBMONITOR],
-  [OVS_CHECK_PYTHON_MODULE([PySide.QtCore])
-   OVS_CHECK_PYTHON_MODULE([PyQt4.QtCore])
-   OVS_CHECK_PYTHON_MODULE([twisted.conch.ssh])
-   OVS_CHECK_PYTHON_MODULE([twisted.internet])
-   OVS_CHECK_PYTHON_MODULE([twisted.application])
-   OVS_CHECK_PYTHON_MODULE([json])
-   OVS_CHECK_PYTHON_MODULE([zope.interface])
-   if (test $ovs_cv_py_PySide_QtCore = yes \
-       || test $ovs_cv_py_PyQt4_QtCore = yes) \
-      && test $ovs_cv_py_twisted_conch_ssh = yes \
-      && test $ovs_cv_py_twisted_internet = yes \
-      && test $ovs_cv_py_twisted_application = yes \
-      && test $ovs_cv_py_json = yes \
-      && test $ovs_cv_py_zope_interface = yes; then
-     BUILD_OVSDBMONITOR=yes
-   else
-     BUILD_OVSDBMONITOR=no
-   fi
-   AC_MSG_CHECKING([whether to build ovsdbmonitor])
-   AC_MSG_RESULT([$BUILD_OVSDBMONITOR])
-   AM_CONDITIONAL([BUILD_OVSDBMONITOR], [test $BUILD_OVSDBMONITOR = yes])])
-
 dnl Checks for missing python modules at build time
 AC_DEFUN([OVS_CHECK_PYTHON_COMPAT],
   [OVS_CHECK_PYTHON_MODULE([uuid])
@@ -307,83 +271,6 @@ AC_DEFUN([OVS_CHECK_PYTHON_COMPAT],
    AC_MSG_CHECKING([whether to add python/compat to PYTHONPATH])
    AC_MSG_RESULT([$INCLUDE_PYTHON_COMPAT])
    AM_CONDITIONAL([INCLUDE_PYTHON_COMPAT], [test $INCLUDE_PYTHON_COMPAT = yes])])
-
-# OVS_LINK2_IFELSE(SOURCE1, SOURCE2, [ACTION-IF-TRUE], [ACTION-IF-FALSE])
-# -------------------------------------------------------------
-# Based on AC_LINK_IFELSE, but tries to link both SOURCE1 and SOURCE2
-# into a program.
-#
-# This macro is borrowed from acinclude.m4 in GNU PSPP, which has the
-# following license:
-#
-#     Copyright (C) 2005, 2006, 2007, 2009 Free Software Foundation, Inc.
-#     This file is free software; the Free Software Foundation
-#     gives unlimited permission to copy and/or distribute it,
-#     with or without modifications, as long as this notice is preserved.
-#
-m4_define([OVS_LINK2_IFELSE],
-[m4_ifvaln([$1], [AC_LANG_CONFTEST([$1])])dnl
-mv conftest.$ac_ext conftest1.$ac_ext
-m4_ifvaln([$2], [AC_LANG_CONFTEST([$2])])dnl
-mv conftest.$ac_ext conftest2.$ac_ext
-rm -f conftest1.$ac_objext conftest2.$ac_objext conftest$ac_exeext
-ovs_link2='$CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest1.$ac_ext conftest2.$ac_ext $LIBS >&5'
-AS_IF([_AC_DO_STDERR($ovs_link2) && {
-	 test -z "$ac_[]_AC_LANG_ABBREV[]_werror_flag" ||
-	 test ! -s conftest.err
-       } && test -s conftest$ac_exeext && {
-	 test "$cross_compiling" = yes ||
-	 AS_TEST_X([conftest$ac_exeext])
-       }],
-      [$3],
-      [echo "$as_me: failed source file 1 of 2 was:" >&5
-sed 's/^/| /' conftest1.$ac_ext >&5
-echo "$as_me: failed source file 2 of 2 was:" >&5
-sed 's/^/| /' conftest2.$ac_ext >&5
-	$4])
-dnl Delete also the IPA/IPO (Inter Procedural Analysis/Optimization)
-dnl information created by the PGI compiler (conftest_ipa8_conftest.oo),
-dnl as it would interfere with the next link command.
-rm -rf conftest.dSYM conftest1.dSYM conftest2.dSYM
-rm -f core conftest.err conftest1.err conftest2.err
-rm -f conftest1.$ac_objext conftest2.$ac_objext conftest*_ipa8_conftest*.oo
-rm -f conftest$ac_exeext
-rm -f m4_ifval([$1], [conftest1.$ac_ext]) m4_ifval([$2], [conftest1.$ac_ext])[]dnl
-])# OVS_LINK2_IFELSE
-
-dnl Defines USE_LINKER_SECTIONS to 1 if the compiler supports putting
-dnl variables in sections with user-defined names and the linker
-dnl automatically defines __start_SECNAME and __stop_SECNAME symbols
-dnl that designate the start and end of the sections.
-AC_DEFUN([OVS_CHECK_LINKER_SECTIONS],
-  [AC_CACHE_CHECK(
-    [for user-defined linker section support],
-    [ovs_cv_use_linker_sections],
-    [OVS_LINK2_IFELSE(
-      [AC_LANG_SOURCE(
-        [int a __attribute__((__section__("mysection"))) = 1;
-         int b __attribute__((__section__("mysection"))) = 2;
-         int c __attribute__((__section__("mysection"))) = 3;])],
-      [AC_LANG_PROGRAM(
-        [#include <stdio.h>
-         extern int __start_mysection;
-         extern int __stop_mysection;],
-        [int n_ints = &__stop_mysection - &__start_mysection;
-         int *i;
-         for (i = &__start_mysection; i < &__start_mysection + n_ints; i++) {
-             printf("%d\n", *i);
-         }])],
-      [ovs_cv_use_linker_sections=yes],
-      [ovs_cv_use_linker_sections=no])])
-   if test $ovs_cv_use_linker_sections = yes; then
-     AC_DEFINE([USE_LINKER_SECTIONS], [1],
-               [Define to 1 if the compiler support putting variables
-                into sections with user-defined names and the linker
-                automatically defines __start_SECNAME and __stop_SECNAME
-                symbols that designate the start and end of the section.])
-   fi
-   AM_CONDITIONAL(
-     [USE_LINKER_SECTIONS], [test $ovs_cv_use_linker_sections = yes])])
 
 dnl Checks for groff.
 AC_DEFUN([OVS_CHECK_GROFF],
@@ -535,3 +422,8 @@ dnl OVS_CHECK_POSIX_AIO
 AC_DEFUN([OVS_CHECK_POSIX_AIO],
   [AC_SEARCH_LIBS([aio_write], [rt])
    AM_CONDITIONAL([HAVE_POSIX_AIO], [test "$ac_cv_search_aio_write" != no])])
+
+dnl OVS_CHECK_INCLUDE_NEXT
+AC_DEFUN([OVS_CHECK_INCLUDE_NEXT],
+  [AC_REQUIRE([gl_CHECK_NEXT_HEADERS])
+   gl_CHECK_NEXT_HEADERS([$1])])

@@ -24,6 +24,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "connectivity.h"
 #include "coverage.h"
 #include "dpif.h"
 #include "dynamic-string.h"
@@ -36,6 +37,7 @@
 #include "openflow/openflow.h"
 #include "packets.h"
 #include "poll-loop.h"
+#include "seq.h"
 #include "shash.h"
 #include "smap.h"
 #include "sset.h"
@@ -224,6 +226,7 @@ netdev_unregister_provider(const char *type)
         atomic_read(&rc->ref_cnt, &ref_cnt);
         if (!ref_cnt) {
             hmap_remove(&netdev_classes, &rc->hmap_node);
+            atomic_destroy(&rc->ref_cnt);
             free(rc);
             error = 0;
         } else {
@@ -333,6 +336,7 @@ netdev_open(const char *name, const char *type, struct netdev **netdevp)
                     int old_ref_cnt;
 
                     atomic_add(&rc->ref_cnt, 1, &old_ref_cnt);
+                    seq_change(connectivity_seq_get());
                 } else {
                     free(netdev->name);
                     ovs_assert(list_is_empty(&netdev->saved_flags_list));
@@ -388,13 +392,19 @@ netdev_set_config(struct netdev *netdev, const struct smap *args)
 {
     if (netdev->netdev_class->set_config) {
         const struct smap no_args = SMAP_INITIALIZER(&no_args);
-        return netdev->netdev_class->set_config(netdev,
-                                                args ? args : &no_args);
+        int error;
+
+        error = netdev->netdev_class->set_config(netdev,
+                                                 args ? args : &no_args);
+        if (error) {
+            VLOG_WARN("%s: could not set configuration (%s)",
+                      netdev_get_name(netdev), ovs_strerror(error));
+        }
+        return error;
     } else if (args && !smap_is_empty(args)) {
         VLOG_WARN("%s: arguments provided to device that is not configurable",
                   netdev_get_name(netdev));
     }
-
     return 0;
 }
 
@@ -492,6 +502,13 @@ netdev_parse_name(const char *netdev_name_, char **name, char **type)
     }
 }
 
+/* Attempts to open a netdev_rx handle for obtaining packets received on
+ * 'netdev'.  On success, returns 0 and stores a nonnull 'netdev_rx *' into
+ * '*rxp'.  On failure, returns a positive errno value and stores NULL into
+ * '*rxp'.
+ *
+ * Some kinds of network devices might not support receiving packets.  This
+ * function returns EOPNOTSUPP in that case.*/
 int
 netdev_rx_open(struct netdev *netdev, struct netdev_rx **rxp)
     OVS_EXCLUDED(netdev_mutex)
@@ -523,6 +540,7 @@ netdev_rx_open(struct netdev *netdev, struct netdev_rx **rxp)
     return error;
 }
 
+/* Closes 'rx'. */
 void
 netdev_rx_close(struct netdev_rx *rx)
     OVS_EXCLUDED(netdev_mutex)
@@ -535,6 +553,29 @@ netdev_rx_close(struct netdev_rx *rx)
     }
 }
 
+/* Attempts to receive a packet from 'rx' into the tailroom of 'buffer', which
+ * must initially be empty.  If successful, returns 0 and increments
+ * 'buffer->size' by the number of bytes in the received packet, otherwise a
+ * positive errno value.
+ *
+ * Returns EAGAIN immediately if no packet is ready to be received.
+ *
+ * Returns EMSGSIZE, and discards the packet, if the received packet is longer
+ * than 'ofpbuf_tailroom(buffer)'.
+ *
+ * Implementations may make use of VLAN_HEADER_LEN bytes of tailroom to
+ * add a VLAN header which is obtained out-of-band to the packet. If
+ * this occurs then VLAN_HEADER_LEN bytes of tailroom will no longer be
+ * available for the packet, otherwise it may be used for the packet
+ * itself.
+ *
+ * It is advised that the tailroom of 'buffer' should be
+ * VLAN_HEADER_LEN bytes longer than the MTU to allow space for an
+ * out-of-band VLAN header to be added to the packet.  At the very least,
+ * 'buffer' must have at least ETH_TOTAL_MIN bytes of tailroom.
+ *
+ * This function may be set to null if it would always return EOPNOTSUPP
+ * anyhow. */
 int
 netdev_rx_recv(struct netdev_rx *rx, struct ofpbuf *buffer)
 {
@@ -543,26 +584,27 @@ netdev_rx_recv(struct netdev_rx *rx, struct ofpbuf *buffer)
     ovs_assert(buffer->size == 0);
     ovs_assert(ofpbuf_tailroom(buffer) >= ETH_TOTAL_MIN);
 
-    retval = rx->netdev->netdev_class->rx_recv(rx, buffer->data,
-                                               ofpbuf_tailroom(buffer));
-    if (retval >= 0) {
+    retval = rx->netdev->netdev_class->rx_recv(rx, buffer);
+    if (!retval) {
         COVERAGE_INC(netdev_received);
-        buffer->size += retval;
         if (buffer->size < ETH_TOTAL_MIN) {
             ofpbuf_put_zeros(buffer, ETH_TOTAL_MIN - buffer->size);
         }
         return 0;
     } else {
-        return -retval;
+        return retval;
     }
 }
 
+/* Arranges for poll_block() to wake up when a packet is ready to be received
+ * on 'rx'. */
 void
 netdev_rx_wait(struct netdev_rx *rx)
 {
     rx->netdev->netdev_class->rx_wait(rx);
 }
 
+/* Discards any packets ready to be received on 'rx'. */
 int
 netdev_rx_drain(struct netdev_rx *rx)
 {
@@ -1496,18 +1538,6 @@ netdev_dump_queue_stats(const struct netdev *netdev,
             : EOPNOTSUPP);
 }
 
-/* Returns a sequence number which indicates changes in one of 'netdev''s
- * properties.  The returned sequence will be nonzero so that callers have a
- * value which they may use as a reset when tracking 'netdev'.
- *
- * The returned sequence number will change whenever 'netdev''s flags,
- * features, ethernet address, or carrier changes.  It may change for other
- * reasons as well, or no reason at all. */
-unsigned int
-netdev_change_seq(const struct netdev *netdev)
-{
-    return netdev->netdev_class->change_seq(netdev);
-}
 
 /* Returns the class type of 'netdev'.
  *

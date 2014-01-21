@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -111,7 +111,7 @@ mac_learning_create(unsigned int idle_time)
     ml->idle_time = normalize_idle_time(idle_time);
     ml->max_entries = MAC_DEFAULT_MAX;
     ml->need_revalidate = false;
-    atomic_init(&ml->ref_cnt, 1);
+    ovs_refcount_init(&ml->ref_cnt);
     ovs_rwlock_init(&ml->rwlock);
     return ml;
 }
@@ -121,9 +121,7 @@ mac_learning_ref(const struct mac_learning *ml_)
 {
     struct mac_learning *ml = CONST_CAST(struct mac_learning *, ml_);
     if (ml) {
-        int orig;
-        atomic_add(&ml->ref_cnt, 1, &orig);
-        ovs_assert(orig > 0);
+        ovs_refcount_ref(&ml->ref_cnt);
     }
     return ml;
 }
@@ -132,15 +130,7 @@ mac_learning_ref(const struct mac_learning *ml_)
 void
 mac_learning_unref(struct mac_learning *ml)
 {
-    int orig;
-
-    if (!ml) {
-        return;
-    }
-
-    atomic_sub(&ml->ref_cnt, 1, &orig);
-    ovs_assert(orig > 0);
-    if (orig == 1) {
+    if (ml && ovs_refcount_unref(&ml->ref_cnt) == 1) {
         struct mac_entry *e, *next;
 
         HMAP_FOR_EACH_SAFE (e, next, hmap_node, &ml->table) {
@@ -151,6 +141,7 @@ mac_learning_unref(struct mac_learning *ml)
 
         bitmap_free(ml->flood_vlans);
         ovs_rwlock_destroy(&ml->rwlock);
+        ovs_refcount_destroy(&ml->ref_cnt);
         free(ml);
     }
 }
@@ -290,7 +281,7 @@ mac_learning_lookup(const struct mac_learning *ml,
     } else {
         struct mac_entry *e = mac_entry_lookup(ml, dst, vlan);
 
-        ovs_assert(e == NULL || e->port.p != NULL)
+        ovs_assert(e == NULL || e->port.p != NULL);
         return e;
     }
 }

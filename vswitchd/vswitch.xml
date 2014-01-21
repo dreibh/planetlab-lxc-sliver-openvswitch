@@ -123,17 +123,16 @@
         </p>
       </column>
 
-      <column name="other_config" key="flow-eviction-threshold"
+      <column name="other_config" key="flow-limit"
               type='{"type": "integer", "minInteger": 0}'>
         <p>
-          A number of flows as a nonnegative integer.  This sets number of
-          flows at which eviction from the datapath flow table will be
-          triggered.  If there are a large number of flows then increasing this
-          value to around the number of flows present can result in reduced CPU
-          usage and packet loss.
+          The maximum
+          number of flows allowed in the datapath flow table.  Internally OVS
+          will choose a flow limit which will likely be lower than this number,
+          based on real time network conditions.
         </p>
         <p>
-          The default is 2500.  Values below 100 will be rounded up to 100.
+          The default is 200000.
         </p>
       </column>
 
@@ -163,8 +162,28 @@
               type='{"type": "integer", "minInteger": 1}'>
         <p>
           Specifies the number of threads for software datapaths to use for
-          handling new flows.  The default is two less than the number of
-          online CPU cores (but at least 1).
+          handling new flows.  The default the number of online CPU cores minus
+          the number of revalidators.
+        </p>
+        <p>
+          This configuration is per datapath.  If you have more than one
+          software datapath (e.g. some <code>system</code> bridges and some
+          <code>netdev</code> bridges), then the total number of threads is
+          <code>n-handler-threads</code> times the number of software
+          datapaths.
+        </p>
+      </column>
+
+      <column name="other_config" key="n-revalidator-threads"
+              type='{"type": "integer", "minInteger": 1}'>
+        <p>
+          Specifies the number of threads for software datapaths to use for
+          revalidating flows in the datapath.  Typically, there is a direct
+          correlation between the number of revalidator threads, and the number
+          of flows allowed in the datapath.  The default is the number of cpu
+          cores divided by four plus one.  If <code>n-handler-threads</code> is
+          set, the default changes to the number of cpu cores minus the number
+          of handler threads.
         </p>
         <p>
           This configuration is per datapath.  If you have more than one
@@ -1306,14 +1325,19 @@
 	  </p>
 
 	  <p>
-	    Open vSwitch currently assigns the OpenFlow port number for an
-	    interface once, when the client first adds the interface.  It does
-	    not change the port number later if the client sets or changes or
-	    clears <ref column="ofport_request"/>.  Therefore, to ensure that
-	    <ref column="ofport_request"/> takes effect, the client should set
-	    it in the same database transaction that creates the interface.
-	    (Future versions of Open vSwitch might honor changes to <ref
-	    column="ofport_request"/>.)
+	    A client should ideally set this column's value in the same
+	    database transaction that it uses to create the interface.  Open
+	    vSwitch version 2.1 and later will honor a later request for a
+	    specific port number, althuogh it might confuse some controllers:
+	    OpenFlow does not have a way to announce a port number change, so
+	    Open vSwitch represents it over OpenFlow as a port deletion
+	    followed immediately by a port addition.
+	  </p>
+
+	  <p>
+	    If <ref column="ofport_request"/> is set or changed to some other
+	    port's automatically assigned port number, Open vSwitch chooses a
+	    new port number for the latter port.
 	  </p>
 	</column>
       </group>
@@ -2055,11 +2079,18 @@
       </p>
 
       <column name="cfm_mpid">
-        A Maintenance Point ID (MPID) uniquely identifies each endpoint within
-        a Maintenance Association.  The MPID is used to identify this endpoint
-        to other Maintenance Points in the MA.  Each end of a link being
-        monitored should have a different MPID.  Must be configured to enable
-        CFM on this <ref table="Interface"/>.
+        <p>
+          A Maintenance Point ID (MPID) uniquely identifies each endpoint
+          within a Maintenance Association.  The MPID is used to identify this
+          endpoint to other Maintenance Points in the MA.  Each end of a link
+          being monitored should have a different MPID.  Must be configured to
+          enable CFM on this <ref table="Interface"/>.
+        </p>
+        <p>
+          According to the 802.1ag specification, MPIDs can only range between
+          [1, 8191].  However, extended mode (see <ref column="other_config"
+          key="cfm_extended"/>) supports eight byte MPIDs.
+        </p>
       </column>
 
       <column name="cfm_flap_count">
@@ -2189,8 +2220,8 @@
         with compliant implementations which may be running concurrently on the
         network. Furthermore, extended mode increases the accuracy of the
         <code>cfm_interval</code> configuration parameter by breaking wire
-        compatibility with 802.1ag compliant implementations.  Defaults to
-        <code>false</code>.
+        compatibility with 802.1ag compliant implementations.  And extended
+        mode allows eight byte MPIDs.  Defaults to <code>false</code>.
       </column>
 
       <column name="other_config" key="cfm_demand" type='{"type": "boolean"}'>
@@ -2532,6 +2563,68 @@
       <p>
         When <ref column="overflow_policy"/> is not <code>evict</code>, this
         column has no effect.
+      </p>
+    </column>
+
+    <column name="prefixes">
+      <p>
+        This string set specifies which fields should be used for
+        address prefix tracking.  Prefix tracking allows the
+        classifier to skip rules with longer than necessary prefixes,
+        resulting in better wildcarding for datapath flows.
+      </p>
+      <p>
+        Prefix tracking may be beneficial when a flow table contains
+        matches on IP address fields with different prefix lengths.
+        For example, when a flow table contains IP address matches on
+        both full addresses and proper prefixes, the full address
+        matches will typically cause the datapath flow to un-wildcard
+        the whole address field (depending on flow entry priorities).
+        In this case each packet with a different address gets handed
+        to the userspace for flow processing and generates its own
+        datapath flow.  With prefix tracking enabled for the address
+        field in question packets with addresses matching shorter
+        prefixes would generate datapath flows where the irrelevant
+        address bits are wildcarded, allowing the same datapath flow
+        to handle all the packets within the prefix in question.  In
+        this case many userspace upcalls can be avoided and the
+        overall performance can be better.
+      </p>
+      <p>
+        This is a performance optimization only, so packets will
+        receive the same treatment with or without prefix tracking.
+      </p>
+      <p>
+        The supported fields are: <code>tun_id</code>,
+        <code>tun_src</code>, <code>tun_dst</code>,
+        <code>nw_src</code>, <code>nw_dst</code> (or aliases
+        <code>ip_src</code> and <code>ip_dst</code>),
+        <code>ipv6_src</code>, and <code>ipv6_dst</code>.  (Using this
+        feature for <code>tun_id</code> would only make sense if the
+        tunnel IDs have prefix structure similar to IP addresses.)
+      </p>
+      <p>
+        For example, <code>prefixes=ip_dst,ip_src</code> instructs the
+        flow classifier to track the IP destination and source
+        addresses used by the rules in this specific flow table.  To
+        set the prefix fields, the flow table record needs to exist:
+      </p>
+      <dl>
+        <dt><code>ovs-vsctl set Bridge br0 flow_tables:0=@N1 -- --id=@N1 create Flow_Table name=table0</code></dt>
+        <dd>
+          Creates a flow table record for the OpenFlow table number 0.
+        </dd>
+
+        <dt><code>ovs-vsctl set Flow_Table table0 prefixes=ip_dst,ip_src</code></dt>
+        <dd>
+          Enables prefix tracking for IP source and destination
+          address fields.
+        </dd>
+      </dl>
+
+      <p>
+        There is a maximum number of fields that can be enabled for any
+        one flow table.  Currently this limit is 3.
       </p>
     </column>
   </table>

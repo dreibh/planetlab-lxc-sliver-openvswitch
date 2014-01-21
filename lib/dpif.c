@@ -1065,54 +1065,38 @@ struct dpif_execute_helper_aux {
     int error;
 };
 
+/* This is called for actions that need the context of the datapath to be
+ * meaningful. */
 static void
-dpif_execute_helper_execute__(void *aux_, struct ofpbuf *packet,
-                              const struct flow *flow,
-                              const struct nlattr *actions, size_t actions_len)
+dpif_execute_helper_cb(void *aux_, struct ofpbuf *packet,
+                       const struct pkt_metadata *md,
+                       const struct nlattr *action, bool may_steal OVS_UNUSED)
 {
     struct dpif_execute_helper_aux *aux = aux_;
     struct dpif_execute execute;
-    struct odputil_keybuf key_stub;
-    struct ofpbuf key;
-    int error;
+    int type = nl_attr_type(action);
 
-    ofpbuf_use_stub(&key, &key_stub, sizeof key_stub);
-    odp_flow_key_from_flow(&key, flow, flow->in_port.odp_port);
+    switch ((enum ovs_action_attr)type) {
+    case OVS_ACTION_ATTR_OUTPUT:
+    case OVS_ACTION_ATTR_USERSPACE:
+        execute.actions = action;
+        execute.actions_len = NLA_ALIGN(action->nla_len);
+        execute.packet = packet;
+        execute.md = *md;
+        execute.needs_help = false;
+        aux->error = aux->dpif->dpif_class->execute(aux->dpif, &execute);
+        break;
 
-    execute.key = key.data;
-    execute.key_len = key.size;
-    execute.actions = actions;
-    execute.actions_len = actions_len;
-    execute.packet = packet;
-    execute.needs_help = false;
-
-    error = aux->dpif->dpif_class->execute(aux->dpif, &execute);
-    if (error) {
-        aux->error = error;
+    case OVS_ACTION_ATTR_PUSH_VLAN:
+    case OVS_ACTION_ATTR_POP_VLAN:
+    case OVS_ACTION_ATTR_PUSH_MPLS:
+    case OVS_ACTION_ATTR_POP_MPLS:
+    case OVS_ACTION_ATTR_SET:
+    case OVS_ACTION_ATTR_SAMPLE:
+    case OVS_ACTION_ATTR_UNSPEC:
+    case __OVS_ACTION_ATTR_MAX:
+        OVS_NOT_REACHED();
     }
-}
-
-static void
-dpif_execute_helper_output_cb(void *aux, struct ofpbuf *packet,
-                              const struct flow *flow, odp_port_t out_port)
-{
-    uint64_t actions_stub[DIV_ROUND_UP(NL_A_U32_SIZE, 8)];
-    struct ofpbuf actions;
-
-    ofpbuf_use_stack(&actions, actions_stub, sizeof actions_stub);
-    nl_msg_put_u32(&actions, OVS_ACTION_ATTR_OUTPUT, odp_to_u32(out_port));
-
-    dpif_execute_helper_execute__(aux, packet, flow,
-                                  actions.data, actions.size);
-}
-
-static void
-dpif_execute_helper_userspace_cb(void *aux, struct ofpbuf *packet,
-                                 const struct flow *flow,
-                                 const struct nlattr *action)
-{
-    dpif_execute_helper_execute__(aux, packet, flow,
-                                  action, NLA_ALIGN(action->nla_len));
 }
 
 /* Executes 'execute' by performing most of the actions in userspace and
@@ -1121,41 +1105,42 @@ dpif_execute_helper_userspace_cb(void *aux, struct ofpbuf *packet,
  *
  * This helps with actions that a given 'dpif' doesn't implement directly. */
 static int
-dpif_execute_with_help(struct dpif *dpif, const struct dpif_execute *execute)
+dpif_execute_with_help(struct dpif *dpif, struct dpif_execute *execute)
 {
-    struct dpif_execute_helper_aux aux;
-    enum odp_key_fitness fit;
-    struct ofpbuf *packet;
-    struct flow flow;
+    struct dpif_execute_helper_aux aux = {dpif, 0};
 
     COVERAGE_INC(dpif_execute_with_help);
 
-    fit = odp_flow_key_to_flow(execute->key, execute->key_len, &flow);
-    if (fit == ODP_FIT_ERROR) {
-        return EINVAL;
-    }
-
-    aux.dpif = dpif;
-    aux.error = 0;
-
-    packet = ofpbuf_clone_with_headroom(execute->packet, VLAN_HEADER_LEN);
-    odp_execute_actions(&aux, packet, &flow,
+    odp_execute_actions(&aux, execute->packet, &execute->md,
                         execute->actions, execute->actions_len,
-                        dpif_execute_helper_output_cb,
-                        dpif_execute_helper_userspace_cb);
-    ofpbuf_delete(packet);
-
+                        dpif_execute_helper_cb);
     return aux.error;
 }
 
-static int
-dpif_execute__(struct dpif *dpif, const struct dpif_execute *execute)
+/* Causes 'dpif' to perform the 'execute->actions_len' bytes of actions in
+ * 'execute->actions' on the Ethernet frame in 'execute->packet' and on packet
+ * metadata in 'execute->md'.  The implementation is allowed to modify both the
+ * '*execute->packet' and 'execute->md'.
+ *
+ * Some dpif providers do not implement every action.  The Linux kernel
+ * datapath, in particular, does not implement ARP field modification.  If
+ * 'needs_help' is true, the dpif layer executes in userspace all of the
+ * actions that it can, and for OVS_ACTION_ATTR_OUTPUT and
+ * OVS_ACTION_ATTR_USERSPACE actions it passes the packet through to the dpif
+ * implementation.
+ *
+ * This works even if 'execute->actions_len' is too long for a Netlink
+ * attribute.
+ *
+ * Returns 0 if successful, otherwise a positive errno value. */
+int
+dpif_execute(struct dpif *dpif, struct dpif_execute *execute)
 {
     int error;
 
     COVERAGE_INC(dpif_execute);
     if (execute->actions_len > 0) {
-        error = (execute->needs_help
+        error = (execute->needs_help || nl_attr_oversized(execute->actions_len)
                  ? dpif_execute_with_help(dpif, execute)
                  : dpif->dpif_class->execute(dpif, execute));
     } else {
@@ -1165,40 +1150,6 @@ dpif_execute__(struct dpif *dpif, const struct dpif_execute *execute)
     log_execute_message(dpif, execute, error);
 
     return error;
-}
-
-/* Causes 'dpif' to perform the 'actions_len' bytes of actions in 'actions' on
- * the Ethernet frame specified in 'packet' taken from the flow specified in
- * the 'key_len' bytes of 'key'.  ('key' is mostly redundant with 'packet', but
- * it contains some metadata that cannot be recovered from 'packet', such as
- * tunnel and in_port.)
- *
- * Some dpif providers do not implement every action.  The Linux kernel
- * datapath, in particular, does not implement ARP field modification.  If
- * 'needs_help' is true, the dpif layer executes in userspace all of the
- * actions that it can, and for OVS_ACTION_ATTR_OUTPUT and
- * OVS_ACTION_ATTR_USERSPACE actions it passes the packet through to the dpif
- * implementation.
- *
- * This works even if 'actions_len' is too long for a Netlink attribute.
- *
- * Returns 0 if successful, otherwise a positive errno value. */
-int
-dpif_execute(struct dpif *dpif,
-             const struct nlattr *key, size_t key_len,
-             const struct nlattr *actions, size_t actions_len,
-             const struct ofpbuf *buf,
-             bool needs_help)
-{
-    struct dpif_execute execute;
-
-    execute.key = key;
-    execute.key_len = key_len;
-    execute.actions = actions;
-    execute.actions_len = actions_len;
-    execute.packet = buf;
-    execute.needs_help = needs_help || nl_attr_oversized(actions_len);
-    return dpif_execute__(dpif, &execute);
 }
 
 /* Executes each of the 'n_ops' operations in 'ops' on 'dpif', in the order in
@@ -1256,7 +1207,7 @@ dpif_operate(struct dpif *dpif, struct dpif_op **ops, size_t n_ops)
                 /* Help the dpif provider to execute one op. */
                 struct dpif_op *op = ops[0];
 
-                op->error = dpif_execute__(dpif, &op->u.execute);
+                op->error = dpif_execute(dpif, &op->u.execute);
                 ops++;
                 n_ops--;
             }
@@ -1277,11 +1228,11 @@ dpif_operate(struct dpif *dpif, struct dpif_op **ops, size_t n_ops)
                 break;
 
             case DPIF_OP_EXECUTE:
-                op->error = dpif_execute__(dpif, &op->u.execute);
+                op->error = dpif_execute(dpif, &op->u.execute);
                 break;
 
             default:
-                NOT_REACHED();
+                OVS_NOT_REACHED();
             }
         }
     }
@@ -1317,10 +1268,15 @@ dpif_recv_set(struct dpif *dpif, bool enable)
  * '*upcall', using 'buf' for storage.  Should only be called if
  * dpif_recv_set() has been used to enable receiving packets on 'dpif'.
  *
- * 'upcall->packet' and 'upcall->key' point into data in the caller-provided
- * 'buf', so their memory cannot be freed separately from 'buf'.  (This is
- * hardly a great way to do things but it works out OK for the dpif providers
- * and clients that exist so far.)
+ * 'upcall->key' and 'upcall->userdata' point into data in the caller-provided
+ * 'buf', so their memory cannot be freed separately from 'buf'.
+ *
+ * The caller owns the data of 'upcall->packet' and may modify it.  If
+ * packet's headroom is exhausted as it is manipulated, 'upcall->packet'
+ * will be reallocated.  This requires the data of 'upcall->packet' to be
+ * released with ofpbuf_uninit() before 'upcall' is destroyed.  However,
+ * when an error is returned, the 'upcall->packet' may be uninitialized
+ * and should not be released.
  *
  * Returns 0 if successful, otherwise a positive errno value.  Returns EAGAIN
  * if no upcall is immediately available. */
@@ -1332,8 +1288,8 @@ dpif_recv(struct dpif *dpif, struct dpif_upcall *upcall, struct ofpbuf *buf)
         struct ds flow;
         char *packet;
 
-        packet = ofp_packet_to_string(upcall->packet->data,
-                                      upcall->packet->size);
+        packet = ofp_packet_to_string(upcall->packet.data,
+                                      upcall->packet.size);
 
         ds_init(&flow);
         odp_flow_key_format(upcall->key, upcall->key_len, &flow);

@@ -507,13 +507,14 @@ netdev_pltap_set_config(struct netdev *dev_, const struct smap *args)
 }
 
 static int
-netdev_pltap_rx_recv(struct netdev_rx *rx_, void *buffer, size_t size)
+netdev_pltap_rx_recv(struct netdev_rx *rx_, struct ofpbuf *buffer)
 {
+    size_t size = ofpbuf_tailroom(buffer);
     struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
     struct tun_pi pi;
     struct iovec iov[2] = {
         { .iov_base = &pi, .iov_len = sizeof(pi) },
-	{ .iov_base = buffer, .iov_len = size }
+	{ .iov_base = buffer->data, .iov_len = size }
     };
     for (;;) {
         ssize_t retval;
@@ -861,8 +862,6 @@ const struct netdev_class netdev_pltap_class = {
     NULL,                       /* arp_lookup */
 
     netdev_pltap_update_flags,
-
-    netdev_pltap_change_seq,
 
     netdev_pltap_rx_alloc,
     netdev_pltap_rx_construct,

@@ -20,6 +20,7 @@
 
 #include <errno.h>
 
+#include "connectivity.h"
 #include "flow.h"
 #include "list.h"
 #include "netdev-provider.h"
@@ -30,6 +31,7 @@
 #include "packets.h"
 #include "pcap-file.h"
 #include "poll-loop.h"
+#include "seq.h"
 #include "shash.h"
 #include "sset.h"
 #include "stream.h"
@@ -66,7 +68,6 @@ struct netdev_dummy {
     int mtu OVS_GUARDED;
     struct netdev_stats stats OVS_GUARDED;
     enum netdev_flags flags OVS_GUARDED;
-    unsigned int change_seq OVS_GUARDED;
     int ifindex OVS_GUARDED;
 
     struct pstream *pstream OVS_GUARDED;
@@ -86,13 +87,11 @@ struct netdev_rx_dummy {
     struct list node;           /* In netdev_dummy's "rxes" list. */
     struct list recv_queue;
     int recv_queue_len;         /* list_size(&recv_queue). */
-    bool listening;
+    struct seq *seq;            /* Reports newly queued packets. */
 };
 
 static unixctl_cb_func netdev_dummy_set_admin_state;
 static int netdev_dummy_construct(struct netdev *);
-static void netdev_dummy_changed(struct netdev_dummy *netdev)
-    OVS_REQUIRES(netdev->mutex);
 static void netdev_dummy_queue_packet(struct netdev_dummy *, struct ofpbuf *);
 
 static void dummy_stream_close(struct dummy_stream *);
@@ -285,7 +284,6 @@ netdev_dummy_construct(struct netdev *netdev_)
     netdev->hwaddr[5] = n;
     netdev->mtu = 1500;
     netdev->flags = 0;
-    netdev->change_seq = 1;
     netdev->ifindex = -EOPNOTSUPP;
 
     netdev->pstream = NULL;
@@ -421,6 +419,7 @@ netdev_dummy_rx_construct(struct netdev_rx *rx_)
     list_push_back(&netdev->rxes, &rx->node);
     list_init(&rx->recv_queue);
     rx->recv_queue_len = 0;
+    rx->seq = seq_create();
     ovs_mutex_unlock(&netdev->mutex);
 
     return 0;
@@ -436,6 +435,7 @@ netdev_dummy_rx_destruct(struct netdev_rx *rx_)
     list_remove(&rx->node);
     ofpbuf_list_delete(&rx->recv_queue);
     ovs_mutex_unlock(&netdev->mutex);
+    seq_destroy(rx->seq);
 }
 
 static void
@@ -447,7 +447,7 @@ netdev_dummy_rx_dealloc(struct netdev_rx *rx_)
 }
 
 static int
-netdev_dummy_rx_recv(struct netdev_rx *rx_, void *buffer, size_t size)
+netdev_dummy_rx_recv(struct netdev_rx *rx_, struct ofpbuf *buffer)
 {
     struct netdev_rx_dummy *rx = netdev_rx_dummy_cast(rx_);
     struct netdev_dummy *netdev = netdev_dummy_cast(rx->up.netdev);
@@ -464,19 +464,20 @@ netdev_dummy_rx_recv(struct netdev_rx *rx_, void *buffer, size_t size)
     ovs_mutex_unlock(&netdev->mutex);
 
     if (!packet) {
-        return -EAGAIN;
+        return EAGAIN;
     }
 
-    if (packet->size <= size) {
-        memcpy(buffer, packet->data, packet->size);
-        retval = packet->size;
+    if (packet->size <= ofpbuf_tailroom(buffer)) {
+        memcpy(buffer->data, packet->data, packet->size);
+        buffer->size += packet->size;
+        retval = 0;
 
         ovs_mutex_lock(&netdev->mutex);
         netdev->stats.rx_packets++;
         netdev->stats.rx_bytes += packet->size;
         ovs_mutex_unlock(&netdev->mutex);
     } else {
-        retval = -EMSGSIZE;
+        retval = EMSGSIZE;
     }
     ofpbuf_delete(packet);
 
@@ -488,10 +489,13 @@ netdev_dummy_rx_wait(struct netdev_rx *rx_)
 {
     struct netdev_rx_dummy *rx = netdev_rx_dummy_cast(rx_);
     struct netdev_dummy *netdev = netdev_dummy_cast(rx->up.netdev);
+    uint64_t seq = seq_read(rx->seq);
 
     ovs_mutex_lock(&netdev->mutex);
     if (!list_is_empty(&rx->recv_queue)) {
         poll_immediate_wake();
+    } else {
+        seq_wait(rx->seq, seq);
     }
     ovs_mutex_unlock(&netdev->mutex);
 }
@@ -506,6 +510,8 @@ netdev_dummy_rx_drain(struct netdev_rx *rx_)
     ofpbuf_list_delete(&rx->recv_queue);
     rx->recv_queue_len = 0;
     ovs_mutex_unlock(&netdev->mutex);
+
+    seq_change(rx->seq);
 
     return 0;
 }
@@ -571,7 +577,7 @@ netdev_dummy_set_etheraddr(struct netdev *netdev,
     ovs_mutex_lock(&dev->mutex);
     if (!eth_addr_equals(dev->hwaddr, mac)) {
         memcpy(dev->hwaddr, mac, ETH_ADDR_LEN);
-        netdev_dummy_changed(dev);
+        seq_change(connectivity_seq_get());
     }
     ovs_mutex_unlock(&dev->mutex);
 
@@ -666,7 +672,7 @@ netdev_dummy_update_flags__(struct netdev_dummy *netdev,
     netdev->flags |= on;
     netdev->flags &= ~off;
     if (*old_flagsp != netdev->flags) {
-        netdev_dummy_changed(netdev);
+        seq_change(connectivity_seq_get());
     }
 
     return 0;
@@ -686,30 +692,8 @@ netdev_dummy_update_flags(struct netdev *netdev_,
 
     return error;
 }
-
-static unsigned int
-netdev_dummy_change_seq(const struct netdev *netdev_)
-{
-    struct netdev_dummy *netdev = netdev_dummy_cast(netdev_);
-    unsigned int change_seq;
-
-    ovs_mutex_lock(&netdev->mutex);
-    change_seq = netdev->change_seq;
-    ovs_mutex_unlock(&netdev->mutex);
-
-    return change_seq;
-}
 
 /* Helper functions. */
-
-static void
-netdev_dummy_changed(struct netdev_dummy *dev)
-{
-    dev->change_seq++;
-    if (!dev->change_seq) {
-        dev->change_seq++;
-    }
-}
 
 static const struct netdev_class dummy_class = {
     "dummy",
@@ -766,8 +750,6 @@ static const struct netdev_class dummy_class = {
 
     netdev_dummy_update_flags,
 
-    netdev_dummy_change_seq,
-
     netdev_dummy_rx_alloc,
     netdev_dummy_rx_construct,
     netdev_dummy_rx_destruct,
@@ -822,6 +804,7 @@ netdev_dummy_queue_packet__(struct netdev_rx_dummy *rx, struct ofpbuf *packet)
 {
     list_push_back(&rx->recv_queue, &packet->list_node);
     rx->recv_queue_len++;
+    seq_change(rx->seq);
 }
 
 static void

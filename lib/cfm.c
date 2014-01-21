@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "byte-order.h"
+#include "connectivity.h"
 #include "dynamic-string.h"
 #include "flow.h"
 #include "hash.h"
@@ -31,6 +32,7 @@
 #include "packets.h"
 #include "poll-loop.h"
 #include "random.h"
+#include "seq.h"
 #include "timer.h"
 #include "timeval.h"
 #include "unixctl.h"
@@ -128,7 +130,7 @@ struct cfm {
 
     atomic_bool check_tnl_key; /* Verify the tunnel key of inbound packets? */
     atomic_bool extended;      /* Extended mode. */
-    atomic_int ref_cnt;
+    struct ovs_refcount ref_cnt;
 
     uint64_t flap_count;       /* Count the flaps since boot. */
 };
@@ -234,7 +236,7 @@ static int
 ccm_interval_to_ms(uint8_t interval)
 {
     switch (interval) {
-    case 0:  NOT_REACHED(); /* Explicitly not supported by 802.1ag. */
+    case 0:  OVS_NOT_REACHED(); /* Explicitly not supported by 802.1ag. */
     case 1:  return 3;      /* Not recommended due to timer resolution. */
     case 2:  return 10;     /* Not recommended due to timer resolution. */
     case 3:  return 100;
@@ -242,10 +244,10 @@ ccm_interval_to_ms(uint8_t interval)
     case 5:  return 10000;
     case 6:  return 60000;
     case 7:  return 600000;
-    default: NOT_REACHED(); /* Explicitly not supported by 802.1ag. */
+    default: OVS_NOT_REACHED(); /* Explicitly not supported by 802.1ag. */
     }
 
-    NOT_REACHED();
+    OVS_NOT_REACHED();
 }
 
 static long long int
@@ -335,7 +337,7 @@ cfm_create(const struct netdev *netdev) OVS_EXCLUDED(mutex)
     cfm->flap_count = 0;
     atomic_init(&cfm->extended, false);
     atomic_init(&cfm->check_tnl_key, false);
-    atomic_init(&cfm->ref_cnt, 1);
+    ovs_refcount_init(&cfm->ref_cnt);
 
     ovs_mutex_lock(&mutex);
     cfm_generate_maid(cfm);
@@ -348,15 +350,12 @@ void
 cfm_unref(struct cfm *cfm) OVS_EXCLUDED(mutex)
 {
     struct remote_mp *rmp, *rmp_next;
-    int orig;
 
     if (!cfm) {
         return;
     }
 
-    atomic_sub(&cfm->ref_cnt, 1, &orig);
-    ovs_assert(orig > 0);
-    if (orig != 1) {
+    if (ovs_refcount_unref(&cfm->ref_cnt) != 1) {
         return;
     }
 
@@ -372,6 +371,11 @@ cfm_unref(struct cfm *cfm) OVS_EXCLUDED(mutex)
     hmap_destroy(&cfm->remote_mps);
     netdev_close(cfm->netdev);
     free(cfm->rmps_array);
+
+    atomic_destroy(&cfm->extended);
+    atomic_destroy(&cfm->check_tnl_key);
+    ovs_refcount_destroy(&cfm->ref_cnt);
+
     free(cfm);
 }
 
@@ -380,9 +384,7 @@ cfm_ref(const struct cfm *cfm_)
 {
     struct cfm *cfm = CONST_CAST(struct cfm *, cfm_);
     if (cfm) {
-        int orig;
-        atomic_add(&cfm->ref_cnt, 1, &orig);
-        ovs_assert(orig > 0);
+        ovs_refcount_ref(&cfm->ref_cnt);
     }
     return cfm;
 }
@@ -396,6 +398,7 @@ cfm_run(struct cfm *cfm) OVS_EXCLUDED(mutex)
         long long int interval = cfm_fault_interval(cfm);
         struct remote_mp *rmp, *rmp_next;
         bool old_cfm_fault = cfm->fault;
+        bool old_rmp_opup = cfm->remote_opup;
         bool demand_override;
         bool rmp_set_opup = false;
         bool rmp_set_opdown = false;
@@ -420,6 +423,7 @@ cfm_run(struct cfm *cfm) OVS_EXCLUDED(mutex)
                 cfm->health = 0;
             } else {
                 int exp_ccm_recvd;
+                int old_health = cfm->health;
 
                 rmp = CONTAINER_OF(hmap_first(&cfm->remote_mps),
                                    struct remote_mp, node);
@@ -434,6 +438,10 @@ cfm_run(struct cfm *cfm) OVS_EXCLUDED(mutex)
                 cfm->health = MIN(cfm->health, 100);
                 rmp->num_health_ccm = 0;
                 ovs_assert(cfm->health >= 0 && cfm->health <= 100);
+
+                if (cfm->health != old_health) {
+                    seq_change(connectivity_seq_get());
+                }
             }
             cfm->health_interval = 0;
         }
@@ -476,6 +484,10 @@ cfm_run(struct cfm *cfm) OVS_EXCLUDED(mutex)
             cfm->remote_opup = true;
         }
 
+        if (old_rmp_opup != cfm->remote_opup) {
+            seq_change(connectivity_seq_get());
+        }
+
         if (hmap_is_empty(&cfm->remote_mps)) {
             cfm->fault |= CFM_FAULT_RECV;
         }
@@ -497,6 +509,8 @@ cfm_run(struct cfm *cfm) OVS_EXCLUDED(mutex)
             if (old_cfm_fault == false || cfm->fault == false) {
                 cfm->flap_count++;
             }
+
+            seq_change(connectivity_seq_get());
         }
 
         cfm->booted = true;
@@ -540,7 +554,7 @@ cfm_compose_ccm(struct cfm *cfm, struct ofpbuf *packet,
 
     if (ccm_vlan || cfm->ccm_pcp) {
         uint16_t tci = ccm_vlan | (cfm->ccm_pcp << VLAN_PCP_SHIFT);
-        eth_push_vlan(packet, htons(tci));
+        eth_push_vlan(packet, htons(ETH_TYPE_VLAN), htons(tci));
     }
 
     ccm = packet->l3;
@@ -1020,6 +1034,7 @@ cfm_unixctl_set_fault(struct unixctl_conn *conn, int argc, const char *argv[],
         }
     }
 
+    seq_change(connectivity_seq_get());
     unixctl_command_reply(conn, "OK");
 
 out:

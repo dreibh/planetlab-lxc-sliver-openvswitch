@@ -85,6 +85,9 @@ typedef enum {
     ((OBJECT)->value = (VALUE),                         \
      pthread_mutex_init(&(OBJECT)->mutex, NULL),        \
      (void) 0)
+#define atomic_destroy(OBJECT)                  \
+    (pthread_mutex_destroy(&(OBJECT)->mutex),   \
+     (void) 0)
 
 static inline void
 atomic_thread_fence(memory_order order OVS_UNUSED)
@@ -147,6 +150,9 @@ typedef struct {
     pthread_mutex_t mutex;
 } atomic_flag;
 #define ATOMIC_FLAG_INIT { false, PTHREAD_MUTEX_INITIALIZER }
+
+void atomic_flag_init(volatile atomic_flag *);
+void atomic_flag_destroy(volatile atomic_flag *);
 
 bool atomic_flag_test_and_set(volatile atomic_flag *);
 bool atomic_flag_test_and_set_explicit(volatile atomic_flag *, memory_order);
