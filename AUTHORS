@@ -16,6 +16,7 @@ Andy Zhou               azhou@nicira.com
 Ansis Atteka            aatteka@nicira.com
 Anupam Chanda           achanda@nicira.com
 Arun Sharma             arun.sharma@calsoftinc.com
+Aryan TaheriMonfared    aryan.taherimonfared@uis.no
 Ben Pfaff               blp@nicira.com
 Brian Kruger            bkruger+ovsdev@gmail.com
 Bruce Davie             bsd@nicira.com
@@ -26,7 +27,9 @@ Chuck Short             zulcss@ubuntu.com
 Damien Millescamps      damien.millescamps@6wind.com
 Dan Carpenter           dan.carpenter@oracle.com
 Dan Wendlandt           dan@nicira.com
+Daniel Hiltgen          daniel@netkine.com
 Daniel Roman            droman@nicira.com
+Daniele Di Proietto     daniele.di.proietto@gmail.com
 Daniele Venturino       daniele.venturino@m3s.it
 Danny Kukawka           danny.kukawka@bisect.de
 David Erickson          derickso@stanford.edu
@@ -65,12 +68,14 @@ Joe Stringer            joestringer@nicira.com
 Jun Nakajima            jun.nakajima@intel.com
 Justin Pettit           jpettit@nicira.com
 Keith Amidon            keith@nicira.com
+Ken Ajiro               ajiro@mxw.nes.nec.co.jp
 Krishna Kondaka         kkondaka@vmware.com
 Kyle Mestery            kmestery@cisco.com
 Leo Alterman            lalterman@nicira.com
 Linda Sun               lsun@vmware.com
 Lorand Jakab            lojakab@cisco.com
 Luca Giraudo            lgiraudo@nicira.com
+Luigi Rizzo             rizzo@iet.unipi.it
 Mark Hamilton           mhamilton@nicira.com
 Martin Casado           casado@nicira.com
 Mehak Mahajan           mmahajan@nicira.com
@@ -233,6 +238,7 @@ Spiro Kourtessis        spiro@vmware.com
 Srini Seetharaman       seethara@stanford.edu
 Stephen Hemminger       shemminger@vyatta.com
 Stephen Finucane        stephen.finucane@intel.com
+Suganya Ramachandran    suganyar@vmware.com
 Takayuki HAMA           t-hama@cb.jp.nec.com
 Teemu Koponen           koponen@nicira.com
 Timothy Chen            tchen@nicira.com
@@ -246,6 +252,7 @@ Yeming Zhao             zhaoyeming@gmail.com
 Ying Chen               yingchen@vmware.com
 Yongqiang Liu           liuyq7809@gmail.com
 ankur dwivedi           ankurengg2003@gmail.com
+chen zhang              3zhangchen9211@gmail.com
 kk yap                  yapkke@stanford.edu
 likunyun                kunyunli@hotmail.com
 rahim entezari          rahim.entezari@gmail.com

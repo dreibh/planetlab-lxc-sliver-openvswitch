@@ -25,8 +25,6 @@
 #include <net/if.h>
 #include <linux/types.h>
 #include <linux/pkt_sched.h>
-#include <linux/rtnetlink.h>
-#include <linux/sockios.h>
 #include <poll.h>
 #include <stdlib.h>
 #include <strings.h>
@@ -1014,7 +1012,7 @@ dpif_linux_flow_dump_start(const struct dpif *dpif_, void **statep)
 }
 
 static int
-dpif_linux_flow_dump_next(const struct dpif *dpif_ OVS_UNUSED, void *state_,
+dpif_linux_flow_dump_next(const struct dpif *dpif_, void *state_,
                           const struct nlattr **key, size_t *key_len,
                           const struct nlattr **mask, size_t *mask_len,
                           const struct nlattr **actions, size_t *actions_len,

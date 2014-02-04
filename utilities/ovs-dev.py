@@ -28,7 +28,7 @@ BUILD_GCC = OVS_SRC + "/_build-gcc"
 BUILD_CLANG = OVS_SRC + "/_build-clang"
 PATH = "%(ovs)s/utilities:%(ovs)s/ovsdb:%(ovs)s/vswitchd" % {"ovs": BUILD_GCC}
 
-ENV["CFLAGS"] = "-g -O0"
+ENV["CFLAGS"] = "-g -fno-omit-frame-pointer"
 ENV["PATH"] = PATH + ":" + ENV["PATH"]
 
 options = None
@@ -62,8 +62,7 @@ def conf():
 
     configure = ["../configure", "--prefix=" + ROOT, "--localstatedir=" + ROOT,
                  "--with-logdir=%s/log" % ROOT, "--with-rundir=%s/run" % ROOT,
-                 "--with-linux=/lib/modules/%s/build" % uname(),
-                 "--with-dbdir=" + ROOT]
+                 "--enable-silent-rules", "--with-dbdir=" + ROOT, "--silent"]
 
     if options.werror:
         configure.append("--enable-Werror")
@@ -74,6 +73,10 @@ def conf():
     if options.mandir:
         configure.append("--mandir=" + options.mandir)
 
+    if options.optimize is None:
+        options.optimize = 0
+    ENV["CFLAGS"] = "%s -O%d" % (ENV["CFLAGS"], options.optimize)
+
     _sh("./boot.sh")
 
     try:
@@ -82,7 +85,7 @@ def conf():
         pass # Directory exists.
 
     os.chdir(BUILD_GCC)
-    _sh(*configure)
+    _sh(*(configure + ["--with-linux=/lib/modules/%s/build" % uname()]))
 
     try:
         _sh("clang --version", check=True)
@@ -320,6 +323,10 @@ def main():
                      action="store_true", help="configure with cached timing")
     group.add_option("--mandir", dest="mandir", metavar="MANDIR",
                      help="configure the man documentation install directory")
+
+    for i in range(4):
+        group.add_option("--O%d" % i, dest="optimize", action="store_const",
+                         const=i, help="compile with -O%d" % i)
     parser.add_option_group(group)
 
     group = optparse.OptionGroup(parser, "run")

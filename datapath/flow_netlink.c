@@ -16,6 +16,8 @@
  * 02110-1301, USA
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include "flow.h"
 #include "datapath.h"
 #include <linux/uaccess.h>
@@ -216,14 +218,14 @@ static bool match_validate(const struct sw_flow_match *match,
 	if ((key_attrs & key_expected) != key_expected) {
 		/* Key attributes check failed. */
 		OVS_NLERR("Missing expected key attributes (key_attrs=%llx, expected=%llx).\n",
-				key_attrs, key_expected);
+				(unsigned long long)key_attrs, (unsigned long long)key_expected);
 		return false;
 	}
 
 	if ((mask_attrs & mask_allowed) != mask_attrs) {
 		/* Mask attributes check failed. */
 		OVS_NLERR("Contain more than allowed mask fields (mask_attrs=%llx, mask_allowed=%llx).\n",
-				mask_attrs, mask_allowed);
+				(unsigned long long)mask_attrs, (unsigned long long)mask_allowed);
 		return false;
 	}
 
@@ -628,8 +630,10 @@ static int ovs_key_from_nlattrs(struct sw_flow_match *match,  bool *exact_5tuple
 
 		if (is_mask && exact_5tuple && *exact_5tuple) {
 			if (ipv6_key->ipv6_proto != 0xff ||
-			    !is_all_set((u8 *)ipv6_key->ipv6_src, sizeof(match->key->ipv6.addr.src)) ||
-			    !is_all_set((u8 *)ipv6_key->ipv6_dst, sizeof(match->key->ipv6.addr.dst)))
+			    !is_all_set((const u8 *)ipv6_key->ipv6_src,
+					sizeof(match->key->ipv6.addr.src)) ||
+			    !is_all_set((const u8 *)ipv6_key->ipv6_dst,
+					sizeof(match->key->ipv6.addr.dst)))
 				*exact_5tuple = false;
 		}
 	}

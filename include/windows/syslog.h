@@ -28,4 +28,24 @@
 #define LOG_NDELAY      8       /* don't delay open */
 #define LOG_DAEMON      24      /* system daemons */
 
+#define LOG_LOCAL0      (16<<3) /* reserved for local use */
+#define LOG_LOCAL1      (17<<3) /* reserved for local use */
+#define LOG_LOCAL2      (18<<3) /* reserved for local use */
+#define LOG_LOCAL3      (19<<3) /* reserved for local use */
+#define LOG_LOCAL4      (20<<3) /* reserved for local use */
+#define LOG_LOCAL5      (21<<3) /* reserved for local use */
+#define LOG_LOCAL6      (22<<3) /* reserved for local use */
+#define LOG_LOCAL7      (23<<3) /* reserved for local use */
+
+static inline void
+openlog(const char *ident OVS_UNUSED, int option OVS_UNUSED,
+        int facility OVS_UNUSED)
+{
+}
+
+static inline void
+syslog(int priority OVS_UNUSED, const char *format OVS_UNUSED, ...)
+{
+}
+
 #endif /* syslog.h */

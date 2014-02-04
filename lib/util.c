@@ -376,6 +376,10 @@ set_program_name__(const char *argv0, const char *version, const char *date,
 #ifdef _WIN32
     char *basename;
     size_t max_len = strlen(argv0) + 1;
+
+    if (program_name) {
+        return;
+    }
     basename = xmalloc(max_len);
     _splitpath_s(argv0, NULL, 0, NULL, 0, basename, max_len, NULL, 0);
     assert_single_threaded();
@@ -1649,3 +1653,19 @@ exit:
     return ok;
 }
 
+#ifdef _WIN32
+
+/* Calls FormatMessage() with GetLastError() as an argument. Returns
+ * pointer to a buffer that receives the null-terminated string that specifies
+ * the formatted message and that has to be freed by the caller with
+ * LocalFree(). */
+char *
+ovs_lasterror_to_string(void)
+{
+    char *buffer;
+    FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
+                  | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, GetLastError(), 0,
+                  (char *)&buffer, 0, NULL);
+    return buffer;
+}
+#endif

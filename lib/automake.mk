@@ -40,7 +40,6 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/crc32c.h \
 	lib/csum.c \
 	lib/csum.h \
-	lib/daemon.c \
 	lib/daemon.h \
 	lib/dhcp.h \
 	lib/dummy.c \
@@ -240,10 +239,16 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/vswitch-idl.h \
 	lib/vtep-idl.c \
 	lib/vtep-idl.h
+
 if WIN32
-lib_libopenvswitch_la_SOURCES += lib/latch-windows.c
+lib_libopenvswitch_la_SOURCES += \
+	lib/daemon-windows.c \
+	lib/getopt_long.c \
+	lib/latch-windows.c
 else
-lib_libopenvswitch_la_SOURCES += lib/latch.c
+lib_libopenvswitch_la_SOURCES += \
+	lib/daemon.c \
+	lib/latch.c
 endif
 
 EXTRA_DIST += \
@@ -337,6 +342,8 @@ MAN_FRAGMENTS += \
 	lib/memory-unixctl.man \
 	lib/ofp-version.man \
 	lib/ovs.tmac \
+	lib/service.man \
+	lib/service-syn.man \
 	lib/ssl-bootstrap.man \
 	lib/ssl-bootstrap-syn.man \
 	lib/ssl-peer-ca-cert.man \

@@ -129,7 +129,8 @@ void xlate_ofproto_set(struct ofproto_dpif *, const char *name,
                        const struct mbridge *, const struct dpif_sflow *,
                        const struct dpif_ipfix *, const struct netflow *,
                        enum ofp_config_flags, bool forward_bpdu,
-                       bool has_in_band, bool variable_length_userdata)
+                       bool has_in_band, bool variable_length_userdata,
+                       size_t mpls_label_stack_length)
     OVS_REQ_WRLOCK(xlate_rwlock);
 void xlate_remove_ofproto(struct ofproto_dpif *) OVS_REQ_WRLOCK(xlate_rwlock);
 
@@ -152,8 +153,7 @@ void xlate_ofport_remove(struct ofport_dpif *) OVS_REQ_WRLOCK(xlate_rwlock);
 
 int xlate_receive(const struct dpif_backer *, struct ofpbuf *packet,
                   const struct nlattr *key, size_t key_len,
-                  struct flow *, enum odp_key_fitness *,
-                  struct ofproto_dpif **, struct dpif_ipfix **,
+                  struct flow *, struct ofproto_dpif **, struct dpif_ipfix **,
                   struct dpif_sflow **, struct netflow **,
                   odp_port_t *odp_in_port)
     OVS_EXCLUDED(xlate_rwlock);
