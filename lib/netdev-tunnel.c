@@ -453,18 +453,6 @@ out:
     return error;
 }
 
-static unsigned int
-netdev_tunnel_change_seq(const struct netdev *netdev_)
-{
-    struct netdev_tunnel *netdev = netdev_tunnel_cast(netdev_);
-    unsigned int change_seq;
-
-
-    ovs_mutex_lock(&netdev->mutex);
-    change_seq = netdev->change_seq;
-    ovs_mutex_unlock(&netdev->mutex);
-    return change_seq;
-}
 
 /* Helper functions. */
 
