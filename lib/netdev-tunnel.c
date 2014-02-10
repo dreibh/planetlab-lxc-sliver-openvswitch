@@ -121,7 +121,8 @@ netdev_tunnel_construct(struct netdev *netdev_)
     netdev->connected = false;
 
 
-    netdev->sockfd = inet_open_passive(SOCK_DGRAM, "", 0, &netdev->local_addr, 0);
+    netdev->sockfd = inet_open_passive(SOCK_DGRAM, "", 0,
+        (struct sockaddr_storage *)&netdev->local_addr, 0);
     if (netdev->sockfd < 0) {
     	return netdev->sockfd;
     }
