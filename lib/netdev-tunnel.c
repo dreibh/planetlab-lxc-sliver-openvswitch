@@ -271,7 +271,7 @@ netdev_tunnel_rx_recv(struct netdev_rx *rx_, struct ofpbuf *buffer)
     struct netdev_tunnel *netdev =
         netdev_tunnel_cast(rx_->netdev);
     if (!netdev->connected)
-        return -EAGAIN;
+        return EAGAIN;
     for (;;) {
         ssize_t retval;
         retval = recv(rx->fd, buffer->data, size, MSG_TRUNC);
@@ -281,11 +281,12 @@ netdev_tunnel_rx_recv(struct netdev_rx *rx_, struct ofpbuf *buffer)
 	        netdev->stats.rx_packets++;
 	        netdev->stats.rx_bytes += retval;
             if (retval <= size) {
-	    	    return retval;
+                buffer->size += retval;
+	    	    return 0;
             } else {
                 netdev->stats.rx_errors++;
                 netdev->stats.rx_length_errors++;
-                return -EMSGSIZE;
+                return EMSGSIZE;
             }
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
@@ -293,7 +294,7 @@ netdev_tunnel_rx_recv(struct netdev_rx *rx_, struct ofpbuf *buffer)
                     netdev_rx_get_name(rx_), ovs_strerror(errno));
 	            netdev->stats.rx_errors++;
             }
-            return -errno;
+            return errno;
         }
     }
 }

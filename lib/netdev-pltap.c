@@ -514,23 +514,24 @@ netdev_pltap_rx_recv(struct netdev_rx *rx_, struct ofpbuf *buffer)
     struct tun_pi pi;
     struct iovec iov[2] = {
         { .iov_base = &pi, .iov_len = sizeof(pi) },
-	{ .iov_base = buffer->data, .iov_len = size }
+	    { .iov_base = buffer->data, .iov_len = size }
     };
     for (;;) {
         ssize_t retval;
         retval = readv(rx->fd, iov, 2);
         if (retval >= 0) {
             if (retval <= size) {
-	    	return retval;
+            buffer->size += retval;
+	    	return 0;
 	    } else {
-	    	return -EMSGSIZE;
+	    	return EMSGSIZE;
 	    }
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error receiveing Ethernet packet on %s: %s",
                     netdev_rx_get_name(rx_), ovs_strerror(errno));
             }
-            return -errno;
+            return errno;
         }
     }
 }
