@@ -17,6 +17,7 @@
 #ifndef SOCKET_UTIL_H
 #define SOCKET_UTIL_H 1
 
+#include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -30,8 +31,6 @@ int set_nonblocking(int fd);
 void xset_nonblocking(int fd);
 int set_dscp(int fd, uint8_t dscp);
 
-int get_max_fds(void);
-
 int lookup_ip(const char *host_name, struct in_addr *address);
 int lookup_ipv6(const char *host_name, struct in6_addr *address);
 
@@ -39,13 +38,16 @@ int lookup_hostname(const char *host_name, struct in_addr *);
 
 int get_socket_rcvbuf(int sock);
 int check_connection_completion(int fd);
+#ifndef _WIN32
 int drain_rcvbuf(int fd);
+#endif
 void drain_fd(int fd, size_t n_packets);
+#ifndef _WIN32
 int make_unix_socket(int style, bool nonblock,
                      const char *bind_path, const char *connect_path);
 int get_unix_name_len(socklen_t sun_len);
+#endif
 ovs_be32 guess_netmask(ovs_be32 ip);
-int get_null_fd(void);
 
 bool inet_parse_active(const char *target, uint16_t default_port,
                        struct sockaddr_storage *ssp);
@@ -73,11 +75,13 @@ char *describe_fd(int fd);
  * in <netinet/ip.h> is used. */
 #define DSCP_DEFAULT (IPTOS_PREC_INTERNETCONTROL >> 2)
 
+#ifndef _WIN32
 /* Helpers for calling ioctl() on an AF_INET socket. */
 struct ifreq;
 int af_inet_ioctl(unsigned long int command, const void *arg);
 int af_inet_ifreq_ioctl(const char *name, struct ifreq *,
                         unsigned long int cmd, const char *cmd_name);
+#endif
 
 /* Functions for working with sockaddr_storage that might contain an IPv4 or
  * IPv6 address. */
@@ -86,5 +90,40 @@ uint16_t ss_get_port(const struct sockaddr_storage *);
 char *ss_format_address(const struct sockaddr_storage *,
                         char *buf, size_t bufsize);
 size_t ss_length(const struct sockaddr_storage *);
+const char *sock_strerror(int error);
+
+#ifdef _WIN32
+/* Windows defines the 'optval' argument as char * instead of void *. */
+#define setsockopt(sock, level, optname, optval, optlen) \
+    rpl_setsockopt(sock, level, optname, optval, optlen)
+static inline int rpl_setsockopt(int sock, int level, int optname,
+                                 const void *optval, socklen_t optlen)
+{
+    return (setsockopt)(sock, level, optname, optval, optlen);
+}
+
+#define getsockopt(sock, level, optname, optval, optlen) \
+    rpl_getsockopt(sock, level, optname, optval, optlen)
+static inline int rpl_getsockopt(int sock, int level, int optname,
+                                 void *optval, socklen_t *optlen)
+{
+    return (getsockopt)(sock, level, optname, optval, optlen);
+}
+#endif
+
+/* In Windows platform, errno is not set for socket calls.
+ * The last error has to be gotten from WSAGetLastError(). */
+static inline int sock_errno(void)
+{
+#ifdef _WIN32
+    return WSAGetLastError();
+#else
+    return errno;
+#endif
+}
+
+#ifndef _WIN32
+#define closesocket close
+#endif
 
 #endif /* socket-util.h */

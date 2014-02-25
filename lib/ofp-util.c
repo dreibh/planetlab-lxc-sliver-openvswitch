@@ -169,9 +169,11 @@ ofputil_match_from_ofp10_match(const struct ofp10_match *ofmatch,
         match->wc.masks.vlan_tci = htons(0xffff);
     } else {
         ovs_be16 vid, pcp, tci;
+        uint16_t hpcp;
 
         vid = ofmatch->dl_vlan & htons(VLAN_VID_MASK);
-        pcp = htons((ofmatch->dl_vlan_pcp << VLAN_PCP_SHIFT) & VLAN_PCP_MASK);
+        hpcp = (ofmatch->dl_vlan_pcp << VLAN_PCP_SHIFT) & VLAN_PCP_MASK;
+        pcp = htons(hpcp);
         tci = vid | pcp | htons(VLAN_CFI);
         match->flow.vlan_tci = tci & match->wc.masks.vlan_tci;
     }
@@ -3640,7 +3642,7 @@ ofputil_decode_ofp11_port(struct ofputil_phy_port *pp,
     ovs_strlcpy(pp->name, op->name, OFP_MAX_PORT_NAME_LEN);
 
     pp->config = ntohl(op->config) & OFPPC11_ALL;
-    pp->state = ntohl(op->state) & OFPPC11_ALL;
+    pp->state = ntohl(op->state) & OFPPS11_ALL;
 
     pp->curr = netdev_port_features_from_ofp11(op->curr);
     pp->advertised = netdev_port_features_from_ofp11(op->advertised);

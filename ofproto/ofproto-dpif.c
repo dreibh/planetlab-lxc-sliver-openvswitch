@@ -89,9 +89,11 @@ struct rule_dpif {
     struct ovs_mutex stats_mutex;
     uint64_t packet_count OVS_GUARDED;  /* Number of packets received. */
     uint64_t byte_count OVS_GUARDED;    /* Number of bytes received. */
+    long long int used;                 /* Last used time (msec). */
 };
 
-static void rule_get_stats(struct rule *, uint64_t *packets, uint64_t *bytes);
+static void rule_get_stats(struct rule *, uint64_t *packets, uint64_t *bytes,
+                           long long int *used);
 static struct rule_dpif *rule_dpif_cast(const struct rule *);
 static void rule_expire(struct rule_dpif *);
 
@@ -1047,7 +1049,7 @@ construct(struct ofproto *ofproto_)
     ofproto->mbridge = mbridge_create();
     ofproto->has_bonded_bundles = false;
     ofproto->lacp_enabled = false;
-    ovs_mutex_init(&ofproto->stats_mutex);
+    ovs_mutex_init_adaptive(&ofproto->stats_mutex);
     ovs_mutex_init(&ofproto->vsp_mutex);
 
     guarded_list_init(&ofproto->pins);
@@ -1402,14 +1404,16 @@ get_tables(struct ofproto *ofproto_, struct ofp12_table_stats *ots)
     struct dpif_dp_stats s;
     uint64_t n_miss, n_no_pkt_in, n_bytes, n_dropped_frags;
     uint64_t n_lookup;
+    long long int used;
 
     strcpy(ots->name, "classifier");
 
     dpif_get_dp_stats(ofproto->backer->dpif, &s);
-    rule_get_stats(&ofproto->miss_rule->up, &n_miss, &n_bytes);
-    rule_get_stats(&ofproto->no_packet_in_rule->up, &n_no_pkt_in, &n_bytes);
-    rule_get_stats(&ofproto->drop_frags_rule->up, &n_dropped_frags, &n_bytes);
-
+    rule_get_stats(&ofproto->miss_rule->up, &n_miss, &n_bytes, &used);
+    rule_get_stats(&ofproto->no_packet_in_rule->up, &n_no_pkt_in, &n_bytes,
+                   &used);
+    rule_get_stats(&ofproto->drop_frags_rule->up, &n_dropped_frags, &n_bytes,
+                   &used);
     n_lookup = s.n_hit + s.n_missed - n_dropped_frags;
     ots->lookup_count = htonll(n_lookup);
     ots->matched_count = htonll(n_lookup - n_miss - n_no_pkt_in);
@@ -1546,6 +1550,9 @@ port_destruct(struct ofport *port_)
     bundle_remove(port_);
     set_cfm(port_, NULL);
     set_bfd(port_, NULL);
+    if (port->stp_port) {
+        stp_port_disable(port->stp_port);
+    }
     if (ofproto->sflow) {
         dpif_sflow_del_port(ofproto->sflow, port->odp_port);
     }
@@ -2911,24 +2918,39 @@ static void
 rule_expire(struct rule_dpif *rule)
     OVS_REQUIRES(ofproto_mutex)
 {
-    uint16_t idle_timeout, hard_timeout;
+    uint16_t hard_timeout, idle_timeout;
     long long int now = time_msec();
-    int reason;
+    int reason = -1;
 
     ovs_assert(!rule->up.pending);
 
-    /* Has 'rule' expired? */
-    ovs_mutex_lock(&rule->up.mutex);
     hard_timeout = rule->up.hard_timeout;
     idle_timeout = rule->up.idle_timeout;
-    if (hard_timeout && now > rule->up.modified + hard_timeout * 1000) {
-        reason = OFPRR_HARD_TIMEOUT;
-    } else if (idle_timeout && now > rule->up.used + idle_timeout * 1000) {
-        reason = OFPRR_IDLE_TIMEOUT;
-    } else {
-        reason = -1;
+
+    /* Has 'rule' expired? */
+    if (hard_timeout) {
+        long long int modified;
+
+        ovs_mutex_lock(&rule->up.mutex);
+        modified = rule->up.modified;
+        ovs_mutex_unlock(&rule->up.mutex);
+
+        if (now > modified + hard_timeout * 1000) {
+            reason = OFPRR_HARD_TIMEOUT;
+        }
     }
-    ovs_mutex_unlock(&rule->up.mutex);
+
+    if (reason < 0 && idle_timeout) {
+        long long int used;
+
+        ovs_mutex_lock(&rule->stats_mutex);
+        used = rule->used;
+        ovs_mutex_unlock(&rule->stats_mutex);
+
+        if (now > used + idle_timeout * 1000) {
+            reason = OFPRR_IDLE_TIMEOUT;
+        }
+    }
 
     if (reason >= 0) {
         COVERAGE_INC(ofproto_dpif_expired);
@@ -2992,7 +3014,7 @@ rule_dpif_credit_stats(struct rule_dpif *rule,
     ovs_mutex_lock(&rule->stats_mutex);
     rule->packet_count += stats->n_packets;
     rule->byte_count += stats->n_bytes;
-    rule->up.used = MAX(rule->up.used, stats->used);
+    rule->used = MAX(rule->used, stats->used);
     ovs_mutex_unlock(&rule->stats_mutex);
 }
 
@@ -3154,13 +3176,13 @@ rule_dealloc(struct rule *rule_)
 
 static enum ofperr
 rule_construct(struct rule *rule_)
+    OVS_NO_THREAD_SAFETY_ANALYSIS
 {
     struct rule_dpif *rule = rule_dpif_cast(rule_);
-    ovs_mutex_init(&rule->stats_mutex);
-    ovs_mutex_lock(&rule->stats_mutex);
+    ovs_mutex_init_adaptive(&rule->stats_mutex);
     rule->packet_count = 0;
     rule->byte_count = 0;
-    ovs_mutex_unlock(&rule->stats_mutex);
+    rule->used = rule->up.modified;
     return 0;
 }
 
@@ -3188,13 +3210,15 @@ rule_destruct(struct rule *rule_)
 }
 
 static void
-rule_get_stats(struct rule *rule_, uint64_t *packets, uint64_t *bytes)
+rule_get_stats(struct rule *rule_, uint64_t *packets, uint64_t *bytes,
+               long long int *used)
 {
     struct rule_dpif *rule = rule_dpif_cast(rule_);
 
     ovs_mutex_lock(&rule->stats_mutex);
     *packets = rule->packet_count;
     *bytes = rule->byte_count;
+    *used = rule->used;
     ovs_mutex_unlock(&rule->stats_mutex);
 }
 
@@ -3270,7 +3294,21 @@ static enum ofperr
 group_construct(struct ofgroup *group_)
 {
     struct group_dpif *group = group_dpif_cast(group_);
-    ovs_mutex_init(&group->stats_mutex);
+    const struct ofputil_bucket *bucket;
+
+    /* Prevent group chaining because our locking structure makes it hard to
+     * implement deadlock-free.  (See xlate_group_resource_check().) */
+    LIST_FOR_EACH (bucket, list_node, &group->up.buckets) {
+        const struct ofpact *a;
+
+        OFPACT_FOR_EACH (a, bucket->ofpacts, bucket->ofpacts_len) {
+            if (a->type == OFPACT_GROUP) {
+                return OFPERR_OFPGMFC_CHAINING_UNSUPPORTED;
+            }
+        }
+    }
+
+    ovs_mutex_init_adaptive(&group->stats_mutex);
     ovs_mutex_lock(&group->stats_mutex);
     group_construct_stats(group);
     ovs_mutex_unlock(&group->stats_mutex);
@@ -4250,12 +4288,8 @@ bool
 ofproto_has_vlan_splinters(const struct ofproto_dpif *ofproto)
     OVS_EXCLUDED(ofproto->vsp_mutex)
 {
-    bool ret;
-
-    ovs_mutex_lock(&ofproto->vsp_mutex);
-    ret = !hmap_is_empty(&ofproto->realdev_vid_map);
-    ovs_mutex_unlock(&ofproto->vsp_mutex);
-    return ret;
+    /* hmap_is_empty is thread safe. */
+    return !hmap_is_empty(&ofproto->realdev_vid_map);
 }
 
 static ofp_port_t
@@ -4293,6 +4327,10 @@ vsp_realdev_to_vlandev(const struct ofproto_dpif *ofproto,
 {
     ofp_port_t ret;
 
+    /* hmap_is_empty is thread safe, see if we can return immediately. */
+    if (hmap_is_empty(&ofproto->realdev_vid_map)) {
+        return realdev_ofp_port;
+    }
     ovs_mutex_lock(&ofproto->vsp_mutex);
     ret = vsp_realdev_to_vlandev__(ofproto, realdev_ofp_port, vlan_tci);
     ovs_mutex_unlock(&ofproto->vsp_mutex);
@@ -4355,6 +4393,11 @@ vsp_adjust_flow(const struct ofproto_dpif *ofproto, struct flow *flow)
 {
     ofp_port_t realdev;
     int vid;
+
+    /* hmap_is_empty is thread safe. */
+    if (hmap_is_empty(&ofproto->vlandev_map)) {
+        return false;
+    }
 
     ovs_mutex_lock(&ofproto->vsp_mutex);
     realdev = vsp_vlandev_to_realdev(ofproto, flow->in_port.ofp_port, &vid);

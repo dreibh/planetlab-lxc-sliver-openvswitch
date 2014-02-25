@@ -37,6 +37,13 @@ struct OVS_LOCKABLE ovs_mutex {
 #define OVS_MUTEX_INITIALIZER { PTHREAD_MUTEX_INITIALIZER, NULL }
 #endif
 
+#ifdef PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP
+#define OVS_ADAPTIVE_MUTEX_INITIALIZER                  \
+    { PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP, NULL }
+#else
+#define OVS_ADAPTIVE_MUTEX_INITIALIZER OVS_MUTEX_INITIALIZER
+#endif
+
 /* ovs_mutex functions analogous to pthread_mutex_*() functions.
  *
  * Most of these functions abort the process with an error message on any
@@ -44,6 +51,7 @@ struct OVS_LOCKABLE ovs_mutex {
  * return value to the caller and aborts on any other error. */
 void ovs_mutex_init(const struct ovs_mutex *);
 void ovs_mutex_init_recursive(const struct ovs_mutex *);
+void ovs_mutex_init_adaptive(const struct ovs_mutex *);
 void ovs_mutex_destroy(const struct ovs_mutex *);
 void ovs_mutex_unlock(const struct ovs_mutex *mutex) OVS_RELEASES(mutex);
 void ovs_mutex_lock_at(const struct ovs_mutex *mutex, const char *where)
@@ -69,14 +77,30 @@ void xpthread_mutexattr_destroy(pthread_mutexattr_t *);
 void xpthread_mutexattr_settype(pthread_mutexattr_t *, int type);
 void xpthread_mutexattr_gettype(pthread_mutexattr_t *, int *typep);
 
-/* Read-write lock. */
+/* Read-write lock.
+ *
+ * An ovs_rwlock does not support recursive readers, because POSIX allows
+ * taking the reader lock recursively to deadlock when a thread is waiting on
+ * the write-lock.  (NetBSD does deadlock.)  glibc rwlocks in their default
+ * configuration do not deadlock, but ovs_rwlock_init() initializes rwlocks as
+ * non-recursive (which will deadlock) for two reasons:
+ *
+ *     - glibc only provides fairness to writers in this mode.
+ *
+ *     - It's better to find bugs in the primary Open vSwitch target rather
+ *       than exposing them only to porters. */
 struct OVS_LOCKABLE ovs_rwlock {
     pthread_rwlock_t lock;
     const char *where;
 };
 
 /* Initializer. */
+#ifdef PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP
+#define OVS_RWLOCK_INITIALIZER \
+        { PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP, NULL }
+#else
 #define OVS_RWLOCK_INITIALIZER { PTHREAD_RWLOCK_INITIALIZER, NULL }
+#endif
 
 /* ovs_rwlock functions analogous to pthread_rwlock_*() functions.
  *
@@ -86,6 +110,13 @@ struct OVS_LOCKABLE ovs_rwlock {
 void ovs_rwlock_init(const struct ovs_rwlock *);
 void ovs_rwlock_destroy(const struct ovs_rwlock *);
 void ovs_rwlock_unlock(const struct ovs_rwlock *rwlock) OVS_RELEASES(rwlock);
+
+/* Wrappers for pthread_rwlockattr_*() that abort the process on any error. */
+void xpthread_rwlockattr_init(pthread_rwlockattr_t *);
+void xpthread_rwlockattr_destroy(pthread_rwlockattr_t *);
+#ifdef PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP
+void xpthread_rwlockattr_setkind_np(pthread_rwlockattr_t *, int kind);
+#endif
 
 void ovs_rwlock_wrlock_at(const struct ovs_rwlock *rwlock, const char *where)
     OVS_ACQ_WRLOCK(rwlock);
@@ -114,17 +145,6 @@ void xpthread_cond_init(pthread_cond_t *, pthread_condattr_t *);
 void xpthread_cond_destroy(pthread_cond_t *);
 void xpthread_cond_signal(pthread_cond_t *);
 void xpthread_cond_broadcast(pthread_cond_t *);
-
-#ifdef __CHECKER__
-/* Replace these functions by the macros already defined in the <pthread.h>
- * annotations, because the macro definitions have correct semantics for the
- * conditional acquisition that can't be captured in a function annotation.
- * The difference in semantics from pthread_*() to xpthread_*() does not matter
- * because sparse is not a compiler. */
-#define xpthread_mutex_trylock pthread_mutex_trylock
-#define xpthread_rwlock_tryrdlock pthread_rwlock_tryrdlock
-#define xpthread_rwlock_trywrlock pthread_rwlock_trywrlock
-#endif
 
 void xpthread_key_create(pthread_key_t *, void (*destructor)(void *));
 void xpthread_key_delete(pthread_key_t);

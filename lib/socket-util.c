@@ -27,7 +27,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
@@ -35,6 +34,7 @@
 #include <unistd.h>
 #include "dynamic-string.h"
 #include "fatal-signal.h"
+#include "ovs-thread.h"
 #include "packets.h"
 #include "poll-loop.h"
 #include "util.h"
@@ -72,6 +72,7 @@ static int getsockopt_int(int fd, int level, int option, const char *optname,
 int
 set_nonblocking(int fd)
 {
+#ifndef _WIN32
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags != -1) {
         if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1) {
@@ -84,6 +85,15 @@ set_nonblocking(int fd)
         VLOG_ERR("fcntl(F_GETFL) failed: %s", ovs_strerror(errno));
         return errno;
     }
+#else
+    unsigned long arg = 1;
+    if (ioctlsocket(fd, FIONBIO, &arg)) {
+        int error = sock_errno();
+        VLOG_ERR("set_nonblocking failed: %s", sock_strerror(error));
+        return error;
+    }
+    return 0;
+#endif
 }
 
 void
@@ -105,53 +115,10 @@ set_dscp(int fd, uint8_t dscp)
 
     val = dscp << 2;
     if (setsockopt(fd, IPPROTO_IP, IP_TOS, &val, sizeof val)) {
-        return errno;
+        return sock_errno();
     }
 
     return 0;
-}
-
-static bool
-rlim_is_finite(rlim_t limit)
-{
-    if (limit == RLIM_INFINITY) {
-        return false;
-    }
-
-#ifdef RLIM_SAVED_CUR           /* FreeBSD 8.0 lacks RLIM_SAVED_CUR. */
-    if (limit == RLIM_SAVED_CUR) {
-        return false;
-    }
-#endif
-
-#ifdef RLIM_SAVED_MAX           /* FreeBSD 8.0 lacks RLIM_SAVED_MAX. */
-    if (limit == RLIM_SAVED_MAX) {
-        return false;
-    }
-#endif
-
-    return true;
-}
-
-/* Returns the maximum valid FD value, plus 1. */
-int
-get_max_fds(void)
-{
-    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
-    static int max_fds;
-
-    if (ovsthread_once_start(&once)) {
-        struct rlimit r;
-        if (!getrlimit(RLIMIT_NOFILE, &r) && rlim_is_finite(r.rlim_cur)) {
-            max_fds = r.rlim_cur;
-        } else {
-            VLOG_WARN("failed to obtain fd limit, defaulting to 1024");
-            max_fds = 1024;
-        }
-        ovsthread_once_done(&once);
-    }
-
-    return max_fds;
 }
 
 /* Translates 'host_name', which must be a string representation of an IP
@@ -160,7 +127,7 @@ get_max_fds(void)
 int
 lookup_ip(const char *host_name, struct in_addr *addr)
 {
-    if (!inet_aton(host_name, addr)) {
+    if (!inet_pton(AF_INET, host_name, addr)) {
         static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
         VLOG_ERR_RL(&rl, "\"%s\" is not a valid IP address", host_name);
         return ENOENT;
@@ -197,7 +164,7 @@ lookup_hostname(const char *host_name, struct in_addr *addr)
     struct addrinfo *result;
     struct addrinfo hints;
 
-    if (inet_aton(host_name, addr)) {
+    if (inet_pton(AF_INET, host_name, addr)) {
         return 0;
     }
 
@@ -232,13 +199,15 @@ lookup_hostname(const char *host_name, struct in_addr *addr)
     case EAI_MEMORY:
         return ENOMEM;
 
-#ifdef EAI_NODATA
+#if defined (EAI_NODATA) && EAI_NODATA != EAI_NONAME
     case EAI_NODATA:
         return ENXIO;
 #endif
 
+#ifdef EAI_SYSTEM
     case EAI_SYSTEM:
-        return errno;
+        return sock_errno();
+#endif
 
     default:
         return EPROTO;
@@ -254,14 +223,19 @@ check_connection_completion(int fd)
 
     pfd.fd = fd;
     pfd.events = POLLOUT;
+
+#ifndef _WIN32
     do {
         retval = poll(&pfd, 1, 0);
     } while (retval < 0 && errno == EINTR);
+#else
+    retval = WSAPoll(&pfd, 1, 0);
+#endif
     if (retval == 1) {
         if (pfd.revents & POLLERR) {
-            ssize_t n = send(fd, "", 1, MSG_DONTWAIT);
+            ssize_t n = send(fd, "", 1, 0);
             if (n < 0) {
-                return errno;
+                return sock_errno();
             } else {
                 VLOG_ERR_RL(&rl, "poll return POLLERR but send succeeded");
                 return EPROTO;
@@ -269,13 +243,14 @@ check_connection_completion(int fd)
         }
         return 0;
     } else if (retval < 0) {
-        VLOG_ERR_RL(&rl, "poll: %s", ovs_strerror(errno));
+        VLOG_ERR_RL(&rl, "poll: %s", sock_strerror(sock_errno()));
         return errno;
     } else {
         return EAGAIN;
     }
 }
 
+#ifndef _WIN32
 /* Drain all the data currently in the receive queue of a datagram socket (and
  * possibly additional data).  There is no way to know how many packets are in
  * the receive queue, but we do know that the total number of bytes queued does
@@ -310,6 +285,7 @@ drain_rcvbuf(int fd)
     }
     return 0;
 }
+#endif
 
 /* Returns the size of socket 'sock''s receive buffer (SO_RCVBUF), or a
  * negative errno value if an error occurs. */
@@ -341,6 +317,7 @@ drain_fd(int fd, size_t n_packets)
     }
 }
 
+#ifndef _WIN32
 /* Attempts to shorten 'name' by opening a file descriptor for the directory
  * part of the name and indirecting through /proc/self/fd/<dirfd>/<basename>.
  * On systems with Linux-like /proc, this works as long as <basename> isn't too
@@ -601,6 +578,7 @@ get_unix_name_len(socklen_t sun_len)
             ? sun_len - offsetof(struct sockaddr_un, sun_path)
             : 0);
 }
+#endif /* _WIN32 */
 
 ovs_be32
 guess_netmask(ovs_be32 ip_)
@@ -761,8 +739,8 @@ inet_open_active(int style, const char *target, uint16_t default_port,
     /* Create non-blocking socket. */
     fd = socket(ss.ss_family, style, 0);
     if (fd < 0) {
-        VLOG_ERR("%s: socket: %s", target, ovs_strerror(errno));
-        error = errno;
+        error = sock_errno();
+        VLOG_ERR("%s: socket: %s", target, sock_strerror(error));
         goto exit;
     }
     error = set_nonblocking(fd);
@@ -775,15 +753,19 @@ inet_open_active(int style, const char *target, uint16_t default_port,
      * connect(), the handshake SYN frames will be sent with a TOS of 0. */
     error = set_dscp(fd, dscp);
     if (error) {
-        VLOG_ERR("%s: socket: %s", target, ovs_strerror(error));
+        VLOG_ERR("%s: socket: %s", target, sock_strerror(error));
         goto exit;
     }
 
     /* Connect. */
     error = connect(fd, (struct sockaddr *) &ss, ss_length(&ss)) == 0
                     ? 0
-                    : errno;
-    if (error == EINPROGRESS) {
+                    : sock_errno();
+    if (error == EINPROGRESS
+#ifdef _WIN32
+        || error == WSAEALREADY || error == WSAEWOULDBLOCK
+#endif
+        ) {
         error = EAGAIN;
     }
 
@@ -793,7 +775,7 @@ exit:
             memset(ssp, 0, sizeof *ssp);
         }
         if (fd >= 0) {
-            close(fd);
+            closesocket(fd);
             fd = -1;
         }
     } else {
@@ -880,8 +862,8 @@ inet_open_passive(int style, const char *target, int default_port,
     /* Create non-blocking socket, set SO_REUSEADDR. */
     fd = socket(ss.ss_family, style, 0);
     if (fd < 0) {
-        error = errno;
-        VLOG_ERR("%s: socket: %s", target, ovs_strerror(error));
+        error = sock_errno();
+        VLOG_ERR("%s: socket: %s", target, sock_strerror(error));
         return -error;
     }
     error = set_nonblocking(fd);
@@ -890,16 +872,16 @@ inet_open_passive(int style, const char *target, int default_port,
     }
     if (style == SOCK_STREAM
         && setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes) < 0) {
-        error = errno;
+        error = sock_errno();
         VLOG_ERR("%s: setsockopt(SO_REUSEADDR): %s",
-                 target, ovs_strerror(error));
+                 target, sock_strerror(error));
         goto error;
     }
 
     /* Bind. */
     if (bind(fd, (struct sockaddr *) &ss, ss_length(&ss)) < 0) {
-        error = errno;
-        VLOG_ERR("%s: bind: %s", target, ovs_strerror(error));
+        error = sock_errno();
+        VLOG_ERR("%s: bind: %s", target, sock_strerror(error));
         goto error;
     }
 
@@ -908,22 +890,22 @@ inet_open_passive(int style, const char *target, int default_port,
      * connect(), the handshake SYN frames will be sent with a TOS of 0. */
     error = set_dscp(fd, dscp);
     if (error) {
-        VLOG_ERR("%s: socket: %s", target, ovs_strerror(error));
+        VLOG_ERR("%s: socket: %s", target, sock_strerror(error));
         goto error;
     }
 
     /* Listen. */
     if (style == SOCK_STREAM && listen(fd, 10) < 0) {
-        error = errno;
-        VLOG_ERR("%s: listen: %s", target, ovs_strerror(error));
+        error = sock_errno();
+        VLOG_ERR("%s: listen: %s", target, sock_strerror(error));
         goto error;
     }
 
     if (ssp || kernel_chooses_port) {
         socklen_t ss_len = sizeof ss;
         if (getsockname(fd, (struct sockaddr *) &ss, &ss_len) < 0) {
-            error = errno;
-            VLOG_ERR("%s: getsockname: %s", target, ovs_strerror(error));
+            error = sock_errno();
+            VLOG_ERR("%s: getsockname: %s", target, sock_strerror(error));
             goto error;
         }
         if (kernel_chooses_port) {
@@ -941,30 +923,8 @@ error:
     if (ssp) {
         memset(ssp, 0, sizeof *ssp);
     }
-    close(fd);
+    closesocket(fd);
     return -error;
-}
-
-/* Returns a readable and writable fd for /dev/null, if successful, otherwise
- * a negative errno value.  The caller must not close the returned fd (because
- * the same fd will be handed out to subsequent callers). */
-int
-get_null_fd(void)
-{
-    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
-    static int null_fd;
-
-    if (ovsthread_once_start(&once)) {
-        null_fd = open("/dev/null", O_RDWR);
-        if (null_fd < 0) {
-            int error = errno;
-            VLOG_ERR("could not open /dev/null: %s", ovs_strerror(error));
-            null_fd = -error;
-        }
-        ovsthread_once_done(&once);
-    }
-
-    return null_fd;
 }
 
 int
@@ -1016,6 +976,7 @@ int
 fsync_parent_dir(const char *file_name)
 {
     int error = 0;
+#ifndef _WIN32
     char *dir;
     int fd;
 
@@ -1037,6 +998,7 @@ fsync_parent_dir(const char *file_name)
         VLOG_ERR("%s: open failed (%s)", dir, ovs_strerror(error));
     }
     free(dir);
+#endif
 
     return error;
 }
@@ -1094,8 +1056,8 @@ getsockopt_int(int fd, int level, int option, const char *optname, int *valuep)
 
     len = sizeof value;
     if (getsockopt(fd, level, option, &value, &len)) {
-        error = errno;
-        VLOG_ERR_RL(&rl, "getsockopt(%s): %s", optname, ovs_strerror(error));
+        error = sock_errno();
+        VLOG_ERR_RL(&rl, "getsockopt(%s): %s", optname, sock_strerror(error));
     } else if (len != sizeof value) {
         error = EINVAL;
         VLOG_ERR_RL(&rl, "getsockopt(%s): value is %u bytes (expected %"PRIuSIZE")",
@@ -1122,6 +1084,7 @@ describe_sockaddr(struct ds *string, int fd,
             ds_put_format(string, "%s:%"PRIu16,
                           ss_format_address(&ss, addrbuf, sizeof addrbuf),
                           ss_get_port(&ss));
+#ifndef _WIN32
         } else if (ss.ss_family == AF_UNIX) {
             struct sockaddr_un sun;
             const char *null;
@@ -1132,6 +1095,7 @@ describe_sockaddr(struct ds *string, int fd,
             null = memchr(sun.sun_path, '\0', maxlen);
             ds_put_buffer(string, sun.sun_path,
                           null ? null - sun.sun_path : maxlen);
+#endif
         }
 #ifdef HAVE_NETLINK
         else if (ss.ss_family == AF_NETLINK) {
@@ -1222,6 +1186,7 @@ describe_fd(int fd)
     struct stat s;
 
     ds_init(&string);
+#ifndef _WIN32
     if (fstat(fd, &s)) {
         ds_put_format(&string, "fstat failed (%s)", ovs_strerror(errno));
     } else if (S_ISSOCK(s.st_mode)) {
@@ -1241,9 +1206,13 @@ describe_fd(int fd)
         put_fd_filename(&string, fd);
 #endif
     }
+#else
+    ds_put_format(&string,"file descriptor");
+#endif /* _WIN32 */
     return ds_steal_cstr(&string);
 }
 
+#ifndef _WIN32
 /* Calls ioctl() on an AF_INET sock, passing the specified 'command' and
  * 'arg'.  Returns 0 if successful, otherwise a positive errno value. */
 int
@@ -1255,8 +1224,9 @@ af_inet_ioctl(unsigned long int command, const void *arg)
     if (ovsthread_once_start(&once)) {
         sock = socket(AF_INET, SOCK_DGRAM, 0);
         if (sock < 0) {
-            sock = -errno;
-            VLOG_ERR("failed to create inet socket: %s", ovs_strerror(errno));
+            int error = sock_errno();
+            VLOG_ERR("failed to create inet socket: %s", sock_strerror(error));
+            sock = -error;
         }
         ovsthread_once_done(&once);
     }
@@ -1281,6 +1251,7 @@ af_inet_ifreq_ioctl(const char *name, struct ifreq *ifr, unsigned long int cmd,
     }
     return error;
 }
+#endif
 
 /* sockaddr_storage helpers. */
 
@@ -1343,4 +1314,20 @@ ss_length(const struct sockaddr_storage *ss)
     default:
         OVS_NOT_REACHED();
     }
+}
+
+/* For Windows socket calls, 'errno' is not set.  One has to call
+ * WSAGetLastError() to get the error number and then pass it to
+ * this function to get the correct error string.
+ *
+ * ovs_strerror() calls strerror_r() and would not get the correct error
+ * string for Windows sockets, but is good for POSIX. */
+const char *
+sock_strerror(int error)
+{
+#ifdef _WIN32
+    return ovs_format_message(error);
+#else
+    return ovs_strerror(error);
+#endif
 }

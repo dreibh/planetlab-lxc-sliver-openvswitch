@@ -50,6 +50,7 @@
 #define REHASH_INTERVAL		(10 * 60 * HZ)
 
 static struct kmem_cache *flow_cache;
+struct kmem_cache *flow_stats_cache __read_mostly;
 
 static u16 range_n_bytes(const struct sw_flow_key_range *range)
 {
@@ -74,10 +75,11 @@ void ovs_flow_mask_key(struct sw_flow_key *dst, const struct sw_flow_key *src,
 		*d++ = *s++ & *m++;
 }
 
-struct sw_flow *ovs_flow_alloc(bool percpu_stats)
+struct sw_flow *ovs_flow_alloc(void)
 {
 	struct sw_flow *flow;
-	int cpu;
+	struct flow_stats *stats;
+	int node;
 
 	flow = kmem_cache_alloc(flow_cache, GFP_KERNEL);
 	if (!flow)
@@ -85,27 +87,22 @@ struct sw_flow *ovs_flow_alloc(bool percpu_stats)
 
 	flow->sf_acts = NULL;
 	flow->mask = NULL;
+	flow->stats_last_writer = NUMA_NO_NODE;
 
-	flow->stats.is_percpu = percpu_stats;
+	/* Initialize the default stat node. */
+	stats = kmem_cache_alloc_node(flow_stats_cache,
+				      GFP_KERNEL | __GFP_ZERO, 0);
+	if (!stats)
+		goto err;
 
-	if (!percpu_stats) {
-		flow->stats.stat = kzalloc(sizeof(*flow->stats.stat), GFP_KERNEL);
-		if (!flow->stats.stat)
-			goto err;
+	spin_lock_init(&stats->lock);
 
-		spin_lock_init(&flow->stats.stat->lock);
-	} else {
-		flow->stats.cpu_stats = alloc_percpu(struct flow_stats);
-		if (!flow->stats.cpu_stats)
-			goto err;
+	RCU_INIT_POINTER(flow->stats[0], stats);
 
-		for_each_possible_cpu(cpu) {
-			struct flow_stats *cpu_stats;
+	for_each_node(node)
+		if (node != 0)
+			RCU_INIT_POINTER(flow->stats[node], NULL);
 
-			cpu_stats = per_cpu_ptr(flow->stats.cpu_stats, cpu);
-			spin_lock_init(&cpu_stats->lock);
-		}
-	}
 	return flow;
 err:
 	kmem_cache_free(flow_cache, flow);
@@ -142,11 +139,13 @@ static struct flex_array *alloc_buckets(unsigned int n_buckets)
 
 static void flow_free(struct sw_flow *flow)
 {
+	int node;
+
 	kfree((struct sf_flow_acts __force *)flow->sf_acts);
-	if (flow->stats.is_percpu)
-		free_percpu(flow->stats.cpu_stats);
-	else
-		kfree(flow->stats.stat);
+	for_each_node(node)
+		if (flow->stats[node])
+			kmem_cache_free(flow_stats_cache,
+					(struct flow_stats __force *)flow->stats[node]);
 	kmem_cache_free(flow_cache, flow);
 }
 
@@ -608,10 +607,21 @@ int ovs_flow_init(void)
 	BUILD_BUG_ON(__alignof__(struct sw_flow_key) % __alignof__(long));
 	BUILD_BUG_ON(sizeof(struct sw_flow_key) % sizeof(long));
 
-	flow_cache = kmem_cache_create("sw_flow", sizeof(struct sw_flow), 0,
-					0, NULL);
+	flow_cache = kmem_cache_create("sw_flow", sizeof(struct sw_flow)
+				       + (num_possible_nodes()
+					  * sizeof(struct flow_stats *)),
+				       0, 0, NULL);
 	if (flow_cache == NULL)
 		return -ENOMEM;
+
+	flow_stats_cache
+		= kmem_cache_create("sw_flow_stats", sizeof(struct flow_stats),
+				    0, SLAB_HWCACHE_ALIGN, NULL);
+	if (flow_stats_cache == NULL) {
+		kmem_cache_destroy(flow_cache);
+		flow_cache = NULL;
+		return -ENOMEM;
+	}
 
 	return 0;
 }
@@ -619,5 +629,6 @@ int ovs_flow_init(void)
 /* Uninitializes the flow module. */
 void ovs_flow_exit(void)
 {
+	kmem_cache_destroy(flow_stats_cache);
 	kmem_cache_destroy(flow_cache);
 }

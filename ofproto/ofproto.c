@@ -182,7 +182,7 @@ struct eviction_group {
 
 static bool choose_rule_to_evict(struct oftable *table, struct rule **rulep);
 static void ofproto_evict(struct ofproto *) OVS_EXCLUDED(ofproto_mutex);
-static uint32_t rule_eviction_priority(struct rule *);
+static uint32_t rule_eviction_priority(struct ofproto *ofproto, struct rule *);
 static void eviction_group_add_rule(struct rule *);
 static void eviction_group_remove_rule(struct rule *);
 
@@ -307,7 +307,6 @@ static size_t allocated_ofproto_classes;
 struct ovs_mutex ofproto_mutex = OVS_MUTEX_INITIALIZER;
 
 unsigned ofproto_flow_limit = OFPROTO_FLOW_LIMIT_DEFAULT;
-enum ofproto_flow_miss_model flow_miss_model = OFPROTO_HANDLE_MISS_AUTO;
 
 size_t n_handlers, n_revalidators;
 
@@ -696,13 +695,6 @@ void
 ofproto_set_flow_limit(unsigned limit)
 {
     ofproto_flow_limit = limit;
-}
-
-/* Sets the path for handling flow misses. */
-void
-ofproto_set_flow_miss_model(unsigned model)
-{
-    flow_miss_model = model;
 }
 
 /* If forward_bpdu is true, the NORMAL action will forward frames with
@@ -1935,6 +1927,46 @@ int
 ofproto_flow_mod(struct ofproto *ofproto, struct ofputil_flow_mod *fm)
     OVS_EXCLUDED(ofproto_mutex)
 {
+    /* Optimize for the most common case of a repeated learn action.
+     * If an identical flow already exists we only need to update its
+     * 'modified' time. */
+    if (fm->command == OFPFC_MODIFY_STRICT && fm->table_id != OFPTT_ALL
+        && !(fm->flags & OFPUTIL_FF_RESET_COUNTS)) {
+        struct oftable *table = &ofproto->tables[fm->table_id];
+        struct cls_rule match_rule;
+        struct rule *rule;
+        bool done = false;
+
+        cls_rule_init(&match_rule, &fm->match, fm->priority);
+        fat_rwlock_rdlock(&table->cls.rwlock);
+        rule = rule_from_cls_rule(classifier_find_rule_exactly(&table->cls,
+                                                               &match_rule));
+        if (rule) {
+            /* Reading many of the rule fields and writing on 'modified'
+             * requires the rule->mutex.  Also, rule->actions may change
+             * if rule->mutex is not held. */
+            ovs_mutex_lock(&rule->mutex);
+            if (rule->idle_timeout == fm->idle_timeout
+                && rule->hard_timeout == fm->hard_timeout
+                && rule->flags == (fm->flags & OFPUTIL_FF_STATE)
+                && (!fm->modify_cookie || (fm->new_cookie == rule->flow_cookie))
+                && ofpacts_equal(fm->ofpacts, fm->ofpacts_len,
+                                 rule->actions->ofpacts,
+                                 rule->actions->ofpacts_len)) {
+                /* Rule already exists and need not change, only update the
+                   modified timestamp. */
+                rule->modified = time_msec();
+                done = true;
+            }
+            ovs_mutex_unlock(&rule->mutex);
+        }
+        fat_rwlock_unlock(&table->cls.rwlock);
+
+        if (done) {
+            return 0;
+        }
+    }
+
     return handle_flow_mod__(ofproto, NULL, fm, NULL);
 }
 
@@ -2204,7 +2236,8 @@ ofport_modified(struct ofport *port, struct ofputil_phy_port *pp)
     memcpy(port->pp.hw_addr, pp->hw_addr, ETH_ADDR_LEN);
     port->pp.config = ((port->pp.config & ~OFPUTIL_PC_PORT_DOWN)
                         | (pp->config & OFPUTIL_PC_PORT_DOWN));
-    port->pp.state = pp->state;
+    port->pp.state = ((port->pp.state & ~OFPUTIL_PS_LINK_DOWN)
+                      | (pp->state & OFPUTIL_PS_LINK_DOWN));
     port->pp.curr = pp->curr;
     port->pp.advertised = pp->advertised;
     port->pp.supported = pp->supported;
@@ -3561,11 +3594,13 @@ handle_flow_stats_request(struct ofconn *ofconn,
         fs.idle_timeout = rule->idle_timeout;
         fs.hard_timeout = rule->hard_timeout;
         created = rule->created;
-        used = rule->used;
         modified = rule->modified;
         actions = rule_get_actions__(rule);
         flags = rule->flags;
         ovs_mutex_unlock(&rule->mutex);
+
+        ofproto->ofproto_class->rule_get_stats(rule, &fs.packet_count,
+                                               &fs.byte_count, &used);
 
         minimatch_expand(&rule->cr.match, &fs.match);
         fs.table_id = rule->table_id;
@@ -3573,8 +3608,6 @@ handle_flow_stats_request(struct ofconn *ofconn,
         fs.priority = rule->cr.priority;
         fs.idle_age = age_secs(now - used);
         fs.hard_age = age_secs(now - modified);
-        ofproto->ofproto_class->rule_get_stats(rule, &fs.packet_count,
-                                               &fs.byte_count);
         fs.ofpacts = actions->ofpacts;
         fs.ofpacts_len = actions->ofpacts_len;
 
@@ -3597,10 +3630,10 @@ flow_stats_ds(struct rule *rule, struct ds *results)
 {
     uint64_t packet_count, byte_count;
     struct rule_actions *actions;
-    long long int created;
+    long long int created, used;
 
-    rule->ofproto->ofproto_class->rule_get_stats(rule,
-                                                 &packet_count, &byte_count);
+    rule->ofproto->ofproto_class->rule_get_stats(rule, &packet_count,
+                                                 &byte_count, &used);
 
     ovs_mutex_lock(&rule->mutex);
     actions = rule_get_actions__(rule);
@@ -3711,9 +3744,10 @@ handle_aggregate_stats_request(struct ofconn *ofconn,
         struct rule *rule = rules.rules[i];
         uint64_t packet_count;
         uint64_t byte_count;
+        long long int used;
 
         ofproto->ofproto_class->rule_get_stats(rule, &packet_count,
-                                               &byte_count);
+                                               &byte_count, &used);
 
         if (packet_count == UINT64_MAX) {
             unknown_packets = true;
@@ -4015,7 +4049,7 @@ add_flow(struct ofproto *ofproto, struct ofconn *ofconn,
     ovs_refcount_init(&rule->ref_count);
     rule->pending = NULL;
     rule->flow_cookie = fm->new_cookie;
-    rule->created = rule->modified = rule->used = time_msec();
+    rule->created = rule->modified = time_msec();
 
     ovs_mutex_init(&rule->mutex);
     ovs_mutex_lock(&rule->mutex);
@@ -4305,6 +4339,7 @@ ofproto_rule_send_removed(struct rule *rule, uint8_t reason)
     OVS_REQUIRES(ofproto_mutex)
 {
     struct ofputil_flow_removed fr;
+    long long int used;
 
     if (ofproto_rule_is_hidden(rule) ||
         !(rule->flags & OFPUTIL_FF_SEND_FLOW_REM)) {
@@ -4323,7 +4358,7 @@ ofproto_rule_send_removed(struct rule *rule, uint8_t reason)
     fr.hard_timeout = rule->hard_timeout;
     ovs_mutex_unlock(&rule->mutex);
     rule->ofproto->ofproto_class->rule_get_stats(rule, &fr.packet_count,
-                                                 &fr.byte_count);
+                                                 &fr.byte_count, &used);
 
     connmgr_send_flow_removed(rule->ofproto->connmgr, &fr);
 }
@@ -6192,10 +6227,12 @@ ofopgroup_complete(struct ofopgroup *group)
             if (!op->error) {
                 long long int now = time_msec();
 
+                ovs_mutex_lock(&rule->mutex);
                 rule->modified = now;
                 if (op->type == OFOPERATION_REPLACE) {
-                    rule->created = rule->used = now;
+                    rule->created = now;
                 }
+                ovs_mutex_unlock(&rule->mutex);
             } else {
                 ofproto_rule_change_cookie(ofproto, rule, op->flow_cookie);
                 ovs_mutex_lock(&rule->mutex);
@@ -6558,26 +6595,34 @@ eviction_group_find(struct oftable *table, uint32_t id)
 
 /* Returns an eviction priority for 'rule'.  The return value should be
  * interpreted so that higher priorities make a rule more attractive candidates
- * for eviction. */
+ * for eviction.
+ * Called only if have a timeout. */
 static uint32_t
-rule_eviction_priority(struct rule *rule)
+rule_eviction_priority(struct ofproto *ofproto, struct rule *rule)
     OVS_REQUIRES(ofproto_mutex)
 {
-    long long int hard_expiration;
-    long long int idle_expiration;
-    long long int expiration;
+    long long int expiration = LLONG_MAX;
+    long long int modified;
     uint32_t expiration_offset;
 
-    /* Calculate time of expiration. */
+    /* 'modified' needs protection even when we hold 'ofproto_mutex'. */
     ovs_mutex_lock(&rule->mutex);
-    hard_expiration = (rule->hard_timeout
-                       ? rule->modified + rule->hard_timeout * 1000
-                       : LLONG_MAX);
-    idle_expiration = (rule->idle_timeout
-                       ? rule->used + rule->idle_timeout * 1000
-                       : LLONG_MAX);
-    expiration = MIN(hard_expiration, idle_expiration);
+    modified = rule->modified;
     ovs_mutex_unlock(&rule->mutex);
+
+    if (rule->hard_timeout) {
+        expiration = modified + rule->hard_timeout * 1000;
+    }
+    if (rule->idle_timeout) {
+        uint64_t packets, bytes;
+        long long int used;
+        long long int idle_expiration;
+
+        ofproto->ofproto_class->rule_get_stats(rule, &packets, &bytes, &used);
+        idle_expiration = used + rule->idle_timeout * 1000;
+        expiration = MIN(expiration, idle_expiration);
+    }
+
     if (expiration == LLONG_MAX) {
         return 0;
     }
@@ -6607,9 +6652,9 @@ eviction_group_add_rule(struct rule *rule)
     struct oftable *table = &ofproto->tables[rule->table_id];
     bool has_timeout;
 
-    ovs_mutex_lock(&rule->mutex);
+    /* Timeouts may be modified only when holding 'ofproto_mutex'.  We have it
+     * so no additional protection is needed. */
     has_timeout = rule->hard_timeout || rule->idle_timeout;
-    ovs_mutex_unlock(&rule->mutex);
 
     if (table->eviction_fields && has_timeout) {
         struct eviction_group *evg;
@@ -6618,7 +6663,7 @@ eviction_group_add_rule(struct rule *rule)
 
         rule->eviction_group = evg;
         heap_insert(&evg->rules, &rule->evg_node,
-                    rule_eviction_priority(rule));
+                    rule_eviction_priority(ofproto, rule));
         eviction_group_resized(table, evg);
     }
 }

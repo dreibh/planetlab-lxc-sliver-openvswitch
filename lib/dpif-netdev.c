@@ -879,6 +879,7 @@ dp_netdev_flow_unref(struct dp_netdev_flow *flow)
         cls_rule_destroy(CONST_CAST(struct cls_rule *, &flow->cr));
         ovs_mutex_lock(&flow->mutex);
         dp_netdev_actions_unref(flow->actions);
+        ovs_refcount_destroy(&flow->ref_cnt);
         ovs_mutex_unlock(&flow->mutex);
         ovs_mutex_destroy(&flow->mutex);
         free(flow);
@@ -1302,6 +1303,7 @@ dpif_netdev_flow_del(struct dpif *dpif, const struct dpif_flow_del *del)
             ovs_mutex_unlock(&netdev_flow->mutex);
         }
         dp_netdev_remove_flow(dp, netdev_flow);
+        dp_netdev_flow_unref(netdev_flow);
     } else {
         error = ENOENT;
     }
@@ -1551,6 +1553,7 @@ void
 dp_netdev_actions_unref(struct dp_netdev_actions *actions)
 {
     if (actions && ovs_refcount_unref(&actions->ref_cnt) == 1) {
+        ovs_refcount_destroy(&actions->ref_cnt);
         free(actions->actions);
         free(actions);
     }
@@ -1712,6 +1715,7 @@ dp_netdev_port_input(struct dp_netdev *dp, struct ofpbuf *packet,
         dp_netdev_execute_actions(dp, &key, packet, md,
                                   actions->actions, actions->size);
         dp_netdev_actions_unref(actions);
+        dp_netdev_flow_unref(netdev_flow);
         ovsthread_counter_inc(dp->n_hit, 1);
     } else {
         ovsthread_counter_inc(dp->n_missed, 1);

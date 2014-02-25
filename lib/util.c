@@ -50,10 +50,12 @@ DEFINE_PER_THREAD_MALLOCED_DATA(char *, subprogram_name);
 /* --version option output. */
 static char *program_version;
 
-/* Buffer used by ovs_strerror(). */
+/* Buffer used by ovs_strerror() and ovs_format_message(). */
 DEFINE_STATIC_PER_THREAD_DATA(struct { char s[128]; },
                               strerror_buffer,
                               { "" });
+
+static char *xreadlink(const char *filename);
 
 void
 ovs_assert_failure(const char *where, const char *function,
@@ -323,6 +325,10 @@ ovs_retval_to_string(int retval)
             : ovs_strerror(retval));
 }
 
+/* This function returns the string describing the error number in 'error'
+ * for POSIX platforms.  For Windows, this function can be used for C library
+ * calls.  For socket calls that are also used in Windows, use sock_strerror()
+ * instead.  For WINAPI calls, look at ovs_lasterror_to_string(). */
 const char *
 ovs_strerror(int error)
 {
@@ -741,7 +747,7 @@ abs_file_name(const char *dir, const char *file_name)
 /* Like readlink(), but returns the link name as a null-terminated string in
  * allocated memory that the caller must eventually free (with free()).
  * Returns NULL on error, in which case errno is set appropriately. */
-char *
+static char *
 xreadlink(const char *filename)
 {
     size_t size;
@@ -773,10 +779,14 @@ xreadlink(const char *filename)
  *
  *     - Only symlinks in the final component of 'filename' are dereferenced.
  *
+ * For Windows platform, this function returns a string that has the same
+ * value as the passed string.
+ *
  * The caller must eventually free the returned string (with free()). */
 char *
 follow_symlinks(const char *filename)
 {
+#ifndef _WIN32
     struct stat s;
     char *fn;
     int i;
@@ -821,6 +831,7 @@ follow_symlinks(const char *filename)
 
     VLOG_WARN("%s: too many levels of symlinks", filename);
     free(fn);
+#endif
     return xstrdup(filename);
 }
 
@@ -1655,17 +1666,22 @@ exit:
 
 #ifdef _WIN32
 
-/* Calls FormatMessage() with GetLastError() as an argument. Returns
- * pointer to a buffer that receives the null-terminated string that specifies
- * the formatted message and that has to be freed by the caller with
- * LocalFree(). */
+char *
+ovs_format_message(int error)
+{
+    enum { BUFSIZE = sizeof strerror_buffer_get()->s };
+    char *buffer = strerror_buffer_get()->s;
+
+    FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                  NULL, error, 0, buffer, BUFSIZE, NULL);
+    return buffer;
+}
+
+/* Returns a null-terminated string that explains the last error.
+ * Use this function to get the error string for WINAPI calls. */
 char *
 ovs_lasterror_to_string(void)
 {
-    char *buffer;
-    FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
-                  | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, GetLastError(), 0,
-                  (char *)&buffer, 0, NULL);
-    return buffer;
+    return ovs_format_message(GetLastError());
 }
 #endif

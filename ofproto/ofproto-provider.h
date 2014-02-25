@@ -339,7 +339,9 @@ struct rule {
 
     /* Protects members marked OVS_GUARDED.
      * Readers only need to hold this mutex.
-     * Writers must hold both this mutex AND ofproto_mutex. */
+     * Writers must hold both this mutex AND ofproto_mutex.
+     * By implication writers can read *without* taking this mutex while they
+     * hold ofproto_mutex. */
     struct ovs_mutex mutex OVS_ACQ_AFTER(ofproto_mutex);
 
     /* Number of references.
@@ -356,10 +358,6 @@ struct rule {
     ovs_be64 flow_cookie OVS_GUARDED;
     struct hindex_node cookie_node OVS_GUARDED_BY(ofproto_mutex);
 
-    /* Times. */
-    long long int created OVS_GUARDED; /* Creation time. */
-    long long int modified OVS_GUARDED; /* Time of last modification. */
-    long long int used OVS_GUARDED; /* Last use; time created if never used. */
     enum ofputil_flow_mod_flags flags OVS_GUARDED;
 
     /* Timeouts. */
@@ -393,6 +391,13 @@ struct rule {
     /* Optimisation for flow expiry.  In ofproto's 'expirable' list if this
      * rule is expirable, otherwise empty. */
     struct list expirable OVS_GUARDED_BY(ofproto_mutex);
+
+    /* Times.  Last so that they are more likely close to the stats managed
+     * by the provider. */
+    long long int created OVS_GUARDED; /* Creation time. */
+
+    /* Must hold 'mutex' for both read/write, 'ofproto_mutex' not needed. */
+    long long int modified OVS_GUARDED; /* Time of last modification. */
 };
 
 void ofproto_rule_ref(struct rule *);
@@ -462,10 +467,6 @@ extern unsigned ofproto_flow_limit;
 /* Number of upcall handler and revalidator threads. Only affects the
  * ofproto-dpif implementation. */
 extern size_t n_handlers, n_revalidators;
-
-/* Determines which model to use for handling misses in the ofproto-dpif
- * implementation */
-extern enum ofproto_flow_miss_model flow_miss_model;
 
 static inline struct rule *
 rule_from_cls_rule(const struct cls_rule *cls_rule)
@@ -936,8 +937,9 @@ struct ofproto_class {
     void (*port_reconfigured)(struct ofport *ofport,
                               enum ofputil_port_config old_config);
 
-    /* Looks up a port named 'devname' in 'ofproto'.  On success, initializes
-     * '*port' appropriately.
+    /* Looks up a port named 'devname' in 'ofproto'.  On success, returns 0 and
+     * initializes '*port' appropriately. Otherwise, returns a positive errno
+     * value.
      *
      * The caller owns the data in 'port' and must free it with
      * ofproto_port_destroy() when it is no longer needed. */
@@ -1279,7 +1281,7 @@ struct ofproto_class {
      * in '*byte_count'.  UINT64_MAX indicates that the packet count or byte
      * count is unknown. */
     void (*rule_get_stats)(struct rule *rule, uint64_t *packet_count,
-                           uint64_t *byte_count)
+                           uint64_t *byte_count, long long int *used)
         /* OVS_EXCLUDED(ofproto_mutex) */;
 
     /* Applies the actions in 'rule' to 'packet'.  (This implements sending

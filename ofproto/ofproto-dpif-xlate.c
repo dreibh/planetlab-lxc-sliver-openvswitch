@@ -178,6 +178,7 @@ struct xlate_ctx {
     /* Resubmit statistics, via xlate_table_action(). */
     int recurse;                /* Current resubmit nesting depth. */
     int resubmits;              /* Total number of resubmits. */
+    bool in_group;              /* Currently translating ofgroup, if true. */
 
     uint32_t orig_skb_priority; /* Priority when packet arrived. */
     uint8_t table_id;           /* OpenFlow table ID where flow was found. */
@@ -1780,19 +1781,18 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
                                  &ctx->xout->odp_actions);
         flow->tunnel = flow_tnl; /* Restore tunnel metadata */
     } else {
-        ofp_port_t vlandev_port;
-
         odp_port = xport->odp_port;
+        out_port = odp_port;
         if (ofproto_has_vlan_splinters(ctx->xbridge->ofproto)) {
+            ofp_port_t vlandev_port;
+
             wc->masks.vlan_tci |= htons(VLAN_VID_MASK | VLAN_CFI);
-        }
-        vlandev_port = vsp_realdev_to_vlandev(ctx->xbridge->ofproto, ofp_port,
-                                              flow->vlan_tci);
-        if (vlandev_port == ofp_port) {
-            out_port = odp_port;
-        } else {
-            out_port = ofp_port_to_odp_port(ctx->xbridge, vlandev_port);
-            flow->vlan_tci = htons(0);
+            vlandev_port = vsp_realdev_to_vlandev(ctx->xbridge->ofproto,
+                                                  ofp_port, flow->vlan_tci);
+            if (vlandev_port != ofp_port) {
+                out_port = ofp_port_to_odp_port(ctx->xbridge, vlandev_port);
+                flow->vlan_tci = htons(0);
+            }
         }
     }
 
@@ -1981,6 +1981,8 @@ xlate_select_group(struct xlate_ctx *ctx, struct group_dpif *group)
 static void
 xlate_group_action__(struct xlate_ctx *ctx, struct group_dpif *group)
 {
+    ctx->in_group = true;
+
     switch (group_dpif_get_type(group)) {
     case OFPGT11_ALL:
     case OFPGT11_INDIRECT:
@@ -1996,12 +1998,38 @@ xlate_group_action__(struct xlate_ctx *ctx, struct group_dpif *group)
         OVS_NOT_REACHED();
     }
     group_dpif_release(group);
+
+    ctx->in_group = false;
+}
+
+static bool
+xlate_group_resource_check(struct xlate_ctx *ctx)
+{
+    if (!xlate_resubmit_resource_check(ctx)) {
+        return false;
+    } else if (ctx->in_group) {
+        /* Prevent nested translation of OpenFlow groups.
+         *
+         * OpenFlow allows this restriction.  We enforce this restriction only
+         * because, with the current architecture, we would otherwise have to
+         * take a possibly recursive read lock on the ofgroup rwlock, which is
+         * unsafe given that POSIX allows taking a read lock to block if there
+         * is a thread blocked on taking the write lock.  Other solutions
+         * without this restriction are also possible, but seem unwarranted
+         * given the current limited use of groups. */
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
+
+        VLOG_ERR_RL(&rl, "cannot recursively translate OpenFlow group");
+        return false;
+    } else {
+        return true;
+    }
 }
 
 static bool
 xlate_group_action(struct xlate_ctx *ctx, uint32_t group_id)
 {
-    if (xlate_resubmit_resource_check(ctx)) {
+    if (xlate_group_resource_check(ctx)) {
         struct group_dpif *group;
         bool got_group;
 
@@ -2911,6 +2939,7 @@ xlate_actions__(struct xlate_in *xin, struct xlate_out *xout)
     struct xlate_ctx ctx;
     size_t ofpacts_len;
     bool tnl_may_send;
+    bool is_icmp;
 
     COVERAGE_INC(xlate_actions);
 
@@ -2965,6 +2994,7 @@ xlate_actions__(struct xlate_in *xin, struct xlate_out *xout)
     if (is_ip_any(flow)) {
         wc->masks.nw_frag |= FLOW_NW_FRAG_MASK;
     }
+    is_icmp = is_icmpv4(flow) || is_icmpv6(flow);
 
     tnl_may_send = tnl_xlate_init(&ctx.base_flow, flow, wc);
     if (ctx.xbridge->netflow) {
@@ -2973,6 +3003,7 @@ xlate_actions__(struct xlate_in *xin, struct xlate_out *xout)
 
     ctx.recurse = 0;
     ctx.resubmits = 0;
+    ctx.in_group = false;
     ctx.orig_skb_priority = flow->skb_priority;
     ctx.table_id = 0;
     ctx.exit = false;
@@ -3123,6 +3154,21 @@ xlate_actions__(struct xlate_in *xin, struct xlate_out *xout)
     /* Clear the metadata and register wildcard masks, because we won't
      * use non-header fields as part of the cache. */
     flow_wildcards_clear_non_packet_fields(wc);
+
+    /* ICMPv4 and ICMPv6 have 8-bit "type" and "code" fields.  struct flow uses
+     * the low 8 bits of the 16-bit tp_src and tp_dst members to represent
+     * these fields.  The datapath interface, on the other hand, represents
+     * them with just 8 bits each.  This means that if the high 8 bits of the
+     * masks for these fields somehow become set, then they will get chopped
+     * off by a round trip through the datapath, and revalidation will spot
+     * that as an inconsistency and delete the flow.  Avoid the problem here by
+     * making sure that only the low 8 bits of either field can be unwildcarded
+     * for ICMP.
+     */
+    if (is_icmp) {
+        wc->masks.tp_src &= htons(UINT8_MAX);
+        wc->masks.tp_dst &= htons(UINT8_MAX);
+    }
 
 out:
     rule_actions_unref(actions);

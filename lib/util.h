@@ -310,7 +310,6 @@ char *dir_name(const char *file_name);
 char *base_name(const char *file_name);
 char *abs_file_name(const char *dir, const char *file_name);
 
-char *xreadlink(const char *filename);
 char *follow_symlinks(const char *filename);
 
 void ignore(bool x OVS_UNUSED);
@@ -492,6 +491,7 @@ uint64_t bitwise_get(const void *src, unsigned int src_len,
 
 #ifdef _WIN32
 
+char *ovs_format_message(int error);
 char *ovs_lasterror_to_string(void);
 #endif
 
