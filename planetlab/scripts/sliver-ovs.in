@@ -97,7 +97,6 @@ function start_db () {
     [ -d $RUN_DIR ] || { echo "Could not initialize $RUN_DIR - exiting" ; exit 1 ; }
 
     ## run the stuff
-    if [ ! -f "$RUN_DIR/ovsdb-server.pid" ]; then
 	ovsdb-server $DB_CONF_FILE \
 	    --remote=punix:$DB_SOCKET \
 	    --remote=db:Open_vSwitch,Open_vSwitch,manager_options \
@@ -107,9 +106,6 @@ function start_db () {
 	    --pidfile \
 	    --log-file=$DB_LOG \
 	    --detach >& /dev/null
-    else
-	echo 'ovsdb-server appears to be running already, *not* starting'
-    fi
     wait_server $RUN_DIR/ovsdb-server.pid ovsdb-server 30
 }
 
@@ -119,15 +115,11 @@ function start_switch () {
     # ensure ovsdb-server is running
     is_db_running || { echo "ovsdb-server not running" >&2 ; exit 1 ; }
 
-    if [ ! -f "$RUN_DIR/ovs-vswitchd.pid" ] ; then
 	ovs-vswitchd \
 	    --pidfile \
 	    --log-file=$SWITCH_LOG \
 	    --detach \
 	    unix:$DB_SOCKET >& /dev/null
-    else
-	echo 'ovs-vswitchd appears to be running already, *not* starting'
-    fi
     wait_server $RUN_DIR/ovs-vswitchd.pid ovs-vswitchd 30
 }
 
