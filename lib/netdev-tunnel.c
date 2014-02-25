@@ -48,8 +48,8 @@ struct netdev_tunnel {
     struct netdev_stats stats;
     enum netdev_flags flags;
     int sockfd;
-    struct sockaddr_in local_addr;
-    struct sockaddr_in remote_addr;
+    struct sockaddr_storage local_addr;
+    struct sockaddr_storage remote_addr;
     bool valid_remote_ip;
     bool valid_remote_port;
     bool connected;
@@ -122,7 +122,7 @@ netdev_tunnel_construct(struct netdev *netdev_)
 
 
     netdev->sockfd = inet_open_passive(SOCK_DGRAM, "", 0,
-        (struct sockaddr_storage *)&netdev->local_addr, 0);
+        &netdev->local_addr, 0);
     if (netdev->sockfd < 0) {
     	return netdev->sockfd;
     }
@@ -133,7 +133,7 @@ netdev_tunnel_construct(struct netdev *netdev_)
     n++;
 
     VLOG_DBG("tunnel_create: name=%s, fd=%d, port=%d",
-        netdev_get_name(netdev_), netdev->sockfd, netdev->local_addr.sin_port);
+        netdev_get_name(netdev_), netdev->sockfd, ss_get_port(&netdev->local_addr));
 
     return 0;
 
@@ -169,12 +169,15 @@ netdev_tunnel_get_config(const struct netdev *dev_, struct smap *args)
     struct netdev_tunnel *netdev = netdev_tunnel_cast(dev_);
 
     ovs_mutex_lock(&netdev->mutex);
-    if (netdev->valid_remote_ip)
+    if (netdev->valid_remote_ip) {
+        const struct sockaddr_in *sin =
+            ALIGNED_CAST(const struct sockaddr_in *, &netdev->remote_addr);
     	smap_add_format(args, "remote_ip", IP_FMT,
-		IP_ARGS(netdev->remote_addr.sin_addr.s_addr));
+		IP_ARGS(sin->sin_addr.s_addr));
+    }
     if (netdev->valid_remote_port)
         smap_add_format(args, "remote_port", "%"PRIu16,
-		ntohs(netdev->remote_addr.sin_port));
+		ss_get_port(&netdev->remote_addr));
     ovs_mutex_unlock(&netdev->mutex);
     return 0;
 }
@@ -184,18 +187,22 @@ netdev_tunnel_connect(struct netdev_tunnel *dev)
     OVS_REQUIRES(dev->mutex)
 {
     char buf[1024];
+    struct sockaddr_in *sin =
+        ALIGNED_CAST(struct sockaddr_in *, &dev->remote_addr);
     if (dev->sockfd < 0)
         return EBADF;
     if (!dev->valid_remote_ip || !dev->valid_remote_port)
         return 0;
-    dev->remote_addr.sin_family = AF_INET;
-    if (connect(dev->sockfd, (struct sockaddr*) &dev->remote_addr, sizeof(dev->remote_addr)) < 0) {
+    if (connect(dev->sockfd, (struct sockaddr*) sin, sizeof(*sin)) < 0) {
+        VLOG_DBG("%s: connect returned %s", netdev_get_name(&dev->up),
+            ovs_strerror(errno));
         return errno;
     }
     dev->connected = true;
     netdev_tunnel_update_seq(dev);
     VLOG_DBG("%s: connected to (%s, %d)", netdev_get_name(&dev->up),
-        inet_ntop(AF_INET, &dev->remote_addr.sin_addr, buf, 1024), ntohs(dev->remote_addr.sin_port));
+        inet_ntop(AF_INET, &sin->sin_addr.s_addr, buf, 1024),
+        ss_get_port(&dev->remote_addr));
     return 0;
 }
 
@@ -205,6 +212,8 @@ netdev_tunnel_set_config(struct netdev *dev_, const struct smap *args)
     struct netdev_tunnel *netdev = netdev_tunnel_cast(dev_);
     struct shash_node *node;
     int error;
+    struct sockaddr_in *sin =
+        ALIGNED_CAST(struct sockaddr_in *, &netdev->remote_addr);
 
     ovs_mutex_lock(&netdev->mutex);
     VLOG_DBG("tunnel_set_config(%s)", netdev_get_name(dev_));
@@ -215,11 +224,12 @@ netdev_tunnel_set_config(struct netdev *dev_, const struct smap *args)
 	    if (lookup_ip(node->data, &addr)) {
 		VLOG_WARN("%s: bad 'remote_ip'", node->name);
 	    } else {
-		netdev->remote_addr.sin_addr = addr;
+        sin->sin_family = AF_INET;
+		sin->sin_addr = addr;
 		netdev->valid_remote_ip = true;
 	    }
 	} else if (!strcmp(node->name, "remote_port")) {
-	    netdev->remote_addr.sin_port = htons(atoi(node->data));
+	    sin->sin_port = htons(atoi(node->data));
 	    netdev->valid_remote_port = true;
 	} else {
 	    VLOG_WARN("%s: unknown argument '%s'", 
@@ -482,7 +492,7 @@ netdev_tunnel_get_port(struct unixctl_conn *conn,
     }
 
     ovs_mutex_lock(&tunnel_dev->mutex);
-    sprintf(buf, "%d", ntohs(tunnel_dev->local_addr.sin_port));
+    sprintf(buf, "%d", ss_get_port(&tunnel_dev->local_addr));
     ovs_mutex_unlock(&tunnel_dev->mutex);
 
     unixctl_command_reply(conn, buf);
