@@ -262,18 +262,28 @@ struct dpif_class {
      * packets. */
     int (*flow_flush)(struct dpif *dpif);
 
-    /* Attempts to begin dumping the flows in a dpif.  On success, returns 0
-     * and initializes '*statep' with any data needed for iteration.  On
-     * failure, returns a positive errno value. */
-    int (*flow_dump_start)(const struct dpif *dpif, void **statep);
+    /* Allocates thread-local state for use with the function 'flow_dump_next'.
+     * On return, initializes '*statep' with any private data needed for
+     * iteration. */
+    void (*flow_dump_state_init)(void **statep);
 
-    /* Attempts to retrieve another flow from 'dpif' for 'state', which was
-     * initialized by a successful call to the 'flow_dump_start' function for
-     * 'dpif'.  On success, updates the output parameters as described below
-     * and returns 0.  Returns EOF if the end of the flow table has been
-     * reached, or a positive errno value on error.  This function will not be
-     * called again once it returns nonzero within a given iteration (but the
-     * 'flow_dump_done' function will be called afterward).
+    /* Attempts to begin dumping the flows in a dpif.  On success, returns 0
+     * and initializes '*iterp' with any shared data needed for iteration.
+     * On failure, returns a positive errno value. */
+    int (*flow_dump_start)(const struct dpif *dpif, void **iterp);
+
+    /* Attempts to retrieve another flow from 'dpif' for 'iter', using
+     * 'state' for storage. 'iter' must have been initialized by a successful
+     * call to the 'flow_dump_start' function for 'dpif'. 'state' must have
+     * been initialised with a call to the 'flow_dump_state_init' function for
+     * 'dpif.
+     *
+     * On success, updates the output parameters as described below and returns
+     * 0. Returns EOF if the end of the flow table has been reached, or a
+     * positive errno value on error. Multiple threads may use the same 'dpif'
+     * and 'iter' with this function, but all other parameters must be
+     * different for each thread. If this function returns non-zero,
+     * subsequent calls with the same arguments will also return non-zero.
      *
      * On success:
      *
@@ -295,16 +305,35 @@ struct dpif_class {
      * All of the returned data is owned by 'dpif', not by the caller, and the
      * caller must not modify or free it.  'dpif' must guarantee that it
      * remains accessible and unchanging until at least the next call to
-     * 'flow_dump_next' or 'flow_dump_done' for 'state'. */
-    int (*flow_dump_next)(const struct dpif *dpif, void *state,
+     * 'flow_dump_next' or 'flow_dump_done' for 'iter' and 'state'. */
+    int (*flow_dump_next)(const struct dpif *dpif, void *iter, void *state,
                           const struct nlattr **key, size_t *key_len,
                           const struct nlattr **mask, size_t *mask_len,
                           const struct nlattr **actions, size_t *actions_len,
                           const struct dpif_flow_stats **stats);
 
-    /* Releases resources from 'dpif' for 'state', which was initialized by a
-     * successful call to the 'flow_dump_start' function for 'dpif'.  */
-    int (*flow_dump_done)(const struct dpif *dpif, void *state);
+    /* Determines whether the next call to 'flow_dump_next' with 'state' will
+     * modify or free the keys that it previously returned. 'state' must have
+     * been initialized by a call to 'flow_dump_state_init' for 'dpif'.
+     *
+     * 'dpif' guarantees that data returned by flow_dump_next() will remain
+     * accessible and unchanging until the next call. This function provides a
+     * way for callers to determine whether that guarantee extends beyond the
+     * next call.
+     *
+     * Returns true if the next call to flow_dump_next() is expected to be
+     * destructive to previously returned keys for 'state', false otherwise. */
+    bool (*flow_dump_next_may_destroy_keys)(void *state);
+
+    /* Releases resources from 'dpif' for 'iter', which was initialized by a
+     * successful call to the 'flow_dump_start' function for 'dpif'. Callers
+     * must ensure that this function is called once within a given iteration,
+     * as the final flow dump operation. */
+    int (*flow_dump_done)(const struct dpif *dpif, void *iter);
+
+    /* Releases 'state' which was initialized by a call to the
+     * 'flow_dump_state_init' function for this 'dpif'. */
+    void (*flow_dump_state_uninit)(void *statep);
 
     /* Performs the 'execute->actions_len' bytes of actions in
      * 'execute->actions' on the Ethernet frame in 'execute->packet'

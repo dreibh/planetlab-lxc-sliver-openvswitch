@@ -1182,9 +1182,9 @@ destruct(struct ofproto *ofproto_)
     xlate_remove_ofproto(ofproto);
     ovs_rwlock_unlock(&xlate_rwlock);
 
-    /* Discard any flow_miss_batches queued up for 'ofproto', avoiding a
-     * use-after-free error. */
-    udpif_revalidate(ofproto->backer->udpif);
+    /* Ensure that the upcall processing threads have no remaining references
+     * to the ofproto or anything in it. */
+    udpif_synchronize(ofproto->backer->udpif);
 
     hmap_remove(&all_ofproto_dpifs, &ofproto->all_ofproto_dpifs_node);
 
@@ -2997,7 +2997,7 @@ ofproto_dpif_execute_actions(struct ofproto_dpif *ofproto,
     execute.md.tunnel = flow->tunnel;
     execute.md.skb_priority = flow->skb_priority;
     execute.md.pkt_mark = flow->pkt_mark;
-    execute.md.in_port = ofp_port_to_odp_port(ofproto, in_port);
+    execute.md.in_port.odp_port = ofp_port_to_odp_port(ofproto, in_port);
     execute.needs_help = (xout.slow & SLOW_ACTION) != 0;
 
     error = dpif_execute(ofproto->backer->dpif, &execute);
@@ -3784,11 +3784,14 @@ parse_flow_and_packet(int argc, const char *argv[],
             flow_compose(packet, flow);
         } else {
             union flow_in_port in_port = flow->in_port;
+            struct pkt_metadata md;
 
             /* Use the metadata from the flow and the packet argument
              * to reconstruct the flow. */
-            flow_extract(packet, flow->skb_priority, flow->pkt_mark, NULL,
-                         &in_port, flow);
+            pkt_metadata_init(&md, NULL, flow->skb_priority,
+                                   flow->pkt_mark, &in_port);
+
+            flow_extract(packet, &md, flow);
         }
     }
 
@@ -4165,6 +4168,8 @@ ofproto_unixctl_dpif_dump_flows(struct unixctl_conn *conn,
     struct dpif_port dpif_port;
     struct dpif_port_dump port_dump;
     struct hmap portno_names;
+    void *state = NULL;
+    int error;
 
     ofproto = ofproto_dpif_lookup(argv[argc - 1]);
     if (!ofproto) {
@@ -4182,9 +4187,14 @@ ofproto_unixctl_dpif_dump_flows(struct unixctl_conn *conn,
     }
 
     ds_init(&ds);
-    dpif_flow_dump_start(&flow_dump, ofproto->backer->dpif);
-    while (dpif_flow_dump_next(&flow_dump, &key, &key_len, &mask, &mask_len,
-                               &actions, &actions_len, &stats)) {
+    error = dpif_flow_dump_start(&flow_dump, ofproto->backer->dpif);
+    if (error) {
+        goto exit;
+    }
+    dpif_flow_dump_state_init(ofproto->backer->dpif, &state);
+    while (dpif_flow_dump_next(&flow_dump, state, &key, &key_len,
+                               &mask, &mask_len, &actions, &actions_len,
+                               &stats)) {
         if (!ofproto_dpif_contains_flow(ofproto, key, key_len)) {
             continue;
         }
@@ -4197,8 +4207,11 @@ ofproto_unixctl_dpif_dump_flows(struct unixctl_conn *conn,
         format_odp_actions(&ds, actions, actions_len);
         ds_put_char(&ds, '\n');
     }
+    dpif_flow_dump_state_uninit(ofproto->backer->dpif, state);
+    error = dpif_flow_dump_done(&flow_dump);
 
-    if (dpif_flow_dump_done(&flow_dump)) {
+exit:
+    if (error) {
         ds_clear(&ds);
         ds_put_format(&ds, "dpif/dump_flows failed: %s", ovs_strerror(errno));
         unixctl_command_reply_error(conn, ds_cstr(&ds));

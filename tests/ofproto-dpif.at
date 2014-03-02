@@ -1143,6 +1143,7 @@ AT_CHECK([ovs-ofctl --protocols=OpenFlow12 monitor br0 65534 -m -P nxm --detach 
 for i in 1 2 3; do
     ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=40:44:44:44:00:00,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=6,tos=0,ttl=64,frag=no)'
 done
+sleep 1
 OVS_WAIT_UNTIL([ovs-appctl -t ovs-ofctl exit])
 
 AT_CHECK([cat ofctl_monitor.log | ofctl_strip], [0], [dnl
@@ -1175,6 +1176,7 @@ AT_CHECK([ovs-ofctl --protocols=OpenFlow12 monitor br0 65534 -m -P nxm --detach 
 for i in 1 2 3; do
     ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=40:44:44:44:00:01,dst=50:54:00:00:00:07),eth_type(0x8847),mpls(label=10,tc=0,ttl=64,bos=1)'
 done
+sleep 1
 OVS_WAIT_UNTIL([ovs-appctl -t ovs-ofctl exit])
 
 AT_CHECK([cat ofctl_monitor.log | ofctl_strip], [0], [dnl
@@ -1209,6 +1211,7 @@ AT_CHECK([ovs-ofctl --protocols=OpenFlow12 monitor br0 65534 -m -P nxm --detach 
 for i in 1 2 3; do
     ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=40:44:44:44:00:02,dst=50:54:00:00:00:07),eth_type(0x8847),mpls(label=10,tc=0,ttl=64,bos=1)'
 done
+sleep 1
 OVS_WAIT_UNTIL([ovs-appctl -t ovs-ofctl exit])
 
 AT_CHECK([cat ofctl_monitor.log | ofctl_strip], [0], [dnl
@@ -1266,6 +1269,7 @@ AT_CHECK([ovs-ofctl --protocols=OpenFlow12 monitor br0 65534 -m -P nxm --detach 
 for i in 1 2 3; do
     ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=40:44:44:44:54:50,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=6,tos=0,ttl=64,frag=no)'
 done
+sleep 1
 OVS_WAIT_UNTIL([ovs-appctl -t ovs-ofctl exit])
 
 AT_CHECK([cat ofctl_monitor.log | ofctl_strip], [0], [dnl
@@ -2366,7 +2370,7 @@ m4_define([CHECK_SFLOW_SAMPLING_PACKET],
      set Interface p2 options:ifindex=1003 -- \
      set Bridge br0 sflow=@sf -- \
      --id=@sf create sflow targets=\"$1:$SFLOW_PORT\" \
-       header=128 sampling=1 polling=1 agent=lo
+       header=128 sampling=1 polling=1 agent=$LOOPBACK_INTERFACE
 
   dnl open with ARP packets to seed the bridge-learning.  The output
   dnl ifIndex numbers should be reported predictably after that.
@@ -2779,6 +2783,50 @@ m4_define([CHECK_NETFLOW_ACTIVE_EXPIRATION],
 CHECK_NETFLOW_ACTIVE_EXPIRATION([127.0.0.1], [IPv4])
 CHECK_NETFLOW_ACTIVE_EXPIRATION([[[::1]]], [IPv6])
 
+AT_SETUP([ofproto-dpif - flow stats])
+OVS_VSWITCHD_START
+AT_CHECK([ovs-ofctl add-flow br0 "ip,actions=NORMAL"])
+AT_CHECK([ovs-ofctl add-flow br0 "icmp,actions=NORMAL"])
+
+ovs-appctl time/stop
+
+for i in `seq 1 10`; do
+    ovs-appctl netdev-dummy/receive br0 'in_port(0),eth(src=50:54:00:00:00:07,dst=50:54:00:00:00:05),eth_type(0x0800),ipv4(src=192.168.0.2,dst=192.168.0.1,proto=6,tos=0,ttl=64,frag=no)'
+done
+
+ovs-appctl time/warp 1000
+
+AT_CHECK([ovs-ofctl dump-flows br0], [0], [stdout])
+AT_CHECK([STRIP_XIDS stdout | sed -n 's/duration=[[0-9]]*\.[[0-9]]*s/duration=0.0s/p' | sort], [0], [dnl
+ cookie=0x0, duration=0.0s, table=0, n_packets=0, n_bytes=0, idle_age=1, icmp actions=NORMAL
+ cookie=0x0, duration=0.0s, table=0, n_packets=10, n_bytes=600, idle_age=1, ip actions=NORMAL
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+AT_SETUP([ofproto-dpif - flow stats, set-n-threads])
+OVS_VSWITCHD_START
+AT_CHECK([ovs-ofctl add-flow br0 "ip,actions=NORMAL"])
+AT_CHECK([ovs-ofctl add-flow br0 "icmp,actions=NORMAL"])
+
+ovs-appctl time/stop
+
+for i in `seq 1 10`; do
+    ovs-appctl netdev-dummy/receive br0 'in_port(0),eth(src=50:54:00:00:00:07,dst=50:54:00:00:00:05),eth_type(0x0800),ipv4(src=192.168.0.2,dst=192.168.0.1,proto=6,tos=0,ttl=64,frag=no)'
+done
+
+ovs-appctl time/warp 100
+AT_CHECK([ovs-vsctl set Open_vSwitch . other-config:n-revalidator-threads=2])
+ovs-appctl time/warp 1000
+
+AT_CHECK([ovs-ofctl dump-flows br0], [0], [stdout])
+AT_CHECK([STRIP_XIDS stdout | sed -n 's/duration=[[0-9]]*\.[[0-9]]*s/duration=0.0s/p' | sort], [0], [dnl
+ cookie=0x0, duration=0.0s, table=0, n_packets=0, n_bytes=0, idle_age=1, icmp actions=NORMAL
+ cookie=0x0, duration=0.0s, table=0, n_packets=10, n_bytes=600, idle_age=1, ip actions=NORMAL
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
 AT_SETUP([idle_age and hard_age increase over time])
 OVS_VSWITCHD_START
 
@@ -3054,10 +3102,16 @@ AT_CHECK([ovs-ofctl add-flow br1 actions=LOCAL,output:1,output:3])
 
 for i in $(seq 1 10); do
     ovs-appctl netdev-dummy/receive br0 'in_port(100),eth(src=50:54:00:00:00:05,dst=50:54:00:00:00:07),eth_type(0x0800),ipv4(src=192.168.0.1,dst=192.168.0.2,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0)'
+    if [[ $i -eq 1 ]]; then
+        sleep 1
+    fi
 done
 
 for i in $(seq 1 5); do
     ovs-appctl netdev-dummy/receive br1 'in_port(101),eth(src=50:54:00:00:00:07,dst=50:54:00:00:00:05),eth_type(0x0800),ipv4(src=192.168.0.2,dst=192.168.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0)'
+    if [[ $i -eq 1 ]]; then
+        sleep 1
+    fi
 done
 
 AT_CHECK([ovs-appctl time/warp 500], [0],

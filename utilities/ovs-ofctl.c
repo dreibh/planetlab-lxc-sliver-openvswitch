@@ -36,6 +36,7 @@
 #include "compiler.h"
 #include "dirs.h"
 #include "dynamic-string.h"
+#include "fatal-signal.h"
 #include "nx-match.h"
 #include "odp-util.h"
 #include "ofp-actions.h"
@@ -113,7 +114,7 @@ main(int argc, char *argv[])
 {
     set_program_name(argv[0]);
     parse_options(argc, argv);
-    signal(SIGPIPE, SIG_IGN);
+    fatal_ignore_sigpipe();
     run_command(argc - optind, argv + optind, get_all_commands());
     return 0;
 }
@@ -1863,12 +1864,13 @@ ofctl_ofp_parse_pcap(int argc OVS_UNUSED, char *argv[])
         struct ofpbuf *packet;
         long long int when;
         struct flow flow;
+        const struct pkt_metadata md = PKT_METADATA_INITIALIZER(ODPP_NONE);
 
         error = ovs_pcap_read(file, &packet, &when);
         if (error) {
             break;
         }
-        flow_extract(packet, 0, 0, NULL, NULL, &flow);
+        flow_extract(packet, &md, &flow);
         if (flow.dl_type == htons(ETH_TYPE_IP)
             && flow.nw_proto == IPPROTO_TCP
             && (is_openflow_port(flow.tp_src, argv + 2) ||
@@ -3207,6 +3209,7 @@ ofctl_parse_pcap(int argc OVS_UNUSED, char *argv[])
     for (;;) {
         struct ofpbuf *packet;
         struct flow flow;
+        const struct pkt_metadata md = PKT_METADATA_INITIALIZER(ODPP_NONE);
         int error;
 
         error = ovs_pcap_read(pcap, &packet, NULL);
@@ -3216,7 +3219,7 @@ ofctl_parse_pcap(int argc OVS_UNUSED, char *argv[])
             ovs_fatal(error, "%s: read failed", argv[1]);
         }
 
-        flow_extract(packet, 0, 0, NULL, NULL, &flow);
+        flow_extract(packet, &md, &flow);
         flow_print(stdout, &flow);
         putchar('\n');
         ofpbuf_delete(packet);

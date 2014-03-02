@@ -190,7 +190,8 @@ static int
 dpif_linux_enumerate(struct sset *all_dps)
 {
     struct nl_dump dump;
-    struct ofpbuf msg;
+    uint64_t reply_stub[NL_DUMP_BUFSIZE / 8];
+    struct ofpbuf msg, buf;
     int error;
 
     error = dpif_linux_init();
@@ -198,14 +199,16 @@ dpif_linux_enumerate(struct sset *all_dps)
         return error;
     }
 
+    ofpbuf_use_stub(&buf, reply_stub, sizeof reply_stub);
     dpif_linux_dp_dump_start(&dump);
-    while (nl_dump_next(&dump, &msg)) {
+    while (nl_dump_next(&dump, &msg, &buf)) {
         struct dpif_linux_dp dp;
 
         if (!dpif_linux_dp_from_ofpbuf(&dp, &msg)) {
             sset_add(all_dps, dp.name);
         }
     }
+    ofpbuf_uninit(&buf);
     return nl_dump_done(&dump);
 }
 
@@ -439,8 +442,11 @@ get_vport_type(const struct dpif_linux_vport *vport)
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
     switch (vport->type) {
-    case OVS_VPORT_TYPE_NETDEV:
-        return "system";
+    case OVS_VPORT_TYPE_NETDEV: {
+        const char *type = netdev_get_type_from_name(vport->name);
+
+        return type ? type : "system";
+    }
 
     case OVS_VPORT_TYPE_INTERNAL:
         return "internal";
@@ -705,6 +711,7 @@ dpif_linux_flow_flush(struct dpif *dpif_)
 
 struct dpif_linux_port_state {
     struct nl_dump dump;
+    struct ofpbuf buf;
 };
 
 static void
@@ -732,18 +739,20 @@ dpif_linux_port_dump_start(const struct dpif *dpif, void **statep)
     *statep = state = xmalloc(sizeof *state);
     dpif_linux_port_dump_start__(dpif, &state->dump);
 
+    ofpbuf_init(&state->buf, NL_DUMP_BUFSIZE);
     return 0;
 }
 
 static int
 dpif_linux_port_dump_next__(const struct dpif *dpif_, struct nl_dump *dump,
-                            struct dpif_linux_vport *vport)
+                            struct dpif_linux_vport *vport,
+                            struct ofpbuf *buffer)
 {
     struct dpif_linux *dpif = dpif_linux_cast(dpif_);
     struct ofpbuf buf;
     int error;
 
-    if (!nl_dump_next(dump, &buf)) {
+    if (!nl_dump_next(dump, &buf, buffer)) {
         return EOF;
     }
 
@@ -763,7 +772,8 @@ dpif_linux_port_dump_next(const struct dpif *dpif OVS_UNUSED, void *state_,
     struct dpif_linux_vport vport;
     int error;
 
-    error = dpif_linux_port_dump_next__(dpif, &state->dump, &vport);
+    error = dpif_linux_port_dump_next__(dpif, &state->dump, &vport,
+                                        &state->buf);
     if (error) {
         return error;
     }
@@ -779,6 +789,7 @@ dpif_linux_port_dump_done(const struct dpif *dpif_ OVS_UNUSED, void *state_)
     struct dpif_linux_port_state *state = state_;
     int error = nl_dump_done(&state->dump);
 
+    ofpbuf_uninit(&state->buf);
     free(state);
     return error;
 }
@@ -981,21 +992,46 @@ dpif_linux_flow_del(struct dpif *dpif_, const struct dpif_flow_del *del)
 }
 
 struct dpif_linux_flow_state {
-    struct nl_dump dump;
     struct dpif_linux_flow flow;
     struct dpif_flow_stats stats;
-    struct ofpbuf *buf;
+    struct ofpbuf buffer;         /* Always used to store flows. */
+    struct ofpbuf *tmp;           /* Used if kernel does not supply actions. */
 };
 
+struct dpif_linux_flow_iter {
+    struct nl_dump dump;
+    atomic_int status;
+};
+
+static void
+dpif_linux_flow_dump_state_init(void **statep)
+{
+    struct dpif_linux_flow_state *state;
+
+    *statep = state = xmalloc(sizeof *state);
+    ofpbuf_init(&state->buffer, NL_DUMP_BUFSIZE);
+    state->tmp = NULL;
+}
+
+static void
+dpif_linux_flow_dump_state_uninit(void *state_)
+{
+    struct dpif_linux_flow_state *state = state_;
+
+    ofpbuf_uninit(&state->buffer);
+    ofpbuf_delete(state->tmp);
+    free(state);
+}
+
 static int
-dpif_linux_flow_dump_start(const struct dpif *dpif_, void **statep)
+dpif_linux_flow_dump_start(const struct dpif *dpif_, void **iterp)
 {
     const struct dpif_linux *dpif = dpif_linux_cast(dpif_);
-    struct dpif_linux_flow_state *state;
+    struct dpif_linux_flow_iter *iter;
     struct dpif_linux_flow request;
     struct ofpbuf *buf;
 
-    *statep = state = xmalloc(sizeof *state);
+    *iterp = iter = xmalloc(sizeof *iter);
 
     dpif_linux_flow_init(&request);
     request.cmd = OVS_FLOW_CMD_GET;
@@ -1003,42 +1039,43 @@ dpif_linux_flow_dump_start(const struct dpif *dpif_, void **statep)
 
     buf = ofpbuf_new(1024);
     dpif_linux_flow_to_ofpbuf(&request, buf);
-    nl_dump_start(&state->dump, NETLINK_GENERIC, buf);
+    nl_dump_start(&iter->dump, NETLINK_GENERIC, buf);
     ofpbuf_delete(buf);
-
-    state->buf = NULL;
+    atomic_init(&iter->status, 0);
 
     return 0;
 }
 
 static int
-dpif_linux_flow_dump_next(const struct dpif *dpif_, void *state_,
+dpif_linux_flow_dump_next(const struct dpif *dpif_, void *iter_, void *state_,
                           const struct nlattr **key, size_t *key_len,
                           const struct nlattr **mask, size_t *mask_len,
                           const struct nlattr **actions, size_t *actions_len,
                           const struct dpif_flow_stats **stats)
 {
+    struct dpif_linux_flow_iter *iter = iter_;
     struct dpif_linux_flow_state *state = state_;
     struct ofpbuf buf;
     int error;
 
     do {
-        ofpbuf_delete(state->buf);
-        state->buf = NULL;
+        ofpbuf_delete(state->tmp);
+        state->tmp = NULL;
 
-        if (!nl_dump_next(&state->dump, &buf)) {
+        if (!nl_dump_next(&iter->dump, &buf, &state->buffer)) {
             return EOF;
         }
 
         error = dpif_linux_flow_from_ofpbuf(&state->flow, &buf);
         if (error) {
+            atomic_store(&iter->status, error);
             return error;
         }
 
         if (actions && !state->flow.actions) {
             error = dpif_linux_flow_get__(dpif_, state->flow.key,
                                           state->flow.key_len,
-                                          &state->flow, &state->buf);
+                                          &state->flow, &state->tmp);
             if (error == ENOENT) {
                 VLOG_DBG("dumped flow disappeared on get");
             } else if (error) {
@@ -1067,14 +1104,25 @@ dpif_linux_flow_dump_next(const struct dpif *dpif_, void *state_,
     return error;
 }
 
-static int
-dpif_linux_flow_dump_done(const struct dpif *dpif OVS_UNUSED, void *state_)
+static bool
+dpif_linux_flow_dump_next_may_destroy_keys(void *state_)
 {
     struct dpif_linux_flow_state *state = state_;
-    int error = nl_dump_done(&state->dump);
-    ofpbuf_delete(state->buf);
-    free(state);
-    return error;
+
+    return state->buffer.size ? false : true;
+}
+
+static int
+dpif_linux_flow_dump_done(const struct dpif *dpif OVS_UNUSED, void *iter_)
+{
+    struct dpif_linux_flow_iter *iter = iter_;
+    int dump_status;
+    unsigned int nl_status = nl_dump_done(&iter->dump);
+
+    atomic_read(&iter->status, &dump_status);
+    atomic_destroy(&iter->status);
+    free(iter);
+    return dump_status ? dump_status : nl_status;
 }
 
 static void
@@ -1284,6 +1332,8 @@ dpif_linux_refresh_channels(struct dpif *dpif_)
     struct dpif_linux_vport vport;
     size_t keep_channels_nbits;
     struct nl_dump dump;
+    uint64_t reply_stub[NL_DUMP_BUFSIZE / 8];
+    struct ofpbuf buf;
     int retval = 0;
     size_t i;
 
@@ -1300,8 +1350,9 @@ dpif_linux_refresh_channels(struct dpif *dpif_)
 
     dpif->n_events = dpif->event_offset = 0;
 
+    ofpbuf_use_stub(&buf, reply_stub, sizeof reply_stub);
     dpif_linux_port_dump_start__(dpif_, &dump);
-    while (!dpif_linux_port_dump_next__(dpif_, &dump, &vport)) {
+    while (!dpif_linux_port_dump_next__(dpif_, &dump, &vport, &buf)) {
         uint32_t port_no = odp_to_u32(vport.port_no);
         struct nl_sock *sock = (port_no < dpif->uc_array_size
                                 ? dpif->channels[port_no].sock
@@ -1367,6 +1418,7 @@ dpif_linux_refresh_channels(struct dpif *dpif_)
         nl_sock_destroy(sock);
     }
     nl_dump_done(&dump);
+    ofpbuf_uninit(&buf);
 
     /* Discard any saved channels that we didn't reuse. */
     for (i = 0; i < keep_channels_nbits; i++) {
@@ -1622,9 +1674,12 @@ const struct dpif_class dpif_linux_class = {
     dpif_linux_flow_put,
     dpif_linux_flow_del,
     dpif_linux_flow_flush,
+    dpif_linux_flow_dump_state_init,
     dpif_linux_flow_dump_start,
     dpif_linux_flow_dump_next,
+    dpif_linux_flow_dump_next_may_destroy_keys,
     dpif_linux_flow_dump_done,
+    dpif_linux_flow_dump_state_uninit,
     dpif_linux_execute,
     dpif_linux_operate,
     dpif_linux_recv_set,

@@ -178,8 +178,6 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/shash.h \
 	lib/simap.c \
 	lib/simap.h \
-	lib/signals.c \
-	lib/signals.h \
 	lib/smap.c \
 	lib/smap.h \
 	lib/socket-util.c \
@@ -190,7 +188,6 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/sset.h \
 	lib/stp.c \
 	lib/stp.h \
-	lib/stream-fd.c \
 	lib/stream-fd.h \
 	lib/stream-provider.h \
 	lib/stream-ssl.h \
@@ -243,11 +240,15 @@ if WIN32
 lib_libopenvswitch_la_SOURCES += \
 	lib/daemon-windows.c \
 	lib/getopt_long.c \
-	lib/latch-windows.c
+	lib/latch-windows.c \
+	lib/stream-fd-windows.c
 else
 lib_libopenvswitch_la_SOURCES += \
 	lib/daemon.c \
-	lib/latch.c \
+	lib/latch-unix.c \
+	lib/signals.c \
+	lib/signals.h \
+	lib/stream-fd-unix.c \
 	lib/stream-unix.c
 endif
 

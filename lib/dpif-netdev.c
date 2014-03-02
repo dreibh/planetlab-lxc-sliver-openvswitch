@@ -1314,47 +1314,82 @@ dpif_netdev_flow_del(struct dpif *dpif, const struct dpif_flow_del *del)
 }
 
 struct dp_netdev_flow_state {
-    uint32_t bucket;
-    uint32_t offset;
     struct dp_netdev_actions *actions;
     struct odputil_keybuf keybuf;
     struct odputil_keybuf maskbuf;
     struct dpif_flow_stats stats;
 };
 
-static int
-dpif_netdev_flow_dump_start(const struct dpif *dpif OVS_UNUSED, void **statep)
+struct dp_netdev_flow_iter {
+    uint32_t bucket;
+    uint32_t offset;
+    int status;
+    struct ovs_mutex mutex;
+};
+
+static void
+dpif_netdev_flow_dump_state_init(void **statep)
 {
     struct dp_netdev_flow_state *state;
 
     *statep = state = xmalloc(sizeof *state);
-    state->bucket = 0;
-    state->offset = 0;
     state->actions = NULL;
+}
+
+static void
+dpif_netdev_flow_dump_state_uninit(void *state_)
+{
+    struct dp_netdev_flow_state *state = state_;
+
+    dp_netdev_actions_unref(state->actions);
+    free(state);
+}
+
+static int
+dpif_netdev_flow_dump_start(const struct dpif *dpif OVS_UNUSED, void **iterp)
+{
+    struct dp_netdev_flow_iter *iter;
+
+    *iterp = iter = xmalloc(sizeof *iter);
+    iter->bucket = 0;
+    iter->offset = 0;
+    iter->status = 0;
+    ovs_mutex_init(&iter->mutex);
     return 0;
 }
 
 static int
-dpif_netdev_flow_dump_next(const struct dpif *dpif, void *state_,
+dpif_netdev_flow_dump_next(const struct dpif *dpif, void *iter_, void *state_,
                            const struct nlattr **key, size_t *key_len,
                            const struct nlattr **mask, size_t *mask_len,
                            const struct nlattr **actions, size_t *actions_len,
                            const struct dpif_flow_stats **stats)
 {
+    struct dp_netdev_flow_iter *iter = iter_;
     struct dp_netdev_flow_state *state = state_;
     struct dp_netdev *dp = get_dp_netdev(dpif);
     struct dp_netdev_flow *netdev_flow;
-    struct hmap_node *node;
+    int error;
 
-    fat_rwlock_rdlock(&dp->cls.rwlock);
-    node = hmap_at_position(&dp->flow_table, &state->bucket, &state->offset);
-    if (node) {
-        netdev_flow = CONTAINER_OF(node, struct dp_netdev_flow, node);
-        dp_netdev_flow_ref(netdev_flow);
+    ovs_mutex_lock(&iter->mutex);
+    error = iter->status;
+    if (!error) {
+        struct hmap_node *node;
+
+        fat_rwlock_rdlock(&dp->cls.rwlock);
+        node = hmap_at_position(&dp->flow_table, &iter->bucket, &iter->offset);
+        if (node) {
+            netdev_flow = CONTAINER_OF(node, struct dp_netdev_flow, node);
+            dp_netdev_flow_ref(netdev_flow);
+        }
+        fat_rwlock_unlock(&dp->cls.rwlock);
+        if (!node) {
+            iter->status = error = EOF;
+        }
     }
-    fat_rwlock_unlock(&dp->cls.rwlock);
-    if (!node) {
-        return EOF;
+    ovs_mutex_unlock(&iter->mutex);
+    if (error) {
+        return error;
     }
 
     if (key) {
@@ -1405,12 +1440,12 @@ dpif_netdev_flow_dump_next(const struct dpif *dpif, void *state_,
 }
 
 static int
-dpif_netdev_flow_dump_done(const struct dpif *dpif OVS_UNUSED, void *state_)
+dpif_netdev_flow_dump_done(const struct dpif *dpif OVS_UNUSED, void *iter_)
 {
-    struct dp_netdev_flow_state *state = state_;
+    struct dp_netdev_flow_iter *iter = iter_;
 
-    dp_netdev_actions_unref(state->actions);
-    free(state);
+    ovs_mutex_destroy(&iter->mutex);
+    free(iter);
     return 0;
 }
 
@@ -1427,8 +1462,7 @@ dpif_netdev_execute(struct dpif *dpif, struct dpif_execute *execute)
     }
 
     /* Extract flow key. */
-    flow_extract(execute->packet, md->skb_priority, md->pkt_mark, &md->tunnel,
-                 (union flow_in_port *)&md->in_port, &key);
+    flow_extract(execute->packet, md, &key);
 
     ovs_rwlock_rdlock(&dp->port_rwlock);
     dp_netdev_execute_actions(dp, &key, execute->packet, md, execute->actions,
@@ -1600,8 +1634,8 @@ dp_forwarder_main(void *f_)
                     if (!error) {
                         struct pkt_metadata md
                             = PKT_METADATA_INITIALIZER(port->port_no);
-                        dp_netdev_port_input(dp, &packet, &md);
 
+                        dp_netdev_port_input(dp, &packet, &md);
                         received_anything = true;
                     } else if (error != EAGAIN && error != EOPNOTSUPP) {
                         static struct vlog_rate_limit rl
@@ -1701,8 +1735,7 @@ dp_netdev_port_input(struct dp_netdev *dp, struct ofpbuf *packet,
     if (packet->size < ETH_HEADER_LEN) {
         return;
     }
-    flow_extract(packet, md->skb_priority, md->pkt_mark, &md->tunnel,
-                 (union flow_in_port *)&md->in_port, &key);
+    flow_extract(packet, md, &key);
     netdev_flow = dp_netdev_lookup_flow(dp, &key);
     if (netdev_flow) {
         struct dp_netdev_actions *actions;
@@ -1861,9 +1894,12 @@ dp_netdev_execute_actions(struct dp_netdev *dp, const struct flow *key,
     dpif_netdev_flow_put,				\
     dpif_netdev_flow_del,				\
     dpif_netdev_flow_flush,				\
+    dpif_netdev_flow_dump_state_init,   \
     dpif_netdev_flow_dump_start,			\
     dpif_netdev_flow_dump_next,				\
+    NULL,                                   \
     dpif_netdev_flow_dump_done,				\
+    dpif_netdev_flow_dump_state_uninit,     \
     dpif_netdev_execute,				\
     NULL,                       /* operate */		\
     dpif_netdev_recv_set,				\
