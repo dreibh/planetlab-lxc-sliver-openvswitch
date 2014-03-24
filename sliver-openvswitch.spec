@@ -47,7 +47,7 @@ make install DESTDIR=$RPM_BUILD_ROOT
 rm -rf $RPM_BUILD_ROOT
 
 %files
-/usr/lib
+/usr/lib/*
 /usr/bin/*
 /usr/sbin/*
 /usr/share/openvswitch
