@@ -2,7 +2,7 @@
 # to check for any change:
 # grep AC_INIT configure.ac 
 %define version 2.1.90
-%define taglevel 1
+%define taglevel 2
 
 %define debug_package %{nil}
 
@@ -58,6 +58,9 @@ rm -rf $RPM_BUILD_ROOT
 %postun
 
 %changelog
+* Tue Mar 25 2014 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-2.1.90-2
+- fix packaging
+
 * Fri Mar 21 2014 Thierry Parmentelat <thierry.parmentelat@sophia.inria.fr> - sliver-openvswitch-2.1.90-1
 - merged in mainstream 2.1.90
 - more robust server startup on the slivers
