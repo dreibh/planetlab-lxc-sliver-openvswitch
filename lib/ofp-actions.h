@@ -436,10 +436,10 @@ struct ofpact_meter {
  * Used for OFPIT11_WRITE_ACTIONS. */
 struct ofpact_nest {
     struct ofpact ofpact;
-    uint8_t pad[OFPACT_ALIGN(sizeof(struct ofpact)) - sizeof(struct ofpact)];
+    uint8_t pad[PAD_SIZE(sizeof(struct ofpact), OFPACT_ALIGNTO)];
     struct ofpact actions[];
 };
-BUILD_ASSERT_DECL(offsetof(struct ofpact_nest, actions) == OFPACT_ALIGNTO);
+BUILD_ASSERT_DECL(offsetof(struct ofpact_nest, actions) % OFPACT_ALIGNTO == 0);
 
 static inline size_t
 ofpact_nest_get_action_len(const struct ofpact_nest *on)
@@ -750,4 +750,7 @@ const char *ovs_instruction_name_from_type(enum ovs_instruction_type type);
 int ovs_instruction_type_from_name(const char *name);
 enum ovs_instruction_type ovs_instruction_type_from_ofpact_type(
     enum ofpact_type);
+enum ofperr ovs_instruction_type_from_inst_type(
+    enum ovs_instruction_type *instruction_type, const uint16_t inst_type);
+
 #endif /* ofp-actions.h */

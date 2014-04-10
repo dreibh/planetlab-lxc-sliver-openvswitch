@@ -14,13 +14,15 @@ AM_LDFLAGS = $(SSL_LDFLAGS)
 
 if WIN32
 AM_CPPFLAGS += -I $(top_srcdir)/include/windows
+AM_CPPFLAGS += $(PTHREAD_INCLUDES)
+AM_LDFLAGS += $(PTHREAD_LDFLAGS)
 endif
-
-AM_CPPFLAGS += $(SSL_INCLUDES)
 
 AM_CPPFLAGS += -I $(top_srcdir)/include
 AM_CPPFLAGS += -I $(top_srcdir)/lib
 AM_CPPFLAGS += -I $(top_builddir)/lib
+
+AM_CPPFLAGS += $(SSL_INCLUDES)
 
 AM_CFLAGS = -Wstrict-prototypes
 AM_CFLAGS += $(WARNING_FLAGS)
@@ -61,6 +63,7 @@ EXTRA_DIST = \
 	FAQ \
 	INSTALL \
 	INSTALL.Debian \
+        INSTALL.DPDK \
 	INSTALL.Fedora \
 	INSTALL.KVM \
 	INSTALL.Libvirt \

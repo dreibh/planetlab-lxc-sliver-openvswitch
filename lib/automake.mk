@@ -8,6 +8,11 @@
 lib_LTLIBRARIES += lib/libopenvswitch.la
 
 lib_libopenvswitch_la_LIBADD = $(SSL_LIBS)
+
+if WIN32
+lib_libopenvswitch_la_LIBADD += ${PTHREAD_LIBS}
+endif
+
 lib_libopenvswitch_la_LDFLAGS = -release $(VERSION)
 
 lib_libopenvswitch_la_SOURCES = \
@@ -47,6 +52,7 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/dhparams.h \
 	lib/dirs.h \
 	lib/dpif-netdev.c \
+	lib/dpif-netdev.h \
 	lib/dpif-provider.h \
 	lib/dpif.c \
 	lib/dpif.h \
@@ -136,12 +142,14 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/ovs-atomic-c11.h \
 	lib/ovs-atomic-clang.h \
 	lib/ovs-atomic-flag-gcc4.7+.h \
-	lib/ovs-atomic-gcc4+.c \
 	lib/ovs-atomic-gcc4+.h \
 	lib/ovs-atomic-gcc4.7+.h \
-	lib/ovs-atomic-pthreads.c \
+	lib/ovs-atomic-locked.c \
+	lib/ovs-atomic-locked.h \
 	lib/ovs-atomic-pthreads.h \
 	lib/ovs-atomic.h \
+	lib/ovs-rcu.c \
+	lib/ovs-rcu.h \
 	lib/ovs-thread.c \
 	lib/ovs-thread.h \
 	lib/ovsdb-data.c \
@@ -242,6 +250,8 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/getopt_long.c \
 	lib/getrusage-windows.c \
 	lib/latch-windows.c \
+	lib/route-table-stub.c \
+	lib/strsep.c \
 	lib/stream-fd-windows.c
 else
 lib_libopenvswitch_la_SOURCES += \
@@ -294,6 +304,12 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/rtnetlink-link.h \
 	lib/route-table.c \
 	lib/route-table.h
+endif
+
+if DPDK_NETDEV
+lib_libopenvswitch_la_SOURCES += \
+       lib/netdev-dpdk.c \
+       lib/netdev-dpdk.h
 endif
 
 if HAVE_POSIX_AIO

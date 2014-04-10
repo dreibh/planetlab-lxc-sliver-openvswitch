@@ -26,6 +26,7 @@
 #include "flow.h"
 #include "openvswitch/types.h"
 #include "random.h"
+#include "hash.h"
 #include "util.h"
 
 struct ofpbuf;
@@ -33,6 +34,11 @@ struct ds;
 
 /* Datapath packet metadata */
 struct pkt_metadata {
+    uint32_t recirc_id;         /* Recirculation id carried with the
+                                   recirculating packets. 0 for packets
+                                   received from the wire. */
+    uint32_t dp_hash;           /* hash value computed by the recirculation
+                                   action. */
     struct flow_tnl tunnel;     /* Encapsulating tunnel parameters. */
     uint32_t skb_priority;      /* Packet priority for QoS. */
     uint32_t pkt_mark;          /* Packet mark. */
@@ -40,13 +46,22 @@ struct pkt_metadata {
 };
 
 #define PKT_METADATA_INITIALIZER(PORT) \
-    (struct pkt_metadata){ { 0, 0, 0, 0, 0, 0}, 0, 0, {(PORT)} }
+    (struct pkt_metadata){ 0, 0, { 0, 0, 0, 0, 0, 0}, 0, 0, {(PORT)} }
 
-void pkt_metadata_init(struct pkt_metadata *md, const struct flow_tnl *tnl,
-                            const uint32_t skb_priority,
-                            const uint32_t pkt_mark,
-                            const union flow_in_port *in_port);
-void pkt_metadata_from_flow(struct pkt_metadata *md, const struct flow *flow);
+static inline struct pkt_metadata
+pkt_metadata_from_flow(const struct flow *flow)
+{
+    struct pkt_metadata md;
+
+    md.recirc_id = flow->recirc_id;
+    md.dp_hash = flow->dp_hash;
+    md.tunnel = flow->tunnel;
+    md.skb_priority = flow->skb_priority;
+    md.pkt_mark = flow->pkt_mark;
+    md.in_port = flow->in_port;
+
+    return md;
+}
 
 bool dpid_from_string(const char *s, uint64_t *dpidp);
 
@@ -120,6 +135,11 @@ static inline uint64_t eth_addr_to_uint64(const uint8_t ea[ETH_ADDR_LEN])
             | ((uint64_t) ea[4] << 8)
             | ea[5]);
 }
+static inline uint64_t eth_addr_vlan_to_uint64(const uint8_t ea[ETH_ADDR_LEN],
+                                               uint16_t vlan)
+{
+    return (((uint64_t)vlan << 48) | eth_addr_to_uint64(ea));
+}
 static inline void eth_addr_from_uint64(uint64_t x, uint8_t ea[ETH_ADDR_LEN])
 {
     ea[0] = x >> 40;
@@ -150,6 +170,11 @@ static inline void eth_addr_nicira_random(uint8_t ea[ETH_ADDR_LEN])
 
     /* Set the top bit to indicate random Nicira address. */
     ea[3] |= 0x80;
+}
+static inline uint32_t hash_mac(const uint8_t ea[ETH_ADDR_LEN],
+                                const uint16_t vlan, const uint32_t basis)
+{
+    return hash_uint64_basis(eth_addr_vlan_to_uint64(ea, vlan), basis);
 }
 
 bool eth_addr_is_reserved(const uint8_t ea[ETH_ADDR_LEN]);
@@ -668,7 +693,6 @@ void packet_set_tcp_port(struct ofpbuf *, ovs_be16 src, ovs_be16 dst);
 void packet_set_udp_port(struct ofpbuf *, ovs_be16 src, ovs_be16 dst);
 void packet_set_sctp_port(struct ofpbuf *, ovs_be16 src, ovs_be16 dst);
 
-uint16_t packet_get_tcp_flags(const struct ofpbuf *, const struct flow *);
 void packet_format_tcp_flags(struct ds *, uint16_t);
 const char *packet_tcp_flag_to_string(uint32_t flag);
 

@@ -53,9 +53,9 @@ VLOG_DEFINE_THIS_MODULE(socket_util);
  * Thus, this file compiles all of the code regardless of the target, by
  * writing "if (LINUX)" instead of "#ifdef __linux__". */
 #ifdef __linux__
-#define LINUX 0
-#else
 #define LINUX 1
+#else
+#define LINUX 0
 #endif
 
 #ifndef O_DIRECTORY
@@ -120,14 +120,22 @@ set_dscp(int fd, uint8_t dscp)
     success = false;
     val = dscp << 2;
     if (setsockopt(fd, IPPROTO_IP, IP_TOS, &val, sizeof val)) {
+#ifndef _WIN32
         if (sock_errno() != ENOPROTOOPT) {
+#else
+        if (sock_errno() != WSAENOPROTOOPT) {
+#endif
             return sock_errno();
         }
     } else {
         success = true;
     }
     if (setsockopt(fd, IPPROTO_IPV6, IPV6_TCLASS, &val, sizeof val)) {
+#ifndef _WIN32
         if (sock_errno() != ENOPROTOOPT) {
+#else
+        if (sock_errno() != WSAENOPROTOOPT) {
+#endif
             return sock_errno();
         }
     } else {
@@ -352,7 +360,7 @@ shorten_name_via_proc(const char *name, char short_name[MAX_UN_LEN + 1],
     int dirfd;
     int len;
 
-    if (LINUX) {
+    if (!LINUX) {
         return ENAMETOOLONG;
     }
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
+/* Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013, 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,6 +48,7 @@
 #include "vconn.h"
 #include "vlog.h"
 #include "lib/vswitch-idl.h"
+#include "lib/netdev-dpdk.h"
 
 VLOG_DEFINE_THIS_MODULE(vswitchd);
 
@@ -69,8 +70,12 @@ main(int argc, char *argv[])
     bool exiting;
     int retval;
 
-    proctitle_init(argc, argv);
     set_program_name(argv[0]);
+    retval = dpdk_init(argc,argv);
+    argc -= retval;
+    argv += retval;
+
+    proctitle_init(argc, argv);
     service_start(&argc, &argv);
     remote = parse_options(argc, argv, &unixctl_path);
     fatal_ignore_sigpipe();
@@ -142,7 +147,9 @@ parse_options(int argc, char *argv[], char **unixctl_pathp)
         OPT_BOOTSTRAP_CA_CERT,
         OPT_ENABLE_DUMMY,
         OPT_DISABLE_SYSTEM,
-        DAEMON_OPTION_ENUMS
+        OPT_ENABLE_OF14,
+        DAEMON_OPTION_ENUMS,
+        OPT_DPDK,
     };
     static const struct option long_options[] = {
         {"help",        no_argument, NULL, 'h'},
@@ -156,6 +163,8 @@ parse_options(int argc, char *argv[], char **unixctl_pathp)
         {"bootstrap-ca-cert", required_argument, NULL, OPT_BOOTSTRAP_CA_CERT},
         {"enable-dummy", optional_argument, NULL, OPT_ENABLE_DUMMY},
         {"disable-system", no_argument, NULL, OPT_DISABLE_SYSTEM},
+        {"enable-of14", no_argument, NULL, OPT_ENABLE_OF14},
+        {"dpdk", required_argument, NULL, OPT_DPDK},
         {NULL, 0, NULL, 0},
     };
     char *short_options = long_options_to_short_options(long_options);
@@ -204,8 +213,15 @@ parse_options(int argc, char *argv[], char **unixctl_pathp)
             dp_blacklist_provider("system");
             break;
 
+        case OPT_ENABLE_OF14:
+            bridge_enable_of14();
+            break;
+
         case '?':
             exit(EXIT_FAILURE);
+
+        case OPT_DPDK:
+            break;
 
         default:
             abort();
@@ -242,6 +258,7 @@ usage(void)
     vlog_usage();
     printf("\nOther options:\n"
            "  --unixctl=SOCKET        override default control socket name\n"
+           "  --enable-of14           allow enabling OF1.4 (unsafely!)\n"
            "  -h, --help              display this help message\n"
            "  -V, --version           display version information\n");
     exit(EXIT_SUCCESS);

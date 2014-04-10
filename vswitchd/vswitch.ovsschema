@@ -1,6 +1,6 @@
 {"name": "Open_vSwitch",
- "version": "7.4.0",
- "cksum": "951746691 20389",
+ "version": "7.5.0",
+ "cksum": "1448369194 20560",
  "tables": {
    "Open_vSwitch": {
      "columns": {
@@ -83,7 +83,8 @@
            "enum": ["set", ["OpenFlow10",
                             "OpenFlow11",
                             "OpenFlow12",
-                            "OpenFlow13"]]},
+                            "OpenFlow13",
+                            "OpenFlow14"]]},
 	   "min": 0, "max": "unlimited"}},
        "fail_mode": {
          "type": {"key": {"type": "string",
@@ -302,7 +303,10 @@
        "groups": {
 	 "type": {"key": "string", "min": 0, "max": "unlimited"}},
        "prefixes": {
-         "type": {"key": "string", "min": 0, "max": 3}}}},
+         "type": {"key": "string", "min": 0, "max": 3}},
+       "external_ids": {
+         "type": {"key": "string", "value": "string",
+                  "min": 0, "max": "unlimited"}}}},
    "QoS": {
      "columns": {
        "type": {

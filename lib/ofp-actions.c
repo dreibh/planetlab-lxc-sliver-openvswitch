@@ -377,6 +377,7 @@ ofpact_from_nxast(const union ofp_action *a, enum ofputil_action_code code,
     case OFPUTIL_ACTION_INVALID:
 #define OFPAT10_ACTION(ENUM, STRUCT, NAME) case OFPUTIL_##ENUM:
 #define OFPAT11_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME) case OFPUTIL_##ENUM:
+#define OFPAT13_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME) case OFPUTIL_##ENUM:
 #include "ofp-util.def"
         OVS_NOT_REACHED();
 
@@ -523,6 +524,7 @@ ofpact_from_openflow10(const union ofp_action *a,
     switch (code) {
     case OFPUTIL_ACTION_INVALID:
 #define OFPAT11_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME) case OFPUTIL_##ENUM:
+#define OFPAT13_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME) case OFPUTIL_##ENUM:
 #include "ofp-util.def"
         OVS_NOT_REACHED();
 
@@ -708,7 +710,7 @@ ofpacts_pull_openflow_actions(struct ofpbuf *openflow,
     actions = ofpbuf_try_pull(openflow, actions_len);
     if (actions == NULL) {
         VLOG_WARN_RL(&rl, "OpenFlow message actions length %u exceeds "
-                     "remaining message length (%"PRIuSIZE")",
+                     "remaining message length (%"PRIu32")",
                      actions_len, openflow->size);
         return OFPERR_OFPBRC_BAD_LEN;
     }
@@ -1141,6 +1143,7 @@ ofpact_from_openflow11(const union ofp_action *a, enum ofp_version version,
     switch (code) {
     case OFPUTIL_ACTION_INVALID:
 #define OFPAT10_ACTION(ENUM, STRUCT, NAME) case OFPUTIL_##ENUM:
+#define OFPAT13_ACTION(ENUM, STRUCT, EXTENSIBLE, NAME) case OFPUTIL_##ENUM:
 #include "ofp-util.def"
         OVS_NOT_REACHED();
 
@@ -1630,6 +1633,24 @@ ovs_instruction_type_from_ofpact_type(enum ofpact_type type)
     }
 }
 
+enum ofperr
+ovs_instruction_type_from_inst_type(enum ovs_instruction_type *instruction_type,
+                                    const uint16_t inst_type)
+{
+    switch (inst_type) {
+
+#define DEFINE_INST(ENUM, STRUCT, EXTENSIBLE, NAME) \
+    case ENUM:                                      \
+        *instruction_type = OVSINST_##ENUM;         \
+        return 0;
+OVS_INSTRUCTIONS
+#undef DEFINE_INST
+
+    default:
+        return OFPERR_OFPBIC_UNKNOWN_INST;
+    }
+}
+
 static inline struct ofp11_instruction *
 instruction_next(const struct ofp11_instruction *inst)
 {
@@ -1747,7 +1768,7 @@ ofpacts_pull_openflow_instructions(struct ofpbuf *openflow,
     instructions = ofpbuf_try_pull(openflow, instructions_len);
     if (instructions == NULL) {
         VLOG_WARN_RL(&rl, "OpenFlow message instructions length %u exceeds "
-                     "remaining message length (%"PRIuSIZE")",
+                     "remaining message length (%"PRIu32")",
                      instructions_len, openflow->size);
         error = OFPERR_OFPBIC_BAD_LEN;
         goto exit;
@@ -3627,8 +3648,8 @@ ofpact_update_len(struct ofpbuf *ofpacts, struct ofpact *ofpact)
 void
 ofpact_pad(struct ofpbuf *ofpacts)
 {
-    unsigned int rem = ofpacts->size % OFPACT_ALIGNTO;
-    if (rem) {
-        ofpbuf_put_zeros(ofpacts, OFPACT_ALIGNTO - rem);
+    unsigned int pad = PAD_SIZE(ofpacts->size, OFPACT_ALIGNTO);
+    if (pad) {
+        ofpbuf_put_zeros(ofpacts, pad);
     }
 }

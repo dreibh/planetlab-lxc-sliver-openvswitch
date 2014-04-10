@@ -32,6 +32,7 @@
 #include "ofproto-dpif-ipfix.h"
 #include "ofproto-dpif-sflow.h"
 #include "ofproto-dpif-xlate.h"
+#include "ovs-rcu.h"
 #include "packets.h"
 #include "poll-loop.h"
 #include "seq.h"
@@ -279,15 +280,12 @@ void
 udpif_destroy(struct udpif *udpif)
 {
     udpif_set_threads(udpif, 0, 0);
-    udpif_flush();
+    udpif_flush(udpif);
 
     list_remove(&udpif->list_node);
     latch_destroy(&udpif->exit_latch);
     seq_destroy(udpif->reval_seq);
     seq_destroy(udpif->dump_seq);
-    atomic_destroy(&udpif->flow_limit);
-    atomic_destroy(&udpif->n_flows);
-    atomic_destroy(&udpif->n_flows_timestamp);
     ovs_mutex_destroy(&udpif->n_flows_mutex);
     free(udpif);
 }
@@ -300,6 +298,9 @@ void
 udpif_set_threads(struct udpif *udpif, size_t n_handlers,
                   size_t n_revalidators)
 {
+    int error;
+
+    ovsrcu_quiesce_start();
     /* Stop the old threads (if any). */
     if (udpif->handlers &&
         (udpif->n_handlers != n_handlers
@@ -372,6 +373,13 @@ udpif_set_threads(struct udpif *udpif, size_t n_handlers,
         udpif->n_handlers = 0;
     }
 
+    error = dpif_handlers_set(udpif->dpif, 1);
+    if (error) {
+        VLOG_ERR("failed to configure handlers in dpif %s: %s",
+                 dpif_name(udpif->dpif), ovs_strerror(error));
+        return;
+    }
+
     /* Start new threads (if necessary). */
     if (!udpif->handlers && n_handlers) {
         size_t i;
@@ -408,6 +416,8 @@ udpif_set_threads(struct udpif *udpif, size_t n_handlers,
         xpthread_create(&udpif->dispatcher, NULL, udpif_dispatcher, udpif);
         xpthread_create(&udpif->flow_dumper, NULL, udpif_flow_dumper, udpif);
     }
+
+    ovsrcu_quiesce_end();
 }
 
 /* Waits for all ongoing upcall translations to complete.  This ensures that
@@ -473,16 +483,31 @@ udpif_get_memory_usage(struct udpif *udpif, struct simap *usage)
     }
 }
 
-/* Removes all flows from all datapaths. */
+/* Remove flows from a single datapath. */
 void
-udpif_flush(void)
+udpif_flush(struct udpif *udpif)
+{
+    size_t n_handlers, n_revalidators;
+
+    n_handlers = udpif->n_handlers;
+    n_revalidators = udpif->n_revalidators;
+
+    udpif_set_threads(udpif, 0, 0);
+    dpif_flow_flush(udpif->dpif);
+    udpif_set_threads(udpif, n_handlers, n_revalidators);
+}
+
+/* Removes all flows from all datapaths. */
+static void
+udpif_flush_all_datapaths(void)
 {
     struct udpif *udpif;
 
     LIST_FOR_EACH (udpif, list_node, &all_udpifs) {
-        dpif_flow_flush(udpif->dpif);
+        udpif_flush(udpif);
     }
 }
+
 
 /* Destroys and deallocates 'upcall'. */
 static void
@@ -527,7 +552,7 @@ udpif_dispatcher(void *arg)
     set_subprogram_name("dispatcher");
     while (!latch_is_set(&udpif->exit_latch)) {
         recv_upcalls(udpif);
-        dpif_recv_wait(udpif->dpif);
+        dpif_recv_wait(udpif->dpif, 0);
         latch_wait(&udpif->exit_latch);
         poll_block();
     }
@@ -670,7 +695,10 @@ udpif_upcall_handler(void *arg)
         size_t i;
 
         ovs_mutex_lock(&handler->mutex);
-        if (!handler->n_upcalls) {
+        /* Must check the 'exit_latch' again to make sure the main thread is
+         * not joining on the handler thread. */
+        if (!handler->n_upcalls
+            && !latch_is_set(&handler->udpif->exit_latch)) {
             ovs_mutex_cond_wait(&handler->wake_cond, &handler->mutex);
         }
 
@@ -808,7 +836,7 @@ recv_upcalls(struct udpif *udpif)
         upcall = xmalloc(sizeof *upcall);
         ofpbuf_use_stub(&upcall->upcall_buf, upcall->upcall_stub,
                         sizeof upcall->upcall_stub);
-        error = dpif_recv(udpif->dpif, &upcall->dpif_upcall,
+        error = dpif_recv(udpif->dpif, 0, &upcall->dpif_upcall,
                           &upcall->upcall_buf);
         if (error) {
             /* upcall_destroy() can only be called on successfully received
@@ -896,7 +924,7 @@ compose_slow_path(struct udpif *udpif, struct xlate_out *xout,
     port = xout->slow & (SLOW_CFM | SLOW_BFD | SLOW_LACP | SLOW_STP)
         ? ODPP_NONE
         : odp_in_port;
-    pid = dpif_port_get_pid(udpif->dpif, port);
+    pid = dpif_port_get_pid(udpif->dpif, port, 0);
     odp_put_userspace_action(pid, &cookie, sizeof cookie.slow_path, buf);
 }
 
@@ -991,11 +1019,9 @@ handle_upcalls(struct handler *handler, struct list *upcalls)
         type = classify_upcall(upcall);
         if (type == MISS_UPCALL) {
             uint32_t hash;
-            struct pkt_metadata md;
+            struct pkt_metadata md = pkt_metadata_from_flow(&flow);
 
-            pkt_metadata_from_flow(&md, &flow);
             flow_extract(packet, &md, &miss->flow);
-
             hash = flow_hash(&miss->flow, 0);
             existing_miss = flow_miss_find(&misses, ofproto, &miss->flow,
                                            hash);
@@ -1016,7 +1042,7 @@ handle_upcalls(struct handler *handler, struct list *upcalls)
             } else {
                 miss = existing_miss;
             }
-            miss->stats.tcp_flags |= packet_get_tcp_flags(packet, &miss->flow);
+            miss->stats.tcp_flags |= ntohs(miss->flow.tcp_flags);
             miss->stats.n_bytes += packet->size;
             miss->stats.n_packets++;
 
@@ -1238,7 +1264,7 @@ handle_upcalls(struct handler *handler, struct list *upcalls)
             pin->up.cookie = OVS_BE64_MAX;
             flow_get_metadata(&miss->flow, &pin->up.fmd);
             pin->send_len = 0; /* Not used for flow table misses. */
-            pin->generated_by_table_miss = false;
+            pin->miss_type = OFPROTO_PACKET_IN_NO_MISS;
             ofproto_dpif_send_packet_in(miss->ofproto, pin);
         }
     }
@@ -1660,7 +1686,7 @@ upcall_unixctl_disable_megaflows(struct unixctl_conn *conn,
                                  void *aux OVS_UNUSED)
 {
     atomic_store(&enable_megaflows, false);
-    udpif_flush();
+    udpif_flush_all_datapaths();
     unixctl_command_reply(conn, "megaflows disabled");
 }
 
@@ -1675,7 +1701,7 @@ upcall_unixctl_enable_megaflows(struct unixctl_conn *conn,
                                 void *aux OVS_UNUSED)
 {
     atomic_store(&enable_megaflows, true);
-    udpif_flush();
+    udpif_flush_all_datapaths();
     unixctl_command_reply(conn, "megaflows enabled");
 }
 

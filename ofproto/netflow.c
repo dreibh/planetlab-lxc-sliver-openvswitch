@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2013 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2013, 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -170,7 +170,7 @@ gen_netflow_rec(struct netflow *nf, struct netflow_flow *nf_flow,
 }
 
 void
-netflow_flow_update(struct netflow *nf, struct flow *flow,
+netflow_flow_update(struct netflow *nf, const struct flow *flow,
                     ofp_port_t output_iface,
                     const struct dpif_flow_stats *stats)
     OVS_EXCLUDED(mutex)
@@ -430,7 +430,6 @@ netflow_unref(struct netflow *nf)
         atomic_sub(&netflow_count, 1, &orig);
         collectors_destroy(nf->collectors);
         ofpbuf_uninit(&nf->packet);
-        ovs_refcount_destroy(&nf->ref_cnt);
         free(nf);
     }
 }

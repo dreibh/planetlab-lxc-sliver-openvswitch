@@ -1534,7 +1534,8 @@ connmgr_send_flow_removed(struct connmgr *mgr,
 static enum ofp_packet_in_reason
 wire_reason(struct ofconn *ofconn, const struct ofproto_packet_in *pin)
 {
-    if (pin->generated_by_table_miss && pin->up.reason == OFPR_ACTION) {
+    if (pin->miss_type == OFPROTO_PACKET_IN_MISS_FLOW
+        && pin->up.reason == OFPR_ACTION) {
         enum ofputil_protocol protocol = ofconn_get_protocol(ofconn);
 
         if (protocol != OFPUTIL_P_NONE
@@ -2043,8 +2044,9 @@ ofmonitor_report(struct connmgr *mgr, struct rule *rule,
                 ovs_mutex_unlock(&rule->mutex);
 
                 if (flags & NXFMF_ACTIONS) {
-                    fu.ofpacts = rule->actions->ofpacts;
-                    fu.ofpacts_len = rule->actions->ofpacts_len;
+                    struct rule_actions *actions = rule_get_actions(rule);
+                    fu.ofpacts = actions->ofpacts;
+                    fu.ofpacts_len = actions->ofpacts_len;
                 } else {
                     fu.ofpacts = NULL;
                     fu.ofpacts_len = 0;

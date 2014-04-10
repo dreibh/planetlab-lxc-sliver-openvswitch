@@ -30,6 +30,7 @@
 
 #include "flow.h"
 #include "list.h"
+#include "dpif-netdev.h"
 #include "netdev-provider.h"
 #include "odp-util.h"
 #include "ofp-print.h"
@@ -74,8 +75,8 @@ struct netdev_pltap {
 };
 
 
-struct netdev_rx_pltap {
-    struct netdev_rx up;    
+struct netdev_rxq_pltap {
+    struct netdev_rxq up;    
     int fd;
 };
 
@@ -113,11 +114,11 @@ netdev_pltap_cast(const struct netdev *netdev)
     return CONTAINER_OF(netdev, struct netdev_pltap, up);
 }
 
-static struct netdev_rx_pltap*
-netdev_rx_pltap_cast(const struct netdev_rx *rx)
+static struct netdev_rxq_pltap*
+netdev_rxq_pltap_cast(const struct netdev_rxq *rx)
 {
     ovs_assert(is_netdev_pltap_class(netdev_get_class(rx->netdev)));
-    return CONTAINER_OF(rx, struct netdev_rx_pltap, up);
+    return CONTAINER_OF(rx, struct netdev_rxq_pltap, up);
 }
 
 static void sync_needed(struct netdev_pltap *dev)
@@ -215,17 +216,17 @@ netdev_pltap_dealloc(struct netdev *netdev_)
 
 static int netdev_pltap_up(struct netdev_pltap *dev) OVS_REQUIRES(dev->mutex);
 
-static struct netdev_rx *
-netdev_pltap_rx_alloc(void)
+static struct netdev_rxq *
+netdev_pltap_rxq_alloc(void)
 {
-    struct netdev_rx_pltap *rx = xzalloc(sizeof *rx);
+    struct netdev_rxq_pltap *rx = xzalloc(sizeof *rx);
     return &rx->up;
 }
 
 static int
-netdev_pltap_rx_construct(struct netdev_rx *rx_)
+netdev_pltap_rxq_construct(struct netdev_rxq *rx_)
 {
-    struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
+    struct netdev_rxq_pltap *rx = netdev_rxq_pltap_cast(rx_);
     struct netdev *netdev_ = rx->up.netdev;
     struct netdev_pltap *netdev =
         netdev_pltap_cast(netdev_);
@@ -245,14 +246,14 @@ out:
 }
 
 static void
-netdev_pltap_rx_destruct(struct netdev_rx *rx_ OVS_UNUSED)
+netdev_pltap_rxq_destruct(struct netdev_rxq *rx_ OVS_UNUSED)
 {
 }
 
 static void
-netdev_pltap_rx_dealloc(struct netdev_rx *rx_)
+netdev_pltap_rxq_dealloc(struct netdev_rxq *rx_)
 {
-    struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
+    struct netdev_rxq_pltap *rx = netdev_rxq_pltap_cast(rx_);
 
     free(rx);
 }
@@ -507,39 +508,58 @@ netdev_pltap_set_config(struct netdev *dev_, const struct smap *args)
 }
 
 static int
-netdev_pltap_rx_recv(struct netdev_rx *rx_, struct ofpbuf *buffer)
+netdev_pltap_rxq_recv(struct netdev_rxq *rx_, struct ofpbuf **packet, int *c)
 {
-    size_t size = ofpbuf_tailroom(buffer);
-    struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
+    struct netdev_rxq_pltap *rx = netdev_rxq_pltap_cast(rx_);
     struct tun_pi pi;
     struct iovec iov[2] = {
         { .iov_base = &pi, .iov_len = sizeof(pi) },
-	    { .iov_base = buffer->data, .iov_len = size }
     };
+    struct ofpbuf *buffer = NULL;
+    size_t size;
+    int error = 0;
+
+    buffer = ofpbuf_new_with_headroom(VLAN_ETH_HEADER_LEN + ETH_PAYLOAD_MAX,
+        DP_NETDEV_HEADROOM);
+    size = ofpbuf_tailroom(buffer);
+    iov[1].iov_base = buffer->data;
+    iov[1].iov_len = size;
     for (;;) {
         ssize_t retval;
         retval = readv(rx->fd, iov, 2);
         if (retval >= 0) {
             if (retval <= size) {
             buffer->size += retval;
-	    	return 0;
+	    	goto out;
 	    } else {
-	    	return EMSGSIZE;
+	    	error = EMSGSIZE;
+            goto out;
 	    }
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error receiveing Ethernet packet on %s: %s",
-                    netdev_rx_get_name(rx_), ovs_strerror(errno));
+                    netdev_rxq_get_name(rx_), ovs_strerror(errno));
             }
-            return errno;
+            error = errno;
+            goto out;
         }
     }
+out:
+    if (error) {
+        ofpbuf_delete(buffer);
+    } else {
+        dp_packet_pad(buffer);
+        packet[0] = buffer;
+        *c = 1;
+    }
+
+    return error;
 }
 
 static void
-netdev_pltap_rx_wait(struct netdev_rx *rx_)
+netdev_pltap_rxq_wait(struct netdev_rxq *rx_)
 {
-    struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
+    struct netdev_rxq_pltap *rx = netdev_rxq_pltap_cast(rx_);
     struct netdev_pltap *netdev =
         netdev_pltap_cast(rx->up.netdev);
     if (rx->fd >= 0 && netdev_pltap_finalized(netdev)) {
@@ -548,34 +568,45 @@ netdev_pltap_rx_wait(struct netdev_rx *rx_)
 }
 
 static int
-netdev_pltap_send(struct netdev *netdev_, const void *buffer, size_t size)
+netdev_pltap_send(struct netdev *netdev_, struct ofpbuf *pkt, bool may_steal)
 {
+    const void *buffer = pkt->data;
+    size_t size = pkt->size;
     struct netdev_pltap *dev = 
-    	netdev_pltap_cast(netdev_);
+        netdev_pltap_cast(netdev_);
+    int error = 0;
     struct tun_pi pi = { 0, 0x86 };
     struct iovec iov[2] = {
         { .iov_base = &pi, .iov_len = sizeof(pi) },
-	{ .iov_base = (char*) buffer, .iov_len = size }
+        { .iov_base = (char*) buffer, .iov_len = size }
     };
-    if (dev->fd < 0)
-        return EAGAIN;
+    if (dev->fd < 0) {
+        error = EAGAIN;
+        goto out;
+    }
     for (;;) {
         ssize_t retval;
         retval = writev(dev->fd, iov, 2);
         if (retval >= 0) {
-	    if (retval != size + 4) {
-	        VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%"PRIdSIZE" bytes of %"PRIuSIZE") on %s",
-		             retval, size + 4, netdev_get_name(netdev_));
-	    }
-            return 0;
+            if (retval != size + 4) {
+                VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%"PRIdSIZE" bytes of %"PRIuSIZE") on %s",
+                        retval, size + 4, netdev_get_name(netdev_));
+            }
+            goto out;
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error sending Ethernet packet on %s: %s",
-                    netdev_get_name(netdev_), ovs_strerror(errno));
+                        netdev_get_name(netdev_), ovs_strerror(errno));
             }
-            return errno;
+            error = errno;
+            goto out;
         }
     }
+out:
+    if (may_steal) {
+        ofpbuf_delete(pkt);
+    }
+    return error;
 }
 
 static void
@@ -589,9 +620,9 @@ netdev_pltap_send_wait(struct netdev *netdev_)
 }
 
 static int
-netdev_pltap_rx_drain(struct netdev_rx *rx_)
+netdev_pltap_rxq_drain(struct netdev_rxq *rx_)
 {
-    struct netdev_rx_pltap *rx = netdev_rx_pltap_cast(rx_);
+    struct netdev_rxq_pltap *rx = netdev_rxq_pltap_cast(rx_);
     char buffer[128];
     int error;
 
@@ -864,11 +895,11 @@ const struct netdev_class netdev_pltap_class = {
 
     netdev_pltap_update_flags,
 
-    netdev_pltap_rx_alloc,
-    netdev_pltap_rx_construct,
-    netdev_pltap_rx_destruct,
-    netdev_pltap_rx_dealloc,
-    netdev_pltap_rx_recv,
-    netdev_pltap_rx_wait,
-    netdev_pltap_rx_drain,
+    netdev_pltap_rxq_alloc,
+    netdev_pltap_rxq_construct,
+    netdev_pltap_rxq_destruct,
+    netdev_pltap_rxq_dealloc,
+    netdev_pltap_rxq_recv,
+    netdev_pltap_rxq_wait,
+    netdev_pltap_rxq_drain,
 };

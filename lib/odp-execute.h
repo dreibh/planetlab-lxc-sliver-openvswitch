@@ -28,15 +28,15 @@ struct ofpbuf;
 struct pkt_metadata;
 
 typedef void (*odp_execute_cb)(void *dp, struct ofpbuf *packet,
-                               const struct pkt_metadata *,
+                               struct pkt_metadata *,
                                const struct nlattr *action, bool may_steal);
 
 /* Actions that need to be executed in the context of a datapath are handed
  * to 'dp_execute_action', if non-NULL.  Currently this is called only for
  * actions OVS_ACTION_ATTR_OUTPUT and OVS_ACTION_ATTR_USERSPACE so
  * 'dp_execute_action' needs to handle only these. */
-void
-odp_execute_actions(void *dp, struct ofpbuf *packet, struct pkt_metadata *,
+void odp_execute_actions(void *dp, struct ofpbuf *packet, bool steal,
+                    struct pkt_metadata *,
                     const struct nlattr *actions, size_t actions_len,
                     odp_execute_cb dp_execute_action);
 #endif

@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2012, 2013 Nicira, Inc.
+/* Copyright (c) 2011, 2012, 2013, 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -181,7 +181,8 @@ parse_lacp_packet(const struct ofpbuf *b)
 {
     const struct lacp_pdu *pdu;
 
-    pdu = ofpbuf_at(b, (uint8_t *)b->l3 - (uint8_t *)b->data, LACP_PDU_LEN);
+    pdu = ofpbuf_at(b, (uint8_t *)ofpbuf_get_l3(b) - (uint8_t *)b->data,
+                    LACP_PDU_LEN);
 
     if (pdu && pdu->subtype == 1
         && pdu->actor_type == 1 && pdu->actor_len == 20
@@ -249,7 +250,6 @@ lacp_unref(struct lacp *lacp) OVS_EXCLUDED(mutex)
         hmap_destroy(&lacp->slaves);
         list_remove(&lacp->node);
         free(lacp->name);
-        ovs_refcount_destroy(&lacp->ref_cnt);
         free(lacp);
         ovs_mutex_unlock(&mutex);
     }

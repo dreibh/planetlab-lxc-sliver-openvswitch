@@ -22,6 +22,10 @@
 #include <WS2tcpip.h>
 #include <windows.h>
 #include <BaseTsd.h>
+#include <io.h>
+#include <inttypes.h>
+
+#pragma comment(lib, "advapi32")
 
 #define inline __inline
 #define __func__ __FUNCTION__
@@ -30,5 +34,12 @@
 #define u_int16_t uint16_t
 #define u_int32_t uint32_t
 #define u_int64_t uint64_t
+
+typedef int pid_t;
+
+char *strsep(char **stringp, const char *delim);
+
+#define srandom srand
+#define random rand
 
 #endif /* windefs.h */

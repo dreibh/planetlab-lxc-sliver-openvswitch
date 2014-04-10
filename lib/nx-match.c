@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2011, 2012, 2013 Nicira, Inc.
+ * Copyright (c) 2010, 2011, 2012, 2013, 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -215,7 +215,7 @@ nx_pull_match__(struct ofpbuf *b, unsigned int match_len, bool strict,
         if (!p) {
             VLOG_DBG_RL(&rl, "nx_match length %u, rounded up to a "
                         "multiple of 8, is longer than space in message (max "
-                        "length %"PRIuSIZE")", match_len, b->size);
+                        "length %"PRIu32")", match_len, b->size);
             return OFPERR_OFPBMC_BAD_LEN;
         }
     }
@@ -272,7 +272,7 @@ oxm_pull_match__(struct ofpbuf *b, bool strict, struct match *match)
     if (!p) {
         VLOG_DBG_RL(&rl, "oxm length %u, rounded up to a "
                     "multiple of 8, is longer than space in message (max "
-                    "length %"PRIuSIZE")", match_len, b->size);
+                    "length %"PRIu32")", match_len, b->size);
         return OFPERR_OFPBMC_BAD_LEN;
     }
 
@@ -572,9 +572,22 @@ nx_put_raw(struct ofpbuf *b, bool oxm, const struct match *match,
     int match_len;
     int i;
 
-    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 24);
+    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 25);
 
     /* Metadata. */
+    if (match->wc.masks.dp_hash) {
+        if (!oxm) {
+            nxm_put_32m(b, NXM_NX_DP_HASH, htonl(flow->dp_hash),
+                        htonl(match->wc.masks.dp_hash));
+        }
+    }
+
+    if (match->wc.masks.recirc_id) {
+        if (!oxm) {
+            nxm_put_32(b, NXM_NX_RECIRC_ID, htonl(flow->recirc_id));
+        }
+    }
+
     if (match->wc.masks.in_port.ofp_port) {
         ofp_port_t in_port = flow->in_port.ofp_port;
         if (oxm) {
@@ -730,7 +743,7 @@ nx_put_match(struct ofpbuf *b, const struct match *match,
 {
     int match_len = nx_put_raw(b, false, match, cookie, cookie_mask);
 
-    ofpbuf_put_zeros(b, ROUND_UP(match_len, 8) - match_len);
+    ofpbuf_put_zeros(b, PAD_SIZE(match_len, 8));
     return match_len;
 }
 
@@ -753,7 +766,7 @@ oxm_put_match(struct ofpbuf *b, const struct match *match)
 
     ofpbuf_put_uninit(b, sizeof *omh);
     match_len = nx_put_raw(b, true, match, cookie, cookie_mask) + sizeof *omh;
-    ofpbuf_put_zeros(b, ROUND_UP(match_len, 8) - match_len);
+    ofpbuf_put_zeros(b, PAD_SIZE(match_len, 8));
 
     omh = ofpbuf_at(b, start_len, sizeof *omh);
     omh->type = htons(OFPMT_OXM);
@@ -994,7 +1007,7 @@ int
 nx_match_from_string(const char *s, struct ofpbuf *b)
 {
     int match_len = nx_match_from_string_raw(s, b);
-    ofpbuf_put_zeros(b, ROUND_UP(match_len, 8) - match_len);
+    ofpbuf_put_zeros(b, PAD_SIZE(match_len, 8));
     return match_len;
 }
 
@@ -1007,7 +1020,7 @@ oxm_match_from_string(const char *s, struct ofpbuf *b)
 
     ofpbuf_put_uninit(b, sizeof *omh);
     match_len = nx_match_from_string_raw(s, b) + sizeof *omh;
-    ofpbuf_put_zeros(b, ROUND_UP(match_len, 8) - match_len);
+    ofpbuf_put_zeros(b, PAD_SIZE(match_len, 8));
 
     omh = ofpbuf_at(b, start_len, sizeof *omh);
     omh->type = htons(OFPMT_OXM);

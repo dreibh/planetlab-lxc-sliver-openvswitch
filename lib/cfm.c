@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2011, 2012, 2013 Nicira, Inc.
+ * Copyright (c) 2010, 2011, 2012, 2013, 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -285,7 +285,7 @@ ms_to_ccm_interval(int interval_ms)
 static uint32_t
 hash_mpid(uint64_t mpid)
 {
-    return hash_bytes(&mpid, sizeof mpid, 0);
+    return hash_uint64(mpid);
 }
 
 static bool
@@ -372,10 +372,6 @@ cfm_unref(struct cfm *cfm) OVS_EXCLUDED(mutex)
     netdev_close(cfm->netdev);
     free(cfm->rmps_array);
 
-    atomic_destroy(&cfm->extended);
-    atomic_destroy(&cfm->check_tnl_key);
-    ovs_refcount_destroy(&cfm->ref_cnt);
-
     free(cfm);
 }
 
@@ -397,7 +393,11 @@ cfm_run(struct cfm *cfm) OVS_EXCLUDED(mutex)
     if (timer_expired(&cfm->fault_timer)) {
         long long int interval = cfm_fault_interval(cfm);
         struct remote_mp *rmp, *rmp_next;
-        bool old_cfm_fault = cfm->fault;
+        enum cfm_fault_reason old_cfm_fault = cfm->fault;
+        uint64_t old_flap_count = cfm->flap_count;
+        int old_health = cfm->health;
+        size_t old_rmps_array_len = cfm->rmps_array_len;
+        bool old_rmps_deleted = false;
         bool old_rmp_opup = cfm->remote_opup;
         bool demand_override;
         bool rmp_set_opup = false;
@@ -423,7 +423,6 @@ cfm_run(struct cfm *cfm) OVS_EXCLUDED(mutex)
                 cfm->health = 0;
             } else {
                 int exp_ccm_recvd;
-                int old_health = cfm->health;
 
                 rmp = CONTAINER_OF(hmap_first(&cfm->remote_mps),
                                    struct remote_mp, node);
@@ -438,10 +437,6 @@ cfm_run(struct cfm *cfm) OVS_EXCLUDED(mutex)
                 cfm->health = MIN(cfm->health, 100);
                 rmp->num_health_ccm = 0;
                 ovs_assert(cfm->health >= 0 && cfm->health <= 100);
-
-                if (cfm->health != old_health) {
-                    seq_change(connectivity_seq_get());
-                }
             }
             cfm->health_interval = 0;
         }
@@ -461,6 +456,7 @@ cfm_run(struct cfm *cfm) OVS_EXCLUDED(mutex)
                           " %lldms", cfm->name, rmp->mpid,
                           time_msec() - rmp->last_rx);
                 if (!demand_override) {
+                    old_rmps_deleted = true;
                     hmap_remove(&cfm->remote_mps, &rmp->node);
                     free(rmp);
                 }
@@ -484,10 +480,6 @@ cfm_run(struct cfm *cfm) OVS_EXCLUDED(mutex)
             cfm->remote_opup = true;
         }
 
-        if (old_rmp_opup != cfm->remote_opup) {
-            seq_change(connectivity_seq_get());
-        }
-
         if (hmap_is_empty(&cfm->remote_mps)) {
             cfm->fault |= CFM_FAULT_RECV;
         }
@@ -506,10 +498,18 @@ cfm_run(struct cfm *cfm) OVS_EXCLUDED(mutex)
             }
 
             /* If there is a flap, increments the counter. */
-            if (old_cfm_fault == false || cfm->fault == false) {
+            if (old_cfm_fault == 0 || cfm->fault == 0) {
                 cfm->flap_count++;
             }
+        }
 
+        /* These variables represent the cfm session status, it is desirable
+         * to update them to database immediately after change. */
+        if (old_health != cfm->health
+            || old_rmp_opup != cfm->remote_opup
+            || (old_rmps_array_len != cfm->rmps_array_len || old_rmps_deleted)
+            || old_cfm_fault != cfm->fault
+            || old_flap_count != cfm->flap_count) {
             seq_change(connectivity_seq_get());
         }
 
@@ -557,7 +557,7 @@ cfm_compose_ccm(struct cfm *cfm, struct ofpbuf *packet,
         eth_push_vlan(packet, htons(ETH_TYPE_VLAN), htons(tci));
     }
 
-    ccm = packet->l3;
+    ccm = ofpbuf_get_l3(packet);
     ccm->mdlevel_version = 0;
     ccm->opcode = CCM_OPCODE;
     ccm->tlv_offset = 70;
@@ -719,7 +719,8 @@ cfm_process_heartbeat(struct cfm *cfm, const struct ofpbuf *p)
     ovs_mutex_lock(&mutex);
 
     eth = p->l2;
-    ccm = ofpbuf_at(p, (uint8_t *)p->l3 - (uint8_t *)p->data, CCM_ACCEPT_LEN);
+    ccm = ofpbuf_at(p, (uint8_t *)ofpbuf_get_l3(p) - (uint8_t *)p->data,
+                    CCM_ACCEPT_LEN);
 
     if (!ccm) {
         VLOG_INFO_RL(&rl, "%s: Received an unparseable 802.1ag CCM heartbeat.",

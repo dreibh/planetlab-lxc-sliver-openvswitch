@@ -39,6 +39,7 @@ struct netdev {
                                                 this device. */
 
     /* The following are protected by 'netdev_mutex' (internal to netdev.c). */
+    int n_rxq;
     int ref_cnt;                        /* Times this devices was opened. */
     struct shash_node *node;            /* Pointer to element in global map. */
     struct list saved_flags_list; /* Contains "struct netdev_saved_flags". */
@@ -56,12 +57,13 @@ void netdev_get_devices(const struct netdev_class *,
  * Network device implementations may read these members but should not modify
  * them.
  *
- * None of these members change during the lifetime of a struct netdev_rx. */
-struct netdev_rx {
+ * None of these members change during the lifetime of a struct netdev_rxq. */
+struct netdev_rxq {
     struct netdev *netdev;      /* Owns a reference to the netdev. */
+    int queue_id;
 };
 
-struct netdev *netdev_rx_get_netdev(const struct netdev_rx *);
+struct netdev *netdev_rxq_get_netdev(const struct netdev_rxq *);
 
 /* Network device class structure, to be defined by each implementation of a
  * network device.
@@ -77,7 +79,7 @@ struct netdev *netdev_rx_get_netdev(const struct netdev_rx *);
  *
  *   - "struct netdev", which represents a network device.
  *
- *   - "struct netdev_rx", which represents a handle for capturing packets
+ *   - "struct netdev_rxq", which represents a handle for capturing packets
  *     received on a network device
  *
  * Each of these data structures contains all of the implementation-independent
@@ -96,10 +98,10 @@ struct netdev *netdev_rx_get_netdev(const struct netdev_rx *);
  *
  * Four stylized functions accompany each of these data structures:
  *
- *            "alloc"       "construct"       "destruct"       "dealloc"
- *            ------------  ----------------  ---------------  --------------
- * netdev     ->alloc       ->construct       ->destruct       ->dealloc
- * netdev_rx  ->rx_alloc    ->rx_construct    ->rx_destruct    ->rx_dealloc
+ *            "alloc"          "construct"        "destruct"       "dealloc"
+ *            ------------   ----------------  ---------------  --------------
+ * netdev      ->alloc        ->construct        ->destruct        ->dealloc
+ * netdev_rxq  ->rxq_alloc    ->rxq_construct    ->rxq_destruct    ->rxq_dealloc
  *
  * Any instance of a given data structure goes through the following life
  * cycle:
@@ -126,6 +128,9 @@ struct netdev *netdev_rx_get_netdev(const struct netdev_rx *);
  *   7. The client calls the "dealloc" to free the raw memory.  The
  *      implementation must not refer to base or derived state in the data
  *      structure, because it has already been uninitialized.
+ *
+ * If netdev support multi-queue IO then netdev->construct should set initialize
+ * netdev->n_rxq to number of queues.
  *
  * Each "alloc" function allocates and returns a new instance of the respective
  * data structure.  The "alloc" function is not given any information about the
@@ -223,13 +228,13 @@ struct netdev_class {
     const struct netdev_tunnel_config *
         (*get_tunnel_config)(const struct netdev *netdev);
 
-    /* Sends the 'size'-byte packet in 'buffer' on 'netdev'.  Returns 0 if
-     * successful, otherwise a positive errno value.  Returns EAGAIN without
-     * blocking if the packet cannot be queued immediately.  Returns EMSGSIZE
-     * if a partial packet was transmitted or if the packet is too big or too
-     * small to transmit on the device.
+    /* Sends the buffer on 'netdev'.
+     * Returns 0 if successful, otherwise a positive errno value.  Returns
+     * EAGAIN without blocking if the packet cannot be queued immediately.
+     * Returns EMSGSIZE if a partial packet was transmitted or if the packet
+     * is too big or too small to transmit on the device.
      *
-     * The caller retains ownership of 'buffer' in all cases.
+     * To retain ownership of 'buffer' caller can set may_steal to false.
      *
      * The network device is expected to maintain a packet transmission queue,
      * so that the caller does not ordinarily have to do additional queuing of
@@ -241,7 +246,7 @@ struct netdev_class {
      * network device from being usefully used by the netdev-based "userspace
      * datapath".  It will also prevent the OVS implementation of bonding from
      * working properly over 'netdev'.) */
-    int (*send)(struct netdev *netdev, const void *buffer, size_t size);
+    int (*send)(struct netdev *netdev, struct ofpbuf *buffer, bool may_steal);
 
     /* Registers with the poll loop to wake up from the next call to
      * poll_block() when the packet transmission queue for 'netdev' has
@@ -620,50 +625,40 @@ struct netdev_class {
     int (*update_flags)(struct netdev *netdev, enum netdev_flags off,
                         enum netdev_flags on, enum netdev_flags *old_flags);
 
-/* ## ------------------- ## */
-/* ## netdev_rx Functions ## */
-/* ## ------------------- ## */
+/* ## -------------------- ## */
+/* ## netdev_rxq Functions ## */
+/* ## -------------------- ## */
 
 /* If a particular netdev class does not support receiving packets, all these
  * function pointers must be NULL. */
 
-    /* Life-cycle functions for a netdev_rx.  See the large comment above on
+    /* Life-cycle functions for a netdev_rxq.  See the large comment above on
      * struct netdev_class. */
-    struct netdev_rx *(*rx_alloc)(void);
-    int (*rx_construct)(struct netdev_rx *);
-    void (*rx_destruct)(struct netdev_rx *);
-    void (*rx_dealloc)(struct netdev_rx *);
+    struct netdev_rxq *(*rxq_alloc)(void);
+    int (*rxq_construct)(struct netdev_rxq *);
+    void (*rxq_destruct)(struct netdev_rxq *);
+    void (*rxq_dealloc)(struct netdev_rxq *);
 
-    /* Attempts to receive a packet from 'rx' into the tailroom of 'buffer',
-     * which should initially be empty.  If successful, returns 0 and
-     * increments 'buffer->size' by the number of bytes in the received packet,
-     * otherwise a positive errno value.  Returns EAGAIN immediately if no
-     * packet is ready to be received.
+    /* Attempts to receive batch of packets from 'rx' and place array of pointers
+     * into '*pkt'. netdev is responsible for allocating buffers.
+     * '*cnt' points to packet count for given batch. Once packets are returned
+     * to caller, netdev should give up ownership of ofpbuf data.
      *
-     * Must return EMSGSIZE, and discard the packet, if the received packet
-     * is longer than 'ofpbuf_tailroom(buffer)'.
+     * Implementations should allocate buffer with DP_NETDEV_HEADROOM headroom
+     * and add a VLAN header which is obtained out-of-band to the packet.
      *
-     * Implementations may make use of VLAN_HEADER_LEN bytes of tailroom to
-     * add a VLAN header which is obtained out-of-band to the packet. If
-     * this occurs then VLAN_HEADER_LEN bytes of tailroom will no longer be
-     * available for the packet, otherwise it may be used for the packet
-     * itself.
-     *
-     * It is advised that the tailroom of 'buffer' should be
-     * VLAN_HEADER_LEN bytes longer than the MTU to allow space for an
-     * out-of-band VLAN header to be added to the packet.
-     *
+     * Caller is expected to pass array of size MAX_RX_BATCH.
      * This function may be set to null if it would always return EOPNOTSUPP
      * anyhow. */
-    int (*rx_recv)(struct netdev_rx *rx, struct ofpbuf *buffer);
+    int (*rxq_recv)(struct netdev_rxq *rx, struct ofpbuf **pkt, int *cnt);
 
     /* Registers with the poll loop to wake up from the next call to
-     * poll_block() when a packet is ready to be received with netdev_rx_recv()
+     * poll_block() when a packet is ready to be received with netdev_rxq_recv()
      * on 'rx'. */
-    void (*rx_wait)(struct netdev_rx *rx);
+    void (*rxq_wait)(struct netdev_rxq *rx);
 
     /* Discards all packets waiting to be received from 'rx'. */
-    int (*rx_drain)(struct netdev_rx *rx);
+    int (*rxq_drain)(struct netdev_rxq *rx);
 };
 
 int netdev_register_provider(const struct netdev_class *);

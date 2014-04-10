@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013, 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@
 #include "bitmap.h"
 #include "byte-order.h"
 #include "coverage.h"
+#include "ovs-rcu.h"
 #include "ovs-thread.h"
 #include "vlog.h"
 #ifdef HAVE_PTHREAD_SET_NAME_NP
@@ -172,6 +173,64 @@ x2nrealloc(void *p, size_t *n, size_t s)
 {
     *n = *n == 0 ? 1 : 2 * *n;
     return xrealloc(p, *n * s);
+}
+
+/* The desired minimum alignment for an allocated block of memory. */
+#define MEM_ALIGN MAX(sizeof(void *), 8)
+BUILD_ASSERT_DECL(IS_POW2(MEM_ALIGN));
+BUILD_ASSERT_DECL(CACHE_LINE_SIZE >= MEM_ALIGN);
+
+/* Allocates and returns 'size' bytes of memory in dedicated cache lines.  That
+ * is, the memory block returned will not share a cache line with other data,
+ * avoiding "false sharing".  (The memory returned will not be at the start of
+ * a cache line, though, so don't assume such alignment.)
+ *
+ * Use free_cacheline() to free the returned memory block. */
+void *
+xmalloc_cacheline(size_t size)
+{
+    void **payload;
+    void *base;
+
+    /* Allocate room for:
+     *
+     *     - Up to CACHE_LINE_SIZE - 1 bytes before the payload, so that the
+     *       start of the payload doesn't potentially share a cache line.
+     *
+     *     - A payload consisting of a void *, followed by padding out to
+     *       MEM_ALIGN bytes, followed by 'size' bytes of user data.
+     *
+     *     - Space following the payload up to the end of the cache line, so
+     *       that the end of the payload doesn't potentially share a cache line
+     *       with some following block. */
+    base = xmalloc((CACHE_LINE_SIZE - 1)
+                   + ROUND_UP(MEM_ALIGN + size, CACHE_LINE_SIZE));
+
+    /* Locate the payload and store a pointer to the base at the beginning. */
+    payload = (void **) ROUND_UP((uintptr_t) base, CACHE_LINE_SIZE);
+    *payload = base;
+
+    return (char *) payload + MEM_ALIGN;
+}
+
+/* Like xmalloc_cacheline() but clears the allocated memory to all zero
+ * bytes. */
+void *
+xzalloc_cacheline(size_t size)
+{
+    void *p = xmalloc_cacheline(size);
+    memset(p, 0, size);
+    return p;
+}
+
+/* Frees a memory block allocated with xmalloc_cacheline() or
+ * xzalloc_cacheline(). */
+void
+free_cacheline(void *p)
+{
+    if (p) {
+        free(*(void **) ((uintptr_t) p - MEM_ALIGN));
+    }
 }
 
 char *
@@ -646,7 +705,11 @@ get_cwd(void)
     size_t size;
 
     /* Get maximum path length or at least a reasonable estimate. */
+#ifndef _WIN32
     path_max = pathconf(".", _PC_PATH_MAX);
+#else
+    path_max = MAX_PATH;
+#endif
     size = (path_max < 0 ? 1024
             : path_max > 10240 ? 10240
             : path_max);
@@ -1664,6 +1727,18 @@ exit:
     return ok;
 }
 
+void
+xsleep(unsigned int seconds)
+{
+    ovsrcu_quiesce_start();
+#ifdef _WIN32
+    Sleep(seconds * 1000);
+#else
+    sleep(seconds);
+#endif
+    ovsrcu_quiesce_end();
+}
+
 #ifdef _WIN32
 
 char *
@@ -1683,5 +1758,17 @@ char *
 ovs_lasterror_to_string(void)
 {
     return ovs_format_message(GetLastError());
+}
+
+int
+ftruncate(int fd, off_t length)
+{
+    int error;
+
+    error = _chsize_s(fd, length);
+    if (error) {
+        return -1;
+    }
+    return 0;
 }
 #endif

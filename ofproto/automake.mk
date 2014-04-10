@@ -31,6 +31,8 @@ ofproto_libofproto_la_SOURCES = \
 	ofproto/ofproto-dpif-mirror.h \
 	ofproto/ofproto-dpif-monitor.c \
 	ofproto/ofproto-dpif-monitor.h \
+	ofproto/ofproto-dpif-rid.c \
+	ofproto/ofproto-dpif-rid.h \
 	ofproto/ofproto-dpif-sflow.c \
 	ofproto/ofproto-dpif-sflow.h \
 	ofproto/ofproto-dpif-upcall.c \
@@ -47,6 +49,10 @@ ofproto_libofproto_la_SOURCES = \
 ofproto_libofproto_la_CPPFLAGS = $(AM_CPPFLAGS)
 ofproto_libofproto_la_CFLAGS = $(AM_CFLAGS)
 ofproto_libofproto_la_LIBADD = lib/libsflow.la
+if WIN32
+ofproto_libofproto_la_LIBADD += ${PTHREAD_LIBS}
+endif
+
 
 # Distribute this generated file in order not to require Python at
 # build time if ofproto/ipfix.xml is not modified.

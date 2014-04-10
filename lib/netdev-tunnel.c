@@ -24,6 +24,7 @@
 
 #include "flow.h"
 #include "list.h"
+#include "dpif-netdev.h"
 #include "netdev-provider.h"
 #include "odp-util.h"
 #include "ofp-print.h"
@@ -56,8 +57,8 @@ struct netdev_tunnel {
     unsigned int change_seq;
 };
 
-struct netdev_rx_tunnel {
-    struct netdev_rx up;
+struct netdev_rxq_tunnel {
+    struct netdev_rxq up;
     int fd;
 };
 
@@ -83,11 +84,11 @@ netdev_tunnel_cast(const struct netdev *netdev)
     return CONTAINER_OF(netdev, struct netdev_tunnel, up);
 }
 
-static struct netdev_rx_tunnel *
-netdev_rx_tunnel_cast(const struct netdev_rx *rx)
+static struct netdev_rxq_tunnel *
+netdev_rxq_tunnel_cast(const struct netdev_rxq *rx)
 {
     ovs_assert(is_netdev_tunnel_class(netdev_get_class(rx->netdev)));
-    return CONTAINER_OF(rx, struct netdev_rx_tunnel, up);
+    return CONTAINER_OF(rx, struct netdev_rxq_tunnel, up);
 }
 
 static struct netdev *
@@ -172,12 +173,12 @@ netdev_tunnel_get_config(const struct netdev *dev_, struct smap *args)
     if (netdev->valid_remote_ip) {
         const struct sockaddr_in *sin =
             ALIGNED_CAST(const struct sockaddr_in *, &netdev->remote_addr);
-    	smap_add_format(args, "remote_ip", IP_FMT,
-		IP_ARGS(sin->sin_addr.s_addr));
+        smap_add_format(args, "remote_ip", IP_FMT,
+                IP_ARGS(sin->sin_addr.s_addr));
     }
     if (netdev->valid_remote_port)
         smap_add_format(args, "remote_port", "%"PRIu16,
-		ss_get_port(&netdev->remote_addr));
+                ss_get_port(&netdev->remote_addr));
     ovs_mutex_unlock(&netdev->mutex);
     return 0;
 }
@@ -195,14 +196,14 @@ netdev_tunnel_connect(struct netdev_tunnel *dev)
         return 0;
     if (connect(dev->sockfd, (struct sockaddr*) sin, sizeof(*sin)) < 0) {
         VLOG_DBG("%s: connect returned %s", netdev_get_name(&dev->up),
-            ovs_strerror(errno));
+                ovs_strerror(errno));
         return errno;
     }
     dev->connected = true;
     netdev_tunnel_update_seq(dev);
     VLOG_DBG("%s: connected to (%s, %d)", netdev_get_name(&dev->up),
-        inet_ntop(AF_INET, &sin->sin_addr.s_addr, buf, 1024),
-        ss_get_port(&dev->remote_addr));
+            inet_ntop(AF_INET, &sin->sin_addr.s_addr, buf, 1024),
+            ss_get_port(&dev->remote_addr));
     return 0;
 }
 
@@ -219,39 +220,39 @@ netdev_tunnel_set_config(struct netdev *dev_, const struct smap *args)
     VLOG_DBG("tunnel_set_config(%s)", netdev_get_name(dev_));
     SMAP_FOR_EACH(node, args) {
         VLOG_DBG("arg: %s->%s", node->name, (char*)node->data);
-    	if (!strcmp(node->name, "remote_ip")) {
-	    struct in_addr addr;
-	    if (lookup_ip(node->data, &addr)) {
-		VLOG_WARN("%s: bad 'remote_ip'", node->name);
-	    } else {
-        sin->sin_family = AF_INET;
-		sin->sin_addr = addr;
-		netdev->valid_remote_ip = true;
-	    }
-	} else if (!strcmp(node->name, "remote_port")) {
-	    sin->sin_port = htons(atoi(node->data));
-	    netdev->valid_remote_port = true;
-	} else {
-	    VLOG_WARN("%s: unknown argument '%s'", 
-	    	netdev_get_name(dev_), node->name);
-	}
+        if (!strcmp(node->name, "remote_ip")) {
+            struct in_addr addr;
+            if (lookup_ip(node->data, &addr)) {
+                VLOG_WARN("%s: bad 'remote_ip'", node->name);
+            } else {
+                sin->sin_family = AF_INET;
+                sin->sin_addr = addr;
+                netdev->valid_remote_ip = true;
+            }
+        } else if (!strcmp(node->name, "remote_port")) {
+            sin->sin_port = htons(atoi(node->data));
+            netdev->valid_remote_port = true;
+        } else {
+            VLOG_WARN("%s: unknown argument '%s'", 
+                    netdev_get_name(dev_), node->name);
+        }
     }
     error = netdev_tunnel_connect(netdev);        
     ovs_mutex_unlock(&netdev->mutex);
     return error;
 }
 
-static struct netdev_rx *
-netdev_tunnel_rx_alloc(void)
+static struct netdev_rxq *
+netdev_tunnel_rxq_alloc(void)
 {
-    struct netdev_rx_tunnel *rx = xzalloc(sizeof *rx);
+    struct netdev_rxq_tunnel *rx = xzalloc(sizeof *rx);
     return &rx->up;
 }
 
 static int
-netdev_tunnel_rx_construct(struct netdev_rx *rx_)
+netdev_tunnel_rxq_construct(struct netdev_rxq *rx_)
 {   
-    struct netdev_rx_tunnel *rx = netdev_rx_tunnel_cast(rx_);
+    struct netdev_rxq_tunnel *rx = netdev_rxq_tunnel_cast(rx_);
     struct netdev *netdev_ = rx->up.netdev;
     struct netdev_tunnel *netdev = netdev_tunnel_cast(netdev_);
 
@@ -262,94 +263,125 @@ netdev_tunnel_rx_construct(struct netdev_rx *rx_)
 }
 
 static void
-netdev_tunnel_rx_destruct(struct netdev_rx *rx_ OVS_UNUSED)
+netdev_tunnel_rxq_destruct(struct netdev_rxq *rx_ OVS_UNUSED)
 {
 }
 
 static void
-netdev_tunnel_rx_dealloc(struct netdev_rx *rx_)
+netdev_tunnel_rxq_dealloc(struct netdev_rxq *rx_)
 {
-    struct netdev_rx_tunnel *rx = netdev_rx_tunnel_cast(rx_);
+    struct netdev_rxq_tunnel *rx = netdev_rxq_tunnel_cast(rx_);
 
     free(rx);
 }
 
 static int
-netdev_tunnel_rx_recv(struct netdev_rx *rx_, struct ofpbuf *buffer)
+netdev_tunnel_rxq_recv(struct netdev_rxq *rx_, struct ofpbuf **packet, int *c)
 {
-    size_t size = ofpbuf_tailroom(buffer);
-    struct netdev_rx_tunnel *rx = netdev_rx_tunnel_cast(rx_);
+    struct netdev_rxq_tunnel *rx = netdev_rxq_tunnel_cast(rx_);
     struct netdev_tunnel *netdev =
         netdev_tunnel_cast(rx_->netdev);
+    struct ofpbuf *buffer = NULL;
+    size_t size;
+    int error = 0;
+
     if (!netdev->connected)
         return EAGAIN;
+    buffer = ofpbuf_new_with_headroom(VLAN_ETH_HEADER_LEN + ETH_PAYLOAD_MAX,
+        DP_NETDEV_HEADROOM);
+    size = ofpbuf_tailroom(buffer);
+
     for (;;) {
         ssize_t retval;
         retval = recv(rx->fd, buffer->data, size, MSG_TRUNC);
-	    VLOG_DBG("%s: recv(%"PRIxPTR", %"PRIuSIZE", MSG_TRUNC) = %"PRIdSIZE,
-		    netdev_rx_get_name(rx_), (uintptr_t)buffer->data, size, retval);
+        VLOG_DBG("%s: recv(%"PRIxPTR", %"PRIuSIZE", MSG_TRUNC) = %"PRIdSIZE,
+                netdev_rxq_get_name(rx_), (uintptr_t)buffer->data, size, retval);
         if (retval >= 0) {
-	        netdev->stats.rx_packets++;
-	        netdev->stats.rx_bytes += retval;
+            netdev->stats.rx_packets++;
+            netdev->stats.rx_bytes += retval;
             if (retval <= size) {
                 buffer->size += retval;
-	    	    return 0;
+                goto out;
             } else {
                 netdev->stats.rx_errors++;
                 netdev->stats.rx_length_errors++;
-                return EMSGSIZE;
+                error = EMSGSIZE;
+                goto out;
             }
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error receiveing Ethernet packet on %s: %s",
-                    netdev_rx_get_name(rx_), ovs_strerror(errno));
-	            netdev->stats.rx_errors++;
+                        netdev_rxq_get_name(rx_), ovs_strerror(errno));
+                netdev->stats.rx_errors++;
             }
-            return errno;
+            error = errno;
+            goto out;
         }
     }
+out:
+    if (error) {
+        ofpbuf_delete(buffer);
+    } else {
+        dp_packet_pad(buffer);
+        packet[0] = buffer;
+        *c = 1;
+    }
+
+    return error;
 }
 
 static void
-netdev_tunnel_rx_wait(struct netdev_rx *rx_)
+netdev_tunnel_rxq_wait(struct netdev_rxq *rx_)
 {
-    struct netdev_rx_tunnel *rx = 
-    	netdev_rx_tunnel_cast(rx_);
+    struct netdev_rxq_tunnel *rx = 
+        netdev_rxq_tunnel_cast(rx_);
     if (rx->fd >= 0) {
         poll_fd_wait(rx->fd, POLLIN);
     }
 }
 
 static int
-netdev_tunnel_send(struct netdev *netdev_, const void *buffer, size_t size)
+netdev_tunnel_send(struct netdev *netdev_, struct ofpbuf *pkt, bool may_steal)
 {
+    const void *buffer = pkt->data;
+    size_t size = pkt->size;
     struct netdev_tunnel *dev = 
-    	netdev_tunnel_cast(netdev_);
-    if (!dev->connected)
-        return EAGAIN;
+        netdev_tunnel_cast(netdev_);
+    int error = 0;
+    if (!dev->connected) {
+        error = EAGAIN;
+        goto out;
+    }
     for (;;) {
         ssize_t retval;
         retval = send(dev->sockfd, buffer, size, 0);
-    	VLOG_DBG("%s: send(%"PRIxPTR", %"PRIuSIZE") = %"PRIdSIZE,
-	         netdev_get_name(netdev_), (uintptr_t)buffer, size, retval);
+        VLOG_DBG("%s: send(%"PRIxPTR", %"PRIuSIZE") = %"PRIdSIZE,
+                netdev_get_name(netdev_), (uintptr_t)buffer, size, retval);
         if (retval >= 0) {
-	    dev->stats.tx_packets++;
-	    dev->stats.tx_bytes += retval;
-	    if (retval != size) {
-	        VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%"PRIdSIZE" bytes of "
-		             "%"PRIuSIZE") on %s", retval, size, netdev_get_name(netdev_));
-		dev->stats.tx_errors++;
-	    }
-            return 0;
+            dev->stats.tx_packets++;
+            dev->stats.tx_bytes += retval;
+            if (retval != size) {
+                VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%"PRIdSIZE" bytes of "
+                        "%"PRIuSIZE") on %s", retval, size, netdev_get_name(netdev_));
+                dev->stats.tx_errors++;
+            }
+            goto out;
         } else if (errno != EINTR) {
             if (errno != EAGAIN) {
                 VLOG_WARN_RL(&rl, "error sending Ethernet packet on %s: %s",
-                    netdev_get_name(netdev_), ovs_strerror(errno));
-		dev->stats.tx_errors++;
+                        netdev_get_name(netdev_), ovs_strerror(errno));
+                dev->stats.tx_errors++;
             }
-            return errno;
+            error = errno;
+            goto out;
         }
     }
+out:
+    if (may_steal) {
+        ofpbuf_delete(pkt);
+    }
+
+    return error;
 }
 
 static void
@@ -362,25 +394,25 @@ netdev_tunnel_send_wait(struct netdev *netdev_)
 }
 
 static int
-netdev_tunnel_rx_drain(struct netdev_rx *rx_)
+netdev_tunnel_rxq_drain(struct netdev_rxq *rx_)
 {
     struct netdev_tunnel *netdev =
         netdev_tunnel_cast(rx_->netdev);
-    struct netdev_rx_tunnel *rx = 
-    	netdev_rx_tunnel_cast(rx_);
+    struct netdev_rxq_tunnel *rx = 
+        netdev_rxq_tunnel_cast(rx_);
     char buffer[128];
     int error;
 
     if (!netdev->connected)
-    	return 0;
+        return 0;
     for (;;) {
-    	error = recv(rx->fd, buffer, 128, MSG_TRUNC);
-	if (error) {
+        error = recv(rx->fd, buffer, 128, MSG_TRUNC);
+        if (error) {
             if (error == -EAGAIN)
-	        break;
+                break;
             else if (error != -EMSGSIZE)
-	        return error;
-	}
+                return error;
+        }
     }
     return 0;
 }
@@ -620,11 +652,11 @@ const struct netdev_class netdev_tunnel_class = {
 
     netdev_tunnel_update_flags,
 
-    netdev_tunnel_rx_alloc,
-    netdev_tunnel_rx_construct,
-    netdev_tunnel_rx_destruct,
-    netdev_tunnel_rx_dealloc,
-    netdev_tunnel_rx_recv,
-    netdev_tunnel_rx_wait,
-    netdev_tunnel_rx_drain,
+    netdev_tunnel_rxq_alloc,
+    netdev_tunnel_rxq_construct,
+    netdev_tunnel_rxq_destruct,
+    netdev_tunnel_rxq_dealloc,
+    netdev_tunnel_rxq_recv,
+    netdev_tunnel_rxq_wait,
+    netdev_tunnel_rxq_drain,
 };

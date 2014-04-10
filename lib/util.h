@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013, 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #ifndef UTIL_H
 #define UTIL_H 1
 
+#include <inttypes.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -111,6 +112,9 @@ extern const char *program_name;
 /* Returns X rounded up to the nearest multiple of Y. */
 #define ROUND_UP(X, Y) (DIV_ROUND_UP(X, Y) * (Y))
 
+/* Returns the least number that, when added to X, yields a multiple of Y. */
+#define PAD_SIZE(X, Y) (ROUND_UP(X, Y) - (X))
+
 /* Returns X rounded down to the nearest multiple of Y. */
 #define ROUND_DOWN(X, Y) ((X) / (Y) * (Y))
 
@@ -141,6 +145,11 @@ is_pow2(uintmax_t x)
 #define RDP2_3(X) (RDP2_4(X) | (RDP2_4(X) >> 4))
 #define RDP2_4(X) (RDP2_5(X) | (RDP2_5(X) >> 2))
 #define RDP2_5(X) (      (X) | (      (X) >> 1))
+
+/* This system's cache line size, in bytes.
+ * Being wrong hurts performance but not correctness. */
+#define CACHE_LINE_SIZE 64
+BUILD_ASSERT_DECL(IS_POW2(CACHE_LINE_SIZE));
 
 #ifndef MIN
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
@@ -255,6 +264,10 @@ char *xstrdup(const char *) MALLOC_LIKE;
 char *xasprintf(const char *format, ...) PRINTF_FORMAT(1, 2) MALLOC_LIKE;
 char *xvasprintf(const char *format, va_list) PRINTF_FORMAT(1, 0) MALLOC_LIKE;
 void *x2nrealloc(void *p, size_t *n, size_t s);
+
+void *xmalloc_cacheline(size_t) MALLOC_LIKE;
+void *xzalloc_cacheline(size_t) MALLOC_LIKE;
+void free_cacheline(void *);
 
 void ovs_strlcpy(char *dst, const char *src, size_t size);
 void ovs_strzcpy(char *dst, const char *src, size_t size);
@@ -489,10 +502,12 @@ void bitwise_put(uint64_t value,
 uint64_t bitwise_get(const void *src, unsigned int src_len,
                      unsigned int src_ofs, unsigned int n_bits);
 
+void xsleep(unsigned int seconds);
 #ifdef _WIN32
 
 char *ovs_format_message(int error);
 char *ovs_lasterror_to_string(void);
+int ftruncate(int fd, off_t length);
 #endif
 
 #ifdef  __cplusplus

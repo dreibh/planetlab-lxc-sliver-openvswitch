@@ -94,6 +94,7 @@ check-pycov: all tests/atconfig tests/atlocal $(TESTSUITE) clean-pycov
 valgrind_wrappers = \
 	tests/valgrind/ovs-appctl \
 	tests/valgrind/ovs-ofctl \
+	tests/valgrind/ovstest \
 	tests/valgrind/ovs-vsctl \
 	tests/valgrind/ovs-vswitchd \
 	tests/valgrind/ovsdb-client \
@@ -108,7 +109,6 @@ valgrind_wrappers = \
 	tests/valgrind/test-file_name \
 	tests/valgrind/test-flows \
 	tests/valgrind/test-hash \
-	tests/valgrind/test-heap \
 	tests/valgrind/test-hindex \
 	tests/valgrind/test-hmap \
 	tests/valgrind/test-json \
@@ -219,10 +219,6 @@ noinst_PROGRAMS += tests/test-hash
 tests_test_hash_SOURCES = tests/test-hash.c
 tests_test_hash_LDADD = lib/libopenvswitch.la
 
-noinst_PROGRAMS += tests/test-heap
-tests_test_heap_SOURCES = tests/test-heap.c
-tests_test_heap_LDADD = lib/libopenvswitch.la
-
 noinst_PROGRAMS += tests/test-hindex
 tests_test_hindex_SOURCES = tests/test-hindex.c
 tests_test_hindex_LDADD = lib/libopenvswitch.la
@@ -296,6 +292,12 @@ tests/idltest.ovsidl: $(IDLTEST_IDL_FILES)
 	mv $@.tmp $@
 
 tests/idltest.c: tests/idltest.h
+
+noinst_PROGRAMS += tests/ovstest
+tests_ovstest_SOURCES = tests/ovstest.c \
+	 tests/ovstest.h \
+	 tests/test-heap.c
+tests_ovstest_LDADD = lib/libopenvswitch.la
 
 noinst_PROGRAMS += tests/test-reconnect
 tests_test_reconnect_SOURCES = tests/test-reconnect.c

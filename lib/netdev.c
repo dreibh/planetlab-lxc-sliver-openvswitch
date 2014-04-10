@@ -31,6 +31,7 @@
 #include "fatal-signal.h"
 #include "hash.h"
 #include "list.h"
+#include "netdev-dpdk.h"
 #include "netdev-provider.h"
 #include "netdev-vport.h"
 #include "ofpbuf.h"
@@ -90,6 +91,18 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 static void restore_all_flags(void *aux OVS_UNUSED);
 void update_device_args(struct netdev *, const struct shash *args);
 
+int
+netdev_n_rxq(const struct netdev *netdev)
+{
+    return netdev->n_rxq;
+}
+
+bool
+netdev_is_pmd(const struct netdev *netdev)
+{
+    return !strcmp(netdev->netdev_class->type, "dpdk");
+}
+
 static void
 netdev_initialize(void)
     OVS_EXCLUDED(netdev_class_mutex, netdev_mutex)
@@ -114,6 +127,7 @@ netdev_initialize(void)
 #endif
         netdev_register_provider(&netdev_tunnel_class);
         netdev_register_provider(&netdev_pltap_class);
+        netdev_dpdk_register();
 
         ovsthread_once_done(&once);
     }
@@ -227,7 +241,6 @@ netdev_unregister_provider(const char *type)
         atomic_read(&rc->ref_cnt, &ref_cnt);
         if (!ref_cnt) {
             hmap_remove(&netdev_classes, &rc->hmap_node);
-            atomic_destroy(&rc->ref_cnt);
             free(rc);
             error = 0;
         } else {
@@ -330,6 +343,13 @@ netdev_open(const char *name, const char *type, struct netdev **netdevp)
                 netdev->netdev_class = rc->class;
                 netdev->name = xstrdup(name);
                 netdev->node = shash_add(&netdev_shash, name, netdev);
+
+                /* By default enable one rx queue per netdev. */
+                if (netdev->netdev_class->rxq_alloc) {
+                    netdev->n_rxq = 1;
+                } else {
+                    netdev->n_rxq = 0;
+                }
                 list_init(&netdev->saved_flags_list);
 
                 error = rc->class->construct(netdev);
@@ -503,24 +523,25 @@ netdev_parse_name(const char *netdev_name_, char **name, char **type)
     }
 }
 
-/* Attempts to open a netdev_rx handle for obtaining packets received on
- * 'netdev'.  On success, returns 0 and stores a nonnull 'netdev_rx *' into
+/* Attempts to open a netdev_rxq handle for obtaining packets received on
+ * 'netdev'.  On success, returns 0 and stores a nonnull 'netdev_rxq *' into
  * '*rxp'.  On failure, returns a positive errno value and stores NULL into
  * '*rxp'.
  *
  * Some kinds of network devices might not support receiving packets.  This
  * function returns EOPNOTSUPP in that case.*/
 int
-netdev_rx_open(struct netdev *netdev, struct netdev_rx **rxp)
+netdev_rxq_open(struct netdev *netdev, struct netdev_rxq **rxp, int id)
     OVS_EXCLUDED(netdev_mutex)
 {
     int error;
 
-    if (netdev->netdev_class->rx_alloc) {
-        struct netdev_rx *rx = netdev->netdev_class->rx_alloc();
+    if (netdev->netdev_class->rxq_alloc && id < netdev->n_rxq) {
+        struct netdev_rxq *rx = netdev->netdev_class->rxq_alloc();
         if (rx) {
             rx->netdev = netdev;
-            error = netdev->netdev_class->rx_construct(rx);
+            rx->queue_id = id;
+            error = netdev->netdev_class->rxq_construct(rx);
             if (!error) {
                 ovs_mutex_lock(&netdev_mutex);
                 netdev->ref_cnt++;
@@ -529,7 +550,7 @@ netdev_rx_open(struct netdev *netdev, struct netdev_rx **rxp)
                 *rxp = rx;
                 return 0;
             }
-            netdev->netdev_class->rx_dealloc(rx);
+            netdev->netdev_class->rxq_dealloc(rx);
         } else {
             error = ENOMEM;
         }
@@ -543,32 +564,23 @@ netdev_rx_open(struct netdev *netdev, struct netdev_rx **rxp)
 
 /* Closes 'rx'. */
 void
-netdev_rx_close(struct netdev_rx *rx)
+netdev_rxq_close(struct netdev_rxq *rx)
     OVS_EXCLUDED(netdev_mutex)
 {
     if (rx) {
         struct netdev *netdev = rx->netdev;
-        netdev->netdev_class->rx_destruct(rx);
-        netdev->netdev_class->rx_dealloc(rx);
+        netdev->netdev_class->rxq_destruct(rx);
+        netdev->netdev_class->rxq_dealloc(rx);
         netdev_close(netdev);
     }
 }
 
-/* Attempts to receive a packet from 'rx' into the tailroom of 'buffer', which
- * must initially be empty.  If successful, returns 0 and increments
- * 'buffer->size' by the number of bytes in the received packet, otherwise a
- * positive errno value.
+/* Attempts to receive batch of packets from 'rx'.
  *
  * Returns EAGAIN immediately if no packet is ready to be received.
  *
  * Returns EMSGSIZE, and discards the packet, if the received packet is longer
  * than 'ofpbuf_tailroom(buffer)'.
- *
- * Implementations may make use of VLAN_HEADER_LEN bytes of tailroom to
- * add a VLAN header which is obtained out-of-band to the packet. If
- * this occurs then VLAN_HEADER_LEN bytes of tailroom will no longer be
- * available for the packet, otherwise it may be used for the packet
- * itself.
  *
  * It is advised that the tailroom of 'buffer' should be
  * VLAN_HEADER_LEN bytes longer than the MTU to allow space for an
@@ -578,39 +590,31 @@ netdev_rx_close(struct netdev_rx *rx)
  * This function may be set to null if it would always return EOPNOTSUPP
  * anyhow. */
 int
-netdev_rx_recv(struct netdev_rx *rx, struct ofpbuf *buffer)
+netdev_rxq_recv(struct netdev_rxq *rx, struct ofpbuf **buffers, int *cnt)
 {
     int retval;
 
-    ovs_assert(buffer->size == 0);
-    ovs_assert(ofpbuf_tailroom(buffer) >= ETH_TOTAL_MIN);
-
-    retval = rx->netdev->netdev_class->rx_recv(rx, buffer);
+    retval = rx->netdev->netdev_class->rxq_recv(rx, buffers, cnt);
     if (!retval) {
         COVERAGE_INC(netdev_received);
-        if (buffer->size < ETH_TOTAL_MIN) {
-            ofpbuf_put_zeros(buffer, ETH_TOTAL_MIN - buffer->size);
-        }
-        return 0;
-    } else {
-        return retval;
     }
+    return retval;
 }
 
 /* Arranges for poll_block() to wake up when a packet is ready to be received
  * on 'rx'. */
 void
-netdev_rx_wait(struct netdev_rx *rx)
+netdev_rxq_wait(struct netdev_rxq *rx)
 {
-    rx->netdev->netdev_class->rx_wait(rx);
+    rx->netdev->netdev_class->rxq_wait(rx);
 }
 
 /* Discards any packets ready to be received on 'rx'. */
 int
-netdev_rx_drain(struct netdev_rx *rx)
+netdev_rxq_drain(struct netdev_rxq *rx)
 {
-    return (rx->netdev->netdev_class->rx_drain
-            ? rx->netdev->netdev_class->rx_drain(rx)
+    return (rx->netdev->netdev_class->rxq_drain
+            ? rx->netdev->netdev_class->rxq_drain(rx)
             : 0);
 }
 
@@ -619,7 +623,7 @@ netdev_rx_drain(struct netdev_rx *rx)
  * immediately.  Returns EMSGSIZE if a partial packet was transmitted or if
  * the packet is too big or too small to transmit on the device.
  *
- * The caller retains ownership of 'buffer' in all cases.
+ * To retain ownership of 'buffer' caller can set may_steal to false.
  *
  * The kernel maintains a packet transmission queue, so the caller is not
  * expected to do additional queuing of packets.
@@ -627,12 +631,12 @@ netdev_rx_drain(struct netdev_rx *rx)
  * Some network devices may not implement support for this function.  In such
  * cases this function will always return EOPNOTSUPP. */
 int
-netdev_send(struct netdev *netdev, const struct ofpbuf *buffer)
+netdev_send(struct netdev *netdev, struct ofpbuf *buffer, bool may_steal)
 {
     int error;
 
     error = (netdev->netdev_class->send
-             ? netdev->netdev_class->send(netdev, buffer->data, buffer->size)
+             ? netdev->netdev_class->send(netdev, buffer, may_steal)
              : EOPNOTSUPP);
     if (!error) {
         COVERAGE_INC(netdev_sent);
@@ -1608,16 +1612,16 @@ netdev_get_type_from_name(const char *name)
 }
 
 struct netdev *
-netdev_rx_get_netdev(const struct netdev_rx *rx)
+netdev_rxq_get_netdev(const struct netdev_rxq *rx)
 {
     ovs_assert(rx->netdev->ref_cnt > 0);
     return rx->netdev;
 }
 
 const char *
-netdev_rx_get_name(const struct netdev_rx *rx)
+netdev_rxq_get_name(const struct netdev_rxq *rx)
 {
-    return netdev_get_name(netdev_rx_get_netdev(rx));
+    return netdev_get_name(netdev_rxq_get_netdev(rx));
 }
 
 static void

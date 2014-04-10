@@ -25,7 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/fcntl.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 
@@ -282,6 +282,7 @@ usage(void)
            "  show SWITCH                 show OpenFlow information\n"
            "  dump-desc SWITCH            print switch description\n"
            "  dump-tables SWITCH          print table stats\n"
+           "  dump-table-features SWITCH  print table features\n"
            "  mod-port SWITCH IFACE ACT   modify port behavior\n"
            "  mod-table SWITCH MOD        modify flow table behavior\n"
            "  get-frags SWITCH            print fragment handling behavior\n"
@@ -650,6 +651,21 @@ static void
 ofctl_dump_tables(int argc OVS_UNUSED, char *argv[])
 {
     dump_trivial_stats_transaction(argv[1], OFPRAW_OFPST_TABLE_REQUEST);
+}
+
+static void
+ofctl_dump_table_features(int argc OVS_UNUSED, char *argv[])
+{
+    struct ofpbuf *request;
+    struct vconn *vconn;
+
+    open_vconn(argv[1], &vconn);
+    request = ofputil_encode_table_features_request(vconn_get_version(vconn));
+    if (request) {
+        dump_stats_transaction(vconn, request);
+    }
+
+    vconn_close(vconn);
 }
 
 static bool
@@ -1539,6 +1555,7 @@ ofctl_monitor(int argc, char *argv[])
         case OFP11_VERSION:
         case OFP12_VERSION:
         case OFP13_VERSION:
+        case OFP14_VERSION:
             break;
         default:
             OVS_NOT_REACHED();
@@ -1946,13 +1963,13 @@ ofctl_ping(int argc, char *argv[])
         if (ofptype_pull(&type, reply)
             || type != OFPTYPE_ECHO_REPLY
             || reply->size != payload
-            || memcmp(request->l3, reply->l3, payload)) {
+            || memcmp(ofpbuf_get_l3(request), ofpbuf_get_l3(reply), payload)) {
             printf("Reply does not match request.  Request:\n");
             ofp_print(stdout, request, request->size, verbosity + 2);
             printf("Reply:\n");
             ofp_print(stdout, reply, reply->size, verbosity + 2);
         }
-        printf("%"PRIuSIZE" bytes from %s: xid=%08"PRIx32" time=%.1f ms\n",
+        printf("%"PRIu32" bytes from %s: xid=%08"PRIx32" time=%.1f ms\n",
                reply->size, argv[1], ntohl(rpy_hdr->xid),
                    (1000*(double)(end.tv_sec - start.tv_sec))
                    + (.001*(end.tv_usec - start.tv_usec)));
@@ -2964,7 +2981,7 @@ ofctl_parse_ofp10_match(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
             ovs_fatal(0, "Trailing garbage in hex data");
         }
         if (match_expout.size != sizeof(struct ofp10_match)) {
-            ovs_fatal(0, "Input is %"PRIuSIZE" bytes, expected %"PRIuSIZE,
+            ovs_fatal(0, "Input is %"PRIu32" bytes, expected %"PRIuSIZE,
                       match_expout.size, sizeof(struct ofp10_match));
         }
 
@@ -2979,7 +2996,7 @@ ofctl_parse_ofp10_match(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
             ovs_fatal(0, "Trailing garbage in hex data");
         }
         if (match_in.size != sizeof(struct ofp10_match)) {
-            ovs_fatal(0, "Input is %"PRIuSIZE" bytes, expected %"PRIuSIZE,
+            ovs_fatal(0, "Input is %"PRIu32" bytes, expected %"PRIuSIZE,
                       match_in.size, sizeof(struct ofp10_match));
         }
 
@@ -3028,7 +3045,7 @@ ofctl_parse_ofp11_match(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
             ovs_fatal(0, "Trailing garbage in hex data");
         }
         if (match_in.size != sizeof(struct ofp11_match)) {
-            ovs_fatal(0, "Input is %"PRIuSIZE" bytes, expected %"PRIuSIZE,
+            ovs_fatal(0, "Input is %"PRIu32" bytes, expected %"PRIuSIZE,
                       match_in.size, sizeof(struct ofp11_match));
         }
 
@@ -3430,6 +3447,7 @@ static const struct command all_commands[] = {
     { "snoop", 1, 1, ofctl_snoop },
     { "dump-desc", 1, 1, ofctl_dump_desc },
     { "dump-tables", 1, 1, ofctl_dump_tables },
+    { "dump-table-features", 1, 1, ofctl_dump_table_features },
     { "dump-flows", 1, 2, ofctl_dump_flows },
     { "dump-aggregate", 1, 2, ofctl_dump_aggregate },
     { "queue-stats", 1, 3, ofctl_queue_stats },

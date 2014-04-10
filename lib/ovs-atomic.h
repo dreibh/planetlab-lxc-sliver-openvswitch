@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013 Nicira, Inc.
+ * Copyright (c) 2013, 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -74,10 +74,14 @@
  *
  *     (*) Not specified by C11.
  *
+ * Atomic types may also be obtained via ATOMIC(TYPE), e.g. ATOMIC(void *).
+ * Only basic integer types and pointer types can be made atomic this way,
+ * e.g. atomic structs are not supported.
+ *
  * The atomic version of a type doesn't necessarily have the same size or
  * representation as the ordinary version; for example, atomic_int might be a
- * typedef for a struct that also includes a mutex.  The range of an atomic
- * type does match the range of the corresponding ordinary type.
+ * typedef for a struct.  The range of an atomic type does match the range of
+ * the corresponding ordinary type.
  *
  * C11 says that one may use the _Atomic keyword in place of the typedef name,
  * e.g. "_Atomic int" instead of "atomic_int".  This library doesn't support
@@ -97,15 +101,6 @@
  *     static atomic_int ai;
  * ...
  *     atomic_init(&ai, 123);
- *
- * C11 does not hav an destruction function for atomic types, but some
- * implementations of the OVS atomics do need them.  Thus, the following
- * function is provided for destroying non-static atomic objects (A is any
- * atomic type):
- *
- *     void atomic_destroy(A *object);
- *
- *         Destroys 'object'.
  *
  *
  * Barriers
@@ -220,19 +215,7 @@
  * ATOMIC_FLAG_INIT is an initializer for atomic_flag.  The initial state is
  * "clear".
  *
- * C11 does not have an initialization or destruction function for atomic_flag,
- * because implementations should not need one (one may simply
- * atomic_flag_clear() an uninitialized atomic_flag), but some implementations
- * of the OVS atomics do need them.  Thus, the following two functions are
- * provided for initializing and destroying non-static atomic_flags:
- *
- *     void atomic_flag_init(volatile atomic_flag *object);
- *
- *         Initializes 'object'.  The initial state is "clear".
- *
- *     void atomic_flag_destroy(volatile atomic_flag *object);
- *
- *         Destroys 'object'.
+ * An atomic_flag may also be initialized at runtime with atomic_flag_clear().
  *
  *
  * Operations
@@ -280,6 +263,46 @@
     #endif
 #undef IN_OVS_ATOMIC_H
 
+#ifndef OMIT_STANDARD_ATOMIC_TYPES
+typedef ATOMIC(bool)               atomic_bool;
+
+typedef ATOMIC(char)               atomic_char;
+typedef ATOMIC(signed char)        atomic_schar;
+typedef ATOMIC(unsigned char)      atomic_uchar;
+
+typedef ATOMIC(short)              atomic_short;
+typedef ATOMIC(unsigned short)     atomic_ushort;
+
+typedef ATOMIC(int)                atomic_int;
+typedef ATOMIC(unsigned int)       atomic_uint;
+
+typedef ATOMIC(long)               atomic_long;
+typedef ATOMIC(unsigned long)      atomic_ulong;
+
+typedef ATOMIC(long long)          atomic_llong;
+typedef ATOMIC(unsigned long long) atomic_ullong;
+
+typedef ATOMIC(size_t)             atomic_size_t;
+typedef ATOMIC(ptrdiff_t)          atomic_ptrdiff_t;
+
+typedef ATOMIC(intmax_t)           atomic_intmax_t;
+typedef ATOMIC(uintmax_t)          atomic_uintmax_t;
+
+typedef ATOMIC(intptr_t)           atomic_intptr_t;
+typedef ATOMIC(uintptr_t)          atomic_uintptr_t;
+#endif  /* !OMIT_STANDARD_ATOMIC_TYPES */
+
+/* Nonstandard atomic types. */
+typedef ATOMIC(uint8_t)   atomic_uint8_t;
+typedef ATOMIC(uint16_t)  atomic_uint16_t;
+typedef ATOMIC(uint32_t)  atomic_uint32_t;
+typedef ATOMIC(uint64_t)  atomic_uint64_t;
+
+typedef ATOMIC(int8_t)    atomic_int8_t;
+typedef ATOMIC(int16_t)   atomic_int16_t;
+typedef ATOMIC(int32_t)   atomic_int32_t;
+typedef ATOMIC(int64_t)   atomic_int64_t;
+
 /* Reference count. */
 struct ovs_refcount {
     atomic_uint count;
@@ -290,13 +313,6 @@ static inline void
 ovs_refcount_init(struct ovs_refcount *refcount)
 {
     atomic_init(&refcount->count, 1);
-}
-
-/* Destroys 'refcount'. */
-static inline void
-ovs_refcount_destroy(struct ovs_refcount *refcount)
-{
-    atomic_destroy(&refcount->count);
 }
 
 /* Increments 'refcount'. */

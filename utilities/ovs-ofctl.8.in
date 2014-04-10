@@ -58,6 +58,10 @@ information on its flow tables and ports.
 \fBdump\-tables \fIswitch\fR
 Prints to the console statistics for each of the flow tables used by
 \fIswitch\fR.
+.TP
+\fBdump\-table\-features \fIswitch\fR
+Prints to the console features for each of the flow tables used by
+\fIswitch\fR.
 .
 .TP
 \fBdump\-ports \fIswitch\fR [\fInetdev\fR]
@@ -949,7 +953,7 @@ command, above, for more details.
 .IP \fBarp_spa=\fIip\fR[\fB/\fInetmask\fR]
 .IQ \fBarp_tpa=\fIip\fR[\fB/\fInetmask\fR]
 When \fBdl_type\fR specifies either ARP or RARP, \fBarp_spa\fR and
-\fBarp_tha\fR match the source and target IPv4 address, respectively.
+\fBarp_tpa\fR match the source and target IPv4 address, respectively.
 An address may be specified as an IP address or host name
 (e.g. \fB192.168.1.1\fR or \fBwww.example.com\fR).  The optional
 \fInetmask\fR allows restricting a match to an IPv4 address prefix.
@@ -1975,6 +1979,11 @@ format.
 .IQ "\fBOXM-OpenFlow13\fR"
 These are the standard OXM (OpenFlow Extensible Match) flow format in
 OpenFlow 1.2 and 1.3, respectively.
+.IP "\fBOXM-OpenFlow14\fR"
+The standard OXM (OpenFlow Extensible Match) flow format in OpenFlow
+1.4.  OpenFlow 1.4 is not yet well supported; in particular, the
+implementation is unsafe, such that sending an unsupported message in
+OpenFlow 1.4 to \fBovs\-vswitchd\fR can cause it to crash.
 .RE
 .
 .IP
@@ -1982,13 +1991,15 @@ OpenFlow 1.2 and 1.3, respectively.
 collections of flow formats:
 .RS
 .IP "\fBany\fR"
-Any supported flow format.
+Any supported flow format except \fBOXM-OpenFlow14\fR, which is not
+yet well supported (see above).
 .IP "\fBOpenFlow10\fR"
 \fBOpenFlow10\-table_id\fR or \fBOpenFlow10+table_id\fR.
 .IP "\fBNXM\fR"
 \fBNXM\-table_id\fR or \fBNXM+table_id\fR.
 .IP "\fBOXM\fR"
-\fBOXM-OpenFlow12\fR or \fBOXM-OpenFlow13\fR.
+\fBOXM-OpenFlow12\fR or \fBOXM-OpenFlow13\fR.  \fBOXM-OpenFlow14\fR is
+not included because it is not yet well supported (see above).
 .RE
 .
 .IP
