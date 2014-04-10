@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
+ * Copyright (c) 2009, 2010, 2011, 2012, 2013, 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,12 +28,13 @@
 #include "pcap-file.h"
 #include "util.h"
 #include "vlog.h"
+#include "ovstest.h"
 
 #undef NDEBUG
 #include <assert.h>
 
-int
-main(int argc OVS_UNUSED, char *argv[])
+static void
+test_flows_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 {
     struct ofp10_match expected_match;
     FILE *flows, *pcap;
@@ -79,8 +80,8 @@ main(int argc OVS_UNUSED, char *argv[])
             errors++;
             printf("mismatch on packet #%d (1-based).\n", n);
             printf("Packet:\n");
-            ofp_print_packet(stdout, packet->data, packet->size);
-            ovs_hex_dump(stdout, packet->data, packet->size, 0, true);
+            ofp_print_packet(stdout, ofpbuf_data(packet), ofpbuf_size(packet));
+            ovs_hex_dump(stdout, ofpbuf_data(packet), ofpbuf_size(packet), 0, true);
             match_print(&match);
             printf("Expected flow:\n%s\n", exp_s);
             printf("Actually extracted flow:\n%s\n", got_s);
@@ -94,6 +95,7 @@ main(int argc OVS_UNUSED, char *argv[])
         ofpbuf_delete(packet);
     }
     printf("checked %d packets, %d errors\n", n, errors);
-    return errors != 0;
+    exit(errors != 0);
 }
 
+OVSTEST_REGISTER("test-flows", test_flows_main);

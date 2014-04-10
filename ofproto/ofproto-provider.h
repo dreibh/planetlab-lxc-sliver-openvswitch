@@ -205,7 +205,8 @@ void ofproto_port_set_state(struct ofport *, enum ofputil_port_state);
  */
 enum oftable_flags {
     OFTABLE_HIDDEN = 1 << 0,   /* Hide from most OpenFlow operations. */
-    OFTABLE_READONLY = 1 << 1  /* Don't allow OpenFlow to change this table. */
+    OFTABLE_READONLY = 1 << 1  /* Don't allow OpenFlow controller to change
+                                  this table. */
 };
 
 /* A flow table within a "struct ofproto".
@@ -262,7 +263,7 @@ struct oftable {
     struct hmap eviction_groups_by_id;
     struct heap eviction_groups_by_size;
 
-    /* Table config: contains enum ofp_table_config; accessed atomically. */
+    /* Table config: contains enum ofproto_table_config; accessed atomically. */
     atomic_uint config;
 };
 

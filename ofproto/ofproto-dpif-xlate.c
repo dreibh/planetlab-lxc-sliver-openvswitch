@@ -58,6 +58,8 @@ VLOG_DEFINE_THIS_MODULE(ofproto_dpif_xlate);
 /* Maximum depth of flow table recursion (due to resubmit actions) in a
  * flow translation. */
 #define MAX_RESUBMIT_RECURSION 64
+#define MAX_INTERNAL_RESUBMITS 1   /* Max resbmits allowed using rules in
+                                      internal table. */
 
 /* Maximum number of resubmit actions in a flow translation, whether they are
  * recursive or not. */
@@ -88,6 +90,9 @@ struct xbridge {
     enum ofp_config_flags frag;   /* Fragmentation handling. */
     bool has_in_band;             /* Bridge has in band control? */
     bool forward_bpdu;            /* Bridge forwards STP BPDUs? */
+
+    /* True if the datapath supports recirculation. */
+    bool enable_recirc;
 
     /* True if the datapath supports variable-length
      * OVS_USERSPACE_ATTR_USERDATA in OVS_ACTION_ATTR_USERSPACE actions.
@@ -226,8 +231,8 @@ static void do_xlate_actions(const struct ofpact *, size_t ofpacts_len,
                              struct xlate_ctx *);
 static void xlate_actions__(struct xlate_in *, struct xlate_out *)
     OVS_REQ_RDLOCK(xlate_rwlock);
-    static void xlate_normal(struct xlate_ctx *);
-    static void xlate_report(struct xlate_ctx *, const char *);
+static void xlate_normal(struct xlate_ctx *);
+static void xlate_report(struct xlate_ctx *, const char *);
 static void xlate_table_action(struct xlate_ctx *, ofp_port_t in_port,
                                uint8_t table_id, bool may_packet_in,
                                bool honor_table_miss);
@@ -257,6 +262,7 @@ xlate_ofproto_set(struct ofproto_dpif *ofproto, const char *name,
                   const struct dpif_ipfix *ipfix,
                   const struct netflow *netflow, enum ofp_config_flags frag,
                   bool forward_bpdu, bool has_in_band,
+                  bool enable_recirc,
                   bool variable_length_userdata,
                   size_t max_mpls_depth)
 {
@@ -310,6 +316,7 @@ xlate_ofproto_set(struct ofproto_dpif *ofproto, const char *name,
     xbridge->frag = frag;
     xbridge->miss_rule = miss_rule;
     xbridge->no_packet_in_rule = no_packet_in_rule;
+    xbridge->enable_recirc = enable_recirc;
     xbridge->variable_length_userdata = variable_length_userdata;
     xbridge->max_mpls_depth = max_mpls_depth;
 }
@@ -703,7 +710,7 @@ stp_process_packet(const struct xport *xport, const struct ofpbuf *packet)
 {
     struct stp_port *sp = xport_get_stp_port(xport);
     struct ofpbuf payload = *packet;
-    struct eth_header *eth = payload.data;
+    struct eth_header *eth = ofpbuf_data(&payload);
 
     /* Sink packets on ports that have STP disabled when the bridge has
      * STP enabled. */
@@ -712,12 +719,12 @@ stp_process_packet(const struct xport *xport, const struct ofpbuf *packet)
     }
 
     /* Trim off padding on payload. */
-    if (payload.size > ntohs(eth->eth_type) + ETH_HEADER_LEN) {
-        payload.size = ntohs(eth->eth_type) + ETH_HEADER_LEN;
+    if (ofpbuf_size(&payload) > ntohs(eth->eth_type) + ETH_HEADER_LEN) {
+        ofpbuf_set_size(&payload, ntohs(eth->eth_type) + ETH_HEADER_LEN);
     }
 
     if (ofpbuf_try_pull(&payload, ETH_HEADER_LEN + LLC_HEADER_LEN)) {
-        stp_received_bpdu(sp, payload.data, payload.size);
+        stp_received_bpdu(sp, ofpbuf_data(&payload), ofpbuf_size(&payload));
     }
 }
 
@@ -1131,13 +1138,30 @@ output_normal(struct xlate_ctx *ctx, const struct xbundle *out_xbundle,
         /* Partially configured bundle with no slaves.  Drop the packet. */
         return;
     } else if (!out_xbundle->bond) {
+        ctx->xout->use_recirc = false;
         xport = CONTAINER_OF(list_front(&out_xbundle->xports), struct xport,
                              bundle_node);
     } else {
         struct ofport_dpif *ofport;
+        struct xlate_recirc *xr = &ctx->xout->recirc;
+        struct flow_wildcards *wc = &ctx->xout->wc;
 
-        ofport = bond_choose_output_slave(out_xbundle->bond, &ctx->xin->flow,
-                                          &ctx->xout->wc, vid);
+        if (ctx->xbridge->enable_recirc) {
+            ctx->xout->use_recirc = bond_may_recirc(
+                out_xbundle->bond, &xr->recirc_id, &xr->hash_bias);
+
+            if (ctx->xout->use_recirc) {
+                /* Only TCP mode uses recirculation. */
+                xr->hash_alg = OVS_RECIRC_HASH_ALG_L4;
+                bond_update_post_recirc_rules(out_xbundle->bond, false);
+
+                /* Recirculation does not require unmasking hash fields. */
+                wc = NULL;
+            }
+        }
+
+        ofport = bond_choose_output_slave(out_xbundle->bond,
+                                          &ctx->xin->flow, wc, vid);
         xport = xport_lookup(ofport);
 
         if (!xport) {
@@ -1742,12 +1766,12 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
                 /* Forwarding is disabled by STP.  Let OFPP_NORMAL and the
                  * learning action look at the packet, then drop it. */
                 struct flow old_base_flow = ctx->base_flow;
-                size_t old_size = ctx->xout->odp_actions.size;
+                size_t old_size = ofpbuf_size(&ctx->xout->odp_actions);
                 mirror_mask_t old_mirrors = ctx->xout->mirrors;
                 xlate_table_action(ctx, flow->in_port.ofp_port, 0, true, true);
                 ctx->xout->mirrors = old_mirrors;
                 ctx->base_flow = old_base_flow;
-                ctx->xout->odp_actions.size = old_size;
+                ofpbuf_set_size(&ctx->xout->odp_actions, old_size);
             }
         }
 
@@ -1770,7 +1794,7 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
     flow_nw_tos = flow->nw_tos;
 
     if (dscp_from_skb_priority(xport, flow->skb_priority, &dscp)) {
-        wc->masks.nw_tos |= IP_ECN_MASK;
+        wc->masks.nw_tos |= IP_DSCP_MASK;
         flow->nw_tos &= ~IP_DSCP_MASK;
         flow->nw_tos |= dscp;
     }
@@ -1817,8 +1841,20 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
         ctx->xout->slow |= commit_odp_actions(flow, &ctx->base_flow,
                                               &ctx->xout->odp_actions,
                                               &ctx->xout->wc);
-        nl_msg_put_odp_port(&ctx->xout->odp_actions, OVS_ACTION_ATTR_OUTPUT,
-                            out_port);
+
+        if (ctx->xout->use_recirc) {
+            struct ovs_action_recirc *act_recirc;
+            struct xlate_recirc *xr = &ctx->xout->recirc;
+
+            act_recirc = nl_msg_put_unspec_uninit(&ctx->xout->odp_actions,
+                               OVS_ACTION_ATTR_RECIRC, sizeof *act_recirc);
+            act_recirc->recirc_id = xr->recirc_id;
+            act_recirc->hash_alg = xr->hash_alg;
+            act_recirc->hash_bias = xr->hash_bias;
+        } else {
+            nl_msg_put_odp_port(&ctx->xout->odp_actions, OVS_ACTION_ATTR_OUTPUT,
+                                out_port);
+        }
 
         ctx->sflow_odp_port = odp_port;
         ctx->sflow_n_outputs++;
@@ -1862,14 +1898,14 @@ xlate_resubmit_resource_check(struct xlate_ctx *ctx)
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
 
-    if (ctx->recurse >= MAX_RESUBMIT_RECURSION) {
+    if (ctx->recurse >= MAX_RESUBMIT_RECURSION + MAX_INTERNAL_RESUBMITS) {
         VLOG_ERR_RL(&rl, "resubmit actions recursed over %d times",
                     MAX_RESUBMIT_RECURSION);
-    } else if (ctx->resubmits >= MAX_RESUBMITS) {
+    } else if (ctx->resubmits >= MAX_RESUBMITS + MAX_INTERNAL_RESUBMITS) {
         VLOG_ERR_RL(&rl, "over %d resubmit actions", MAX_RESUBMITS);
-    } else if (ctx->xout->odp_actions.size > UINT16_MAX) {
+    } else if (ofpbuf_size(&ctx->xout->odp_actions) > UINT16_MAX) {
         VLOG_ERR_RL(&rl, "resubmits yielded over 64 kB of actions");
-    } else if (ctx->stack.size >= 65536) {
+    } else if (ofpbuf_size(&ctx->stack) >= 65536) {
         VLOG_ERR_RL(&rl, "resubmits yielded over 64 kB of stack");
     } else {
         return true;
@@ -1924,6 +1960,11 @@ xlate_table_action(struct xlate_ctx *ctx, ofp_port_t in_port, uint8_t table_id,
         case RULE_DPIF_LOOKUP_VERDICT_DROP:
             config = OFPUTIL_PC_NO_PACKET_IN;
             break;
+        case RULE_DPIF_LOOKUP_VERDICT_DEFAULT:
+            if (!ofproto_dpif_wants_packet_in_on_miss(ctx->xbridge->ofproto)) {
+                config = OFPUTIL_PC_NO_PACKET_IN;
+            }
+            break;
         default:
             OVS_NOT_REACHED();
         }
@@ -1955,7 +1996,7 @@ xlate_group_bucket(struct xlate_ctx *ctx, const struct ofputil_bucket *bucket)
 
     ofpacts_execute_action_set(&action_list, &action_set);
     ctx->recurse++;
-    do_xlate_actions(action_list.data, action_list.size, ctx);
+    do_xlate_actions(ofpbuf_data(&action_list), ofpbuf_size(&action_list), ctx);
     ctx->recurse--;
 
     ofpbuf_uninit(&action_set);
@@ -2081,6 +2122,15 @@ xlate_ofpact_resubmit(struct xlate_ctx *ctx,
 {
     ofp_port_t in_port;
     uint8_t table_id;
+    bool may_packet_in = false;
+    bool honor_table_miss = false;
+
+    if (ctx->rule && rule_dpif_is_internal(ctx->rule)) {
+        /* Still allow missed packets to be sent to the controller
+         * if resubmitting from an internal table. */
+        may_packet_in = true;
+        honor_table_miss = true;
+    }
 
     in_port = resubmit->in_port;
     if (in_port == OFPP_IN_PORT) {
@@ -2092,7 +2142,8 @@ xlate_ofpact_resubmit(struct xlate_ctx *ctx,
         table_id = ctx->table_id;
     }
 
-    xlate_table_action(ctx, in_port, table_id, false, false);
+    xlate_table_action(ctx, in_port, table_id, may_packet_in,
+                       honor_table_miss);
 }
 
 static void
@@ -2135,11 +2186,12 @@ execute_controller_action(struct xlate_ctx *ctx, int len,
                                           &ctx->xout->odp_actions,
                                           &ctx->xout->wc);
 
-    odp_execute_actions(NULL, packet, false, &md, ctx->xout->odp_actions.data,
-                        ctx->xout->odp_actions.size, NULL);
+    odp_execute_actions(NULL, packet, false, &md,
+                        ofpbuf_data(&ctx->xout->odp_actions),
+                        ofpbuf_size(&ctx->xout->odp_actions), NULL);
 
     pin = xmalloc(sizeof *pin);
-    pin->up.packet_len = packet->size;
+    pin->up.packet_len = ofpbuf_size(packet);
     pin->up.packet = ofpbuf_steal_data(packet);
     pin->up.reason = reason;
     pin->up.table_id = ctx->table_id;
@@ -2551,7 +2603,7 @@ xlate_action_set(struct xlate_ctx *ctx)
 
     ofpbuf_use_stub(&action_list, action_list_stub, sizeof action_list_stub);
     ofpacts_execute_action_set(&action_list, &ctx->action_set);
-    do_xlate_actions(action_list.data, action_list.size, ctx);
+    do_xlate_actions(ofpbuf_data(&action_list), ofpbuf_size(&action_list), ctx);
     ofpbuf_uninit(&action_list);
 }
 
@@ -2719,15 +2771,22 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
         case OFPACT_SET_FIELD:
             set_field = ofpact_get_SET_FIELD(a);
             mf = set_field->field;
-            mf_mask_field_and_prereqs(mf, &wc->masks);
 
             /* Set field action only ever overwrites packet's outermost
              * applicable header fields.  Do nothing if no header exists. */
-            if ((mf->id != MFF_VLAN_VID || flow->vlan_tci & htons(VLAN_CFI))
-                && ((mf->id != MFF_MPLS_LABEL && mf->id != MFF_MPLS_TC)
-                    || eth_type_mpls(flow->dl_type))) {
-                mf_set_flow_value(mf, &set_field->value, flow);
+            if (mf->id == MFF_VLAN_VID) {
+                wc->masks.vlan_tci |= htons(VLAN_CFI);
+                if (!(flow->vlan_tci & htons(VLAN_CFI))) {
+                    break;
+                }
+            } else if ((mf->id == MFF_MPLS_LABEL || mf->id == MFF_MPLS_TC)
+                       /* 'dl_type' is already unwildcarded. */
+                       && !eth_type_mpls(flow->dl_type)) {
+                break;
             }
+
+            mf_mask_field_and_prereqs(mf, &wc->masks);
+            mf_set_flow_value(mf, &set_field->value, flow);
             break;
 
         case OFPACT_STACK_PUSH:
@@ -2897,8 +2956,8 @@ xlate_out_copy(struct xlate_out *dst, const struct xlate_out *src)
 
     ofpbuf_use_stub(&dst->odp_actions, dst->odp_actions_stub,
                     sizeof dst->odp_actions_stub);
-    ofpbuf_put(&dst->odp_actions, src->odp_actions.data,
-               src->odp_actions.size);
+    ofpbuf_put(&dst->odp_actions, ofpbuf_data(&src->odp_actions),
+               ofpbuf_size(&src->odp_actions));
 }
 
 static struct skb_priority_to_dscp *
@@ -2943,8 +3002,8 @@ actions_output_to_local_port(const struct xlate_ctx *ctx)
     const struct nlattr *a;
     unsigned int left;
 
-    NL_ATTR_FOR_EACH_UNSAFE (a, left, ctx->xout->odp_actions.data,
-                             ctx->xout->odp_actions.size) {
+    NL_ATTR_FOR_EACH_UNSAFE (a, left, ofpbuf_data(&ctx->xout->odp_actions),
+                             ofpbuf_size(&ctx->xout->odp_actions)) {
         if (nl_attr_type(a) == OVS_ACTION_ATTR_OUTPUT
             && nl_attr_get_odp_port(a) == local_odp_port) {
             return true;
@@ -3063,6 +3122,7 @@ xlate_actions__(struct xlate_in *xin, struct xlate_out *xout)
         ctx.rule = rule;
     }
     xout->fail_open = ctx.rule && rule_dpif_is_fail_open(ctx.rule);
+    xout->use_recirc = false;
 
     if (xin->ofpacts) {
         ofpacts = xin->ofpacts;
@@ -3131,7 +3191,7 @@ xlate_actions__(struct xlate_in *xin, struct xlate_out *xout)
 
         add_sflow_action(&ctx);
         add_ipfix_action(&ctx);
-        sample_actions_len = ctx.xout->odp_actions.size;
+        sample_actions_len = ofpbuf_size(&ctx.xout->odp_actions);
 
         if (tnl_may_send && (!in_port || may_receive(in_port, &ctx))) {
             do_xlate_actions(ofpacts, ofpacts_len, &ctx);
@@ -3139,11 +3199,11 @@ xlate_actions__(struct xlate_in *xin, struct xlate_out *xout)
             /* We've let OFPP_NORMAL and the learning action look at the
              * packet, so drop it now if forwarding is disabled. */
             if (in_port && !xport_stp_forward_state(in_port)) {
-                ctx.xout->odp_actions.size = sample_actions_len;
+                ofpbuf_set_size(&ctx.xout->odp_actions, sample_actions_len);
             }
         }
 
-        if (ctx.action_set.size) {
+        if (ofpbuf_size(&ctx.action_set)) {
             xlate_action_set(&ctx);
         }
 
@@ -3160,7 +3220,7 @@ xlate_actions__(struct xlate_in *xin, struct xlate_out *xout)
         }
     }
 
-    if (nl_attr_oversized(ctx.xout->odp_actions.size)) {
+    if (nl_attr_oversized(ofpbuf_size(&ctx.xout->odp_actions))) {
         /* These datapath actions are too big for a Netlink attribute, so we
          * can't hand them to the kernel directly.  dpif_execute() can execute
          * them one by one with help, so just mark the result as SLOW_ACTION to

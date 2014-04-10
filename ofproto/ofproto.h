@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
+ * Copyright (c) 2009, 2010, 2011, 2012, 2013, 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -382,6 +382,7 @@ struct ofproto_table_settings {
 };
 
 int ofproto_get_n_tables(const struct ofproto *);
+uint8_t ofproto_get_n_visible_tables(const struct ofproto *);
 void ofproto_configure_table(struct ofproto *, int table_id,
                              const struct ofproto_table_settings *);
 
@@ -436,8 +437,24 @@ int ofproto_port_set_realdev(struct ofproto *, ofp_port_t vlandev_ofp_port,
 
 /* Table configuration */
 
-enum ofp_table_config table_get_config(const struct ofproto *,
-                                       uint8_t table_id);
+enum ofproto_table_config {
+    /* Send to controller. */
+    OFPROTO_TABLE_MISS_CONTROLLER = OFPTC11_TABLE_MISS_CONTROLLER,
+
+    /* Continue to the next table in the pipeline (OpenFlow 1.0 behavior). */
+    OFPROTO_TABLE_MISS_CONTINUE   = OFPTC11_TABLE_MISS_CONTINUE,
+
+    /* Drop the packet. */
+    OFPROTO_TABLE_MISS_DROP       = OFPTC11_TABLE_MISS_DROP,
+
+    /* The default miss behaviour for the OpenFlow version of the controller a
+     * packet_in message would be sent to..  For pre-OF1.3 controllers, send
+     * packet_in to controller.  For OF1.3+ controllers, drop. */
+    OFPROTO_TABLE_MISS_DEFAULT    = 3,
+};
+
+enum ofproto_table_config ofproto_table_get_config(const struct ofproto *,
+                                                   uint8_t table_id);
 
 #ifdef  __cplusplus
 }

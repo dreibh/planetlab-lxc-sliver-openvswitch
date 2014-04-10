@@ -1535,14 +1535,15 @@ stp_send_bpdu(struct stp_port *p, const void *bpdu, size_t bpdu_size)
 
     /* Skeleton. */
     pkt = ofpbuf_new(ETH_HEADER_LEN + LLC_HEADER_LEN + bpdu_size);
-    pkt->l2 = eth = ofpbuf_put_zeros(pkt, sizeof *eth);
+    eth = ofpbuf_put_zeros(pkt, sizeof *eth);
     llc = ofpbuf_put_zeros(pkt, sizeof *llc);
+    ofpbuf_set_frame(pkt, eth);
     ofpbuf_set_l3(pkt, ofpbuf_put(pkt, bpdu, bpdu_size));
 
     /* 802.2 header. */
     memcpy(eth->eth_dst, eth_addr_stp, ETH_ADDR_LEN);
     /* p->stp->send_bpdu() must fill in source address. */
-    eth->eth_type = htons(pkt->size - ETH_HEADER_LEN);
+    eth->eth_type = htons(ofpbuf_size(pkt) - ETH_HEADER_LEN);
 
     /* LLC header. */
     llc->llc_dsap = STP_LLC_DSAP;

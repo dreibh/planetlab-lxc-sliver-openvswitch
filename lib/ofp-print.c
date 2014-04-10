@@ -68,17 +68,18 @@ ofp_packet_to_string(const void *data, size_t len)
     flow_extract(&buf, &md, &flow);
     flow_format(&ds, &flow);
 
-    l4_size = ofpbuf_get_l4_size(&buf);
+    l4_size = ofpbuf_l4_size(&buf);
 
     if (flow.nw_proto == IPPROTO_TCP && l4_size >= TCP_HEADER_LEN) {
-        struct tcp_header *th = ofpbuf_get_l4(&buf);
+        struct tcp_header *th = ofpbuf_l4(&buf);
         ds_put_format(&ds, " tcp_csum:%"PRIx16, ntohs(th->tcp_csum));
     } else if (flow.nw_proto == IPPROTO_UDP && l4_size >= UDP_HEADER_LEN) {
-        struct udp_header *uh = ofpbuf_get_l4(&buf);
+        struct udp_header *uh = ofpbuf_l4(&buf);
         ds_put_format(&ds, " udp_csum:%"PRIx16, ntohs(uh->udp_csum));
     } else if (flow.nw_proto == IPPROTO_SCTP && l4_size >= SCTP_HEADER_LEN) {
-        struct sctp_header *sh = ofpbuf_get_l4(&buf);
-        ds_put_format(&ds, " sctp_csum:%"PRIx32, ntohl(sh->sctp_csum));
+        struct sctp_header *sh = ofpbuf_l4(&buf);
+        ds_put_format(&ds, " sctp_csum:%"PRIx32,
+                      ntohl(get_16aligned_be32(&sh->sctp_csum)));
     }
 
     ds_put_char(&ds, '\n');
@@ -742,6 +743,12 @@ ofp_print_flow_flags(struct ds *s, enum ofputil_flow_mod_flags flags)
     if (flags & OFPUTIL_FF_NO_BYT_COUNTS) {
         ds_put_cstr(s, "no_byte_counts ");
     }
+    if (flags & OFPUTIL_FF_HIDDEN_FIELDS) {
+        ds_put_cstr(s, "allow_hidden_fields ");
+    }
+    if (flags & OFPUTIL_FF_NO_READONLY) {
+        ds_put_cstr(s, "no_readonly_table ");
+    }
 }
 
 static void
@@ -1361,12 +1368,13 @@ ofp_print_error_msg(struct ds *string, const struct ofp_header *oh)
     ds_put_format(string, " %s\n", ofperr_get_name(error));
 
     if (error == OFPERR_OFPHFC_INCOMPATIBLE || error == OFPERR_OFPHFC_EPERM) {
-        ds_put_printable(string, payload.data, payload.size);
+        ds_put_printable(string, ofpbuf_data(&payload), ofpbuf_size(&payload));
     } else {
-        s = ofp_to_string(payload.data, payload.size, 1);
+        s = ofp_to_string(ofpbuf_data(&payload), ofpbuf_size(&payload), 1);
         ds_put_cstr(string, s);
         free(s);
     }
+    ofpbuf_uninit(&payload);
 }
 
 static void
@@ -1663,7 +1671,7 @@ ofp_print_ofpst_table_reply13(struct ds *string, const struct ofp_header *oh,
     ofpbuf_use_const(&b, oh, ntohs(oh->length));
     ofpraw_pull_assert(&b);
 
-    n = b.size / sizeof *ts;
+    n = ofpbuf_size(&b) / sizeof *ts;
     ds_put_format(string, " %"PRIuSIZE" tables\n", n);
     if (verbosity < 1) {
         return;
@@ -1693,7 +1701,7 @@ ofp_print_ofpst_table_reply12(struct ds *string, const struct ofp_header *oh,
     ofpbuf_use_const(&b, oh, ntohs(oh->length));
     ofpraw_pull_assert(&b);
 
-    n = b.size / sizeof *ts;
+    n = ofpbuf_size(&b) / sizeof *ts;
     ds_put_format(string, " %"PRIuSIZE" tables\n", n);
     if (verbosity < 1) {
         return;
@@ -1720,7 +1728,7 @@ ofp_print_ofpst_table_reply11(struct ds *string, const struct ofp_header *oh,
     ofpbuf_use_const(&b, oh, ntohs(oh->length));
     ofpraw_pull_assert(&b);
 
-    n = b.size / sizeof *ts;
+    n = ofpbuf_size(&b) / sizeof *ts;
     ds_put_format(string, " %"PRIuSIZE" tables\n", n);
     if (verbosity < 1) {
         return;
@@ -1760,7 +1768,7 @@ ofp_print_ofpst_table_reply10(struct ds *string, const struct ofp_header *oh,
     ofpbuf_use_const(&b, oh, ntohs(oh->length));
     ofpraw_pull_assert(&b);
 
-    n = b.size / sizeof *ts;
+    n = ofpbuf_size(&b) / sizeof *ts;
     ds_put_format(string, " %"PRIuSIZE" tables\n", n);
     if (verbosity < 1) {
         return;

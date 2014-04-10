@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2010, 2011, 2012, 2013 Nicira, Inc.
+ * Copyright (c) 2009, 2010, 2011, 2012, 2013, 2014 Nicira, Inc.
  * Copyright (c) 2013 Simon Horman
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -33,10 +33,12 @@ static void
 odp_eth_set_addrs(struct ofpbuf *packet,
                   const struct ovs_key_ethernet *eth_key)
 {
-    struct eth_header *eh = packet->l2;
+    struct eth_header *eh = ofpbuf_l2(packet);
 
-    memcpy(eh->eth_src, eth_key->eth_src, sizeof eh->eth_src);
-    memcpy(eh->eth_dst, eth_key->eth_dst, sizeof eh->eth_dst);
+    if (eh) {
+        memcpy(eh->eth_src, eth_key->eth_src, sizeof eh->eth_src);
+        memcpy(eh->eth_dst, eth_key->eth_dst, sizeof eh->eth_dst);
+    }
 }
 
 static void
@@ -51,7 +53,7 @@ odp_set_tunnel_action(const struct nlattr *a, struct flow_tnl *tun_key)
 static void
 set_arp(struct ofpbuf *packet, const struct ovs_key_arp *arp_key)
 {
-    struct arp_eth_header *arp = ofpbuf_get_l3(packet);
+    struct arp_eth_header *arp = ofpbuf_l3(packet);
 
     arp->ar_op = arp_key->arp_op;
     memcpy(arp->ar_sha, arp_key->arp_sha, ETH_ADDR_LEN);
@@ -207,10 +209,11 @@ odp_execute_actions__(void *dp, struct ofpbuf *packet, bool steal,
         case OVS_ACTION_ATTR_USERSPACE:
         case OVS_ACTION_ATTR_RECIRC:
             if (dp_execute_action) {
-                bool may_steal;
                 /* Allow 'dp_execute_action' to steal the packet data if we do
                  * not need it any more. */
-                may_steal = steal && (!more_actions && left <= NLA_ALIGN(a->nla_len));
+                bool may_steal = steal && (!more_actions
+                                           && left <= NLA_ALIGN(a->nla_len)
+                                           && type != OVS_ACTION_ATTR_RECIRC);
                 dp_execute_action(dp, packet, md, a, may_steal);
             }
             break;

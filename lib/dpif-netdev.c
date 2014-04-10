@@ -68,6 +68,9 @@ VLOG_DEFINE_THIS_MODULE(dpif_netdev);
 #define NETDEV_RULE_PRIORITY 0x8000
 
 #define NR_THREADS 1
+/* Use per thread recirc_depth to prevent recirculation loop. */
+#define MAX_RECIRC_DEPTH 5
+DEFINE_STATIC_PER_THREAD_DATA(uint32_t, recirc_depth, 0)
 
 /* Configuration parameters. */
 enum { MAX_FLOWS = 65536 };     /* Maximum number of flows in flow table. */
@@ -1144,8 +1147,6 @@ dpif_netdev_mask_from_nlattrs(const struct nlattr *key, uint32_t key_len,
 
             return EINVAL;
         }
-        /* Force unwildcard the in_port. */
-        mask->in_port.odp_port = u32_to_odp(UINT32_MAX);
     } else {
         enum mf_field_id id;
         /* No mask key, unwildcard everything except fields whose
@@ -1163,6 +1164,14 @@ dpif_netdev_mask_from_nlattrs(const struct nlattr *key, uint32_t key_len,
             }
         }
     }
+
+    /* Force unwildcard the in_port.
+     *
+     * We need to do this even in the case where we unwildcard "everything"
+     * above because "everything" only includes the 16-bit OpenFlow port number
+     * mask->in_port.ofp_port, which only covers half of the 32-bit datapath
+     * port number mask->in_port.odp_port. */
+    mask->in_port.odp_port = u32_to_odp(UINT32_MAX);
 
     return 0;
 }
@@ -1470,8 +1479,8 @@ dpif_netdev_flow_dump_next(const struct dpif *dpif, void *iter_, void *state_,
         odp_flow_key_from_flow(&buf, &netdev_flow->flow,
                                netdev_flow->flow.in_port.odp_port);
 
-        *key = buf.data;
-        *key_len = buf.size;
+        *key = ofpbuf_data(&buf);
+        *key_len = ofpbuf_size(&buf);
     }
 
     if (key && mask) {
@@ -1484,8 +1493,8 @@ dpif_netdev_flow_dump_next(const struct dpif *dpif, void *iter_, void *state_,
                                odp_to_u32(wc.masks.in_port.odp_port),
                                SIZE_MAX);
 
-        *mask = buf.data;
-        *mask_len = buf.size;
+        *mask = ofpbuf_data(&buf);
+        *mask_len = ofpbuf_size(&buf);
     }
 
     if (actions || stats) {
@@ -1523,8 +1532,8 @@ dpif_netdev_execute(struct dpif *dpif, struct dpif_execute *execute)
     struct pkt_metadata *md = &execute->md;
     struct flow key;
 
-    if (execute->packet->size < ETH_HEADER_LEN ||
-        execute->packet->size > UINT16_MAX) {
+    if (ofpbuf_size(execute->packet) < ETH_HEADER_LEN ||
+        ofpbuf_size(execute->packet) > UINT16_MAX) {
         return EINVAL;
     }
 
@@ -1974,7 +1983,7 @@ dp_netdev_flow_used(struct dp_netdev_flow *netdev_flow,
     ovs_mutex_lock(&bucket->mutex);
     bucket->used = MAX(now, bucket->used);
     bucket->packet_count++;
-    bucket->byte_count += packet->size;
+    bucket->byte_count += ofpbuf_size(packet);
     bucket->tcp_flags |= tcp_flags;
     ovs_mutex_unlock(&bucket->mutex);
 }
@@ -1999,13 +2008,14 @@ dp_netdev_count_packet(struct dp_netdev *dp, enum dp_stat_type type)
 }
 
 static void
-dp_netdev_port_input(struct dp_netdev *dp, struct ofpbuf *packet,
-                     struct pkt_metadata *md)
+dp_netdev_input(struct dp_netdev *dp, struct ofpbuf *packet,
+                struct pkt_metadata *md)
+    OVS_REQ_RDLOCK(dp->port_rwlock)
 {
     struct dp_netdev_flow *netdev_flow;
     struct flow key;
 
-    if (packet->size < ETH_HEADER_LEN) {
+    if (ofpbuf_size(packet) < ETH_HEADER_LEN) {
         ofpbuf_delete(packet);
         return;
     }
@@ -2027,6 +2037,17 @@ dp_netdev_port_input(struct dp_netdev *dp, struct ofpbuf *packet,
                                    DPIF_UC_MISS, &key, NULL);
         ofpbuf_delete(packet);
     }
+}
+
+static void
+dp_netdev_port_input(struct dp_netdev *dp, struct ofpbuf *packet,
+                     struct pkt_metadata *md)
+    OVS_REQ_RDLOCK(dp->port_rwlock)
+{
+    uint32_t *recirc_depth = recirc_depth_get();
+
+    *recirc_depth = 0;
+    dp_netdev_input(dp, packet, md);
 }
 
 static int
@@ -2053,13 +2074,13 @@ dp_netdev_output_userspace(struct dp_netdev *dp, struct ofpbuf *packet,
         if (userdata) {
             buf_size += NLA_ALIGN(userdata->nla_len);
         }
-        buf_size += packet->size;
+        buf_size += ofpbuf_size(packet);
         ofpbuf_init(buf, buf_size);
 
         /* Put ODP flow. */
         odp_flow_key_from_flow(buf, flow, flow->in_port.odp_port);
-        upcall->key = buf->data;
-        upcall->key_len = buf->size;
+        upcall->key = ofpbuf_data(buf);
+        upcall->key_len = ofpbuf_size(buf);
 
         /* Put userdata. */
         if (userdata) {
@@ -2067,8 +2088,9 @@ dp_netdev_output_userspace(struct dp_netdev *dp, struct ofpbuf *packet,
                                           NLA_ALIGN(userdata->nla_len));
         }
 
-        upcall->packet.data = ofpbuf_put(buf, packet->data, packet->size);
-        upcall->packet.size = packet->size;
+        ofpbuf_set_data(&upcall->packet,
+                        ofpbuf_put(buf, ofpbuf_data(packet), ofpbuf_size(packet)));
+        ofpbuf_set_size(&upcall->packet, ofpbuf_size(packet));
 
         seq_change(q->seq);
 
@@ -2097,6 +2119,7 @@ dp_execute_cb(void *aux_, struct ofpbuf *packet,
     struct dp_netdev_execute_aux *aux = aux_;
     int type = nl_attr_type(a);
     struct dp_netdev_port *p;
+    uint32_t *depth = recirc_depth_get();
 
     switch ((enum ovs_action_attr)type) {
     case OVS_ACTION_ATTR_OUTPUT:
@@ -2123,23 +2146,35 @@ dp_execute_cb(void *aux_, struct ofpbuf *packet,
         break;
     }
 
-    case OVS_ACTION_ATTR_RECIRC: {
-        const struct ovs_action_recirc *act;
+    case OVS_ACTION_ATTR_RECIRC:
+        if (*depth < MAX_RECIRC_DEPTH) {
+            struct pkt_metadata recirc_md = *md;
+            struct ofpbuf *recirc_packet;
+            const struct ovs_action_recirc *act;
 
-        act = nl_attr_get(a);
-        md->recirc_id = act->recirc_id;
-        md->dp_hash = 0;
+            recirc_packet = may_steal ? packet : ofpbuf_clone(packet);
 
-        if (act->hash_alg == OVS_RECIRC_HASH_ALG_L4) {
-            struct flow flow;
+            act = nl_attr_get(a);
+            recirc_md.recirc_id = act->recirc_id;
+            recirc_md.dp_hash = 0;
 
-            flow_extract(packet, md, &flow);
-            md->dp_hash = flow_hash_symmetric_l4(&flow, act->hash_bias);
+            if (act->hash_alg == OVS_RECIRC_HASH_ALG_L4) {
+                recirc_md.dp_hash = flow_hash_symmetric_l4(aux->key,
+                                                           act->hash_bias);
+                if (!recirc_md.dp_hash) {
+                    recirc_md.dp_hash = 1;  /* 0 is not valid */
+                }
+            }
+
+            (*depth)++;
+            dp_netdev_input(aux->dp, recirc_packet, &recirc_md);
+            (*depth)--;
+
+            break;
+        } else {
+            VLOG_WARN("Packet dropped. Max recirculation depth exceeded.");
         }
-
-        dp_netdev_port_input(aux->dp, packet, md);
         break;
-    }
 
     case OVS_ACTION_ATTR_PUSH_VLAN:
     case OVS_ACTION_ATTR_POP_VLAN:
@@ -2151,7 +2186,6 @@ dp_execute_cb(void *aux_, struct ofpbuf *packet,
     case __OVS_ACTION_ATTR_MAX:
         OVS_NOT_REACHED();
     }
-
 }
 
 static void

@@ -21,6 +21,7 @@
 #include "odp-util.h"
 #include "ofp-util.h"
 #include "ovs-thread.h"
+#include "ofproto-provider.h"
 #include "timer.h"
 #include "util.h"
 #include "ovs-thread.h"
@@ -42,6 +43,13 @@ enum rule_dpif_lookup_verdict {
                                              * the controller. */
     RULE_DPIF_LOOKUP_VERDICT_DROP,          /* A miss occurred and the packet
                                              * should be dropped. */
+    RULE_DPIF_LOOKUP_VERDICT_DEFAULT,       /* A miss occurred and the packet
+                                             * should handled by the default
+                                             * miss behaviour.
+                                             * For pre-OF1.3 it should be
+                                             * forwarded to the controller.
+                                             * For OF1.3+ it should be
+                                             * dropped. */
 };
 
 /* For lock annotation below only. */
@@ -76,9 +84,10 @@ extern struct ovs_rwlock xlate_rwlock;
  *   actions into datapath actions. */
 
 size_t ofproto_dpif_get_max_mpls_depth(const struct ofproto_dpif *);
+bool ofproto_dpif_get_enable_recirc(const struct ofproto_dpif *);
 
-uint8_t rule_dpif_lookup(struct ofproto_dpif *, const struct flow *,
-                         struct flow_wildcards *, struct rule_dpif **rule);
+uint8_t rule_dpif_lookup(struct ofproto_dpif *, struct flow *,
+                      struct flow_wildcards *, struct rule_dpif **rule);
 
 enum rule_dpif_lookup_verdict rule_dpif_lookup_from_table(struct ofproto_dpif *,
                                                           const struct flow *,
@@ -96,6 +105,7 @@ void rule_dpif_credit_stats(struct rule_dpif *rule ,
 bool rule_dpif_is_fail_open(const struct rule_dpif *);
 bool rule_dpif_is_table_miss(const struct rule_dpif *);
 bool rule_dpif_is_internal(const struct rule_dpif *);
+uint8_t rule_dpif_get_table(const struct rule_dpif *);
 
 struct rule_actions *rule_dpif_get_actions(const struct rule_dpif *);
 
@@ -130,6 +140,7 @@ int ofproto_dpif_execute_actions(struct ofproto_dpif *, const struct flow *,
     OVS_EXCLUDED(xlate_rwlock);
 void ofproto_dpif_send_packet_in(struct ofproto_dpif *,
                                  struct ofproto_packet_in *);
+bool ofproto_dpif_wants_packet_in_on_miss(struct ofproto_dpif *);
 int ofproto_dpif_send_packet(const struct ofport_dpif *, struct ofpbuf *);
 void ofproto_dpif_flow_mod(struct ofproto_dpif *, struct ofputil_flow_mod *);
 
@@ -199,4 +210,11 @@ struct ofport_dpif *odp_port_to_ofport(const struct dpif_backer *, odp_port_t);
 
 uint32_t ofproto_dpif_alloc_recirc_id(struct ofproto_dpif *ofproto);
 void ofproto_dpif_free_recirc_id(struct ofproto_dpif *ofproto, uint32_t recirc_id);
+int ofproto_dpif_add_internal_flow(struct ofproto_dpif *,
+                                   struct match *, int priority,
+                                   const struct ofpbuf *ofpacts,
+                                   struct rule **rulep);
+int ofproto_dpif_delete_internal_flow(struct ofproto_dpif *, struct match *,
+                                      int priority);
+
 #endif /* ofproto-dpif.h */

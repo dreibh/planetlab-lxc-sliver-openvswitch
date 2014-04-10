@@ -839,15 +839,16 @@ port_configure(struct port *port)
             s.vlan_mode = PORT_VLAN_NATIVE_UNTAGGED;
         } else {
             /* This "can't happen" because ovsdb-server should prevent it. */
-            VLOG_ERR("unknown VLAN mode %s", cfg->vlan_mode);
+            VLOG_WARN("port %s: unknown VLAN mode %s, falling "
+                      "back to trunk mode", port->name, cfg->vlan_mode);
             s.vlan_mode = PORT_VLAN_TRUNK;
         }
     } else {
         if (s.vlan >= 0) {
             s.vlan_mode = PORT_VLAN_ACCESS;
             if (cfg->n_trunks) {
-                VLOG_ERR("port %s: ignoring trunks in favor of implicit vlan",
-                         port->name);
+                VLOG_WARN("port %s: ignoring trunks in favor of implicit vlan",
+                          port->name);
             }
         } else {
             s.vlan_mode = PORT_VLAN_TRUNK;
@@ -1446,8 +1447,7 @@ iface_do_create(const struct bridge *br,
     VLOG_INFO("bridge %s: added interface %s on port %d",
               br->name, iface_cfg->name, *ofp_portp);
 
-    if ((port_cfg->vlan_mode && !strcmp(port_cfg->vlan_mode, "splinter"))
-        || iface_is_internal(iface_cfg, br->cfg)) {
+    if (port_cfg->vlan_mode && !strcmp(port_cfg->vlan_mode, "splinter")) {
         netdev_turn_flags_on(netdev, NETDEV_UP, NULL);
     }
 
@@ -3650,8 +3650,8 @@ iface_configure_qos(struct iface *iface, const struct ovsrec_qos *qos)
     }
 
     if (iface->ofp_port != OFPP_NONE) {
-        const struct ofproto_port_queue *port_queues = queues_buf.data;
-        size_t n_queues = queues_buf.size / sizeof *port_queues;
+        const struct ofproto_port_queue *port_queues = ofpbuf_data(&queues_buf);
+        size_t n_queues = ofpbuf_size(&queues_buf) / sizeof *port_queues;
 
         ofproto_port_set_queues(iface->port->bridge->ofproto, iface->ofp_port,
                                 port_queues, n_queues);
