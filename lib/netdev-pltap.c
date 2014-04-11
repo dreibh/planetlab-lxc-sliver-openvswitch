@@ -522,14 +522,14 @@ netdev_pltap_rxq_recv(struct netdev_rxq *rx_, struct ofpbuf **packet, int *c)
     buffer = ofpbuf_new_with_headroom(VLAN_ETH_HEADER_LEN + ETH_PAYLOAD_MAX,
         DP_NETDEV_HEADROOM);
     size = ofpbuf_tailroom(buffer);
-    iov[1].iov_base = buffer->data;
+    iov[1].iov_base = ofpbuf_data(buffer);
     iov[1].iov_len = size;
     for (;;) {
         ssize_t retval;
         retval = readv(rx->fd, iov, 2);
         if (retval >= 0) {
             if (retval <= size) {
-            buffer->size += retval;
+            ofpbuf_set_size(buffer, ofpbuf_size(buffer) + retval);
 	    	goto out;
 	    } else {
 	    	error = EMSGSIZE;
@@ -570,8 +570,8 @@ netdev_pltap_rxq_wait(struct netdev_rxq *rx_)
 static int
 netdev_pltap_send(struct netdev *netdev_, struct ofpbuf *pkt, bool may_steal)
 {
-    const void *buffer = pkt->data;
-    size_t size = pkt->size;
+    const void *buffer = ofpbuf_data(pkt);
+    size_t size = ofpbuf_size(pkt);
     struct netdev_pltap *dev = 
         netdev_pltap_cast(netdev_);
     int error = 0;
@@ -588,9 +588,9 @@ netdev_pltap_send(struct netdev *netdev_, struct ofpbuf *pkt, bool may_steal)
         ssize_t retval;
         retval = writev(dev->fd, iov, 2);
         if (retval >= 0) {
-            if (retval != size + 4) {
+            if (retval != size + sizeof(pi)) {
                 VLOG_WARN_RL(&rl, "sent partial Ethernet packet (%"PRIdSIZE" bytes of %"PRIuSIZE") on %s",
-                        retval, size + 4, netdev_get_name(netdev_));
+                        retval, size + sizeof(pi), netdev_get_name(netdev_));
             }
             goto out;
         } else if (errno != EINTR) {

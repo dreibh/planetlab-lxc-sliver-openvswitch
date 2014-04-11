@@ -282,6 +282,7 @@ netdev_tunnel_rxq_recv(struct netdev_rxq *rx_, struct ofpbuf **packet, int *c)
     struct netdev_tunnel *netdev =
         netdev_tunnel_cast(rx_->netdev);
     struct ofpbuf *buffer = NULL;
+    void *data;
     size_t size;
     int error = 0;
 
@@ -289,18 +290,19 @@ netdev_tunnel_rxq_recv(struct netdev_rxq *rx_, struct ofpbuf **packet, int *c)
         return EAGAIN;
     buffer = ofpbuf_new_with_headroom(VLAN_ETH_HEADER_LEN + ETH_PAYLOAD_MAX,
         DP_NETDEV_HEADROOM);
+    data = ofpbuf_data(buffer);
     size = ofpbuf_tailroom(buffer);
 
     for (;;) {
         ssize_t retval;
-        retval = recv(rx->fd, buffer->data, size, MSG_TRUNC);
+        retval = recv(rx->fd, data, size, MSG_TRUNC);
         VLOG_DBG("%s: recv(%"PRIxPTR", %"PRIuSIZE", MSG_TRUNC) = %"PRIdSIZE,
-                netdev_rxq_get_name(rx_), (uintptr_t)buffer->data, size, retval);
+                netdev_rxq_get_name(rx_), (uintptr_t)data, size, retval);
         if (retval >= 0) {
             netdev->stats.rx_packets++;
             netdev->stats.rx_bytes += retval;
             if (retval <= size) {
-                buffer->size += retval;
+                ofpbuf_set_size(buffer, ofpbuf_size(buffer) + retval);
                 goto out;
             } else {
                 netdev->stats.rx_errors++;
@@ -343,8 +345,8 @@ netdev_tunnel_rxq_wait(struct netdev_rxq *rx_)
 static int
 netdev_tunnel_send(struct netdev *netdev_, struct ofpbuf *pkt, bool may_steal)
 {
-    const void *buffer = pkt->data;
-    size_t size = pkt->size;
+    const void *buffer = ofpbuf_data(pkt);
+    size_t size = ofpbuf_size(pkt);
     struct netdev_tunnel *dev = 
         netdev_tunnel_cast(netdev_);
     int error = 0;
