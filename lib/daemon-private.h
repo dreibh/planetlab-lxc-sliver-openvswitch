@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2012, 2013, 2014 Nicira, Inc.
+ * Copyright (c) 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,23 +14,12 @@
  * limitations under the License.
  */
 
-#ifndef ROUTE_TABLE_H
-#define ROUTE_TABLE_H 1
+#ifndef DAEMON_PRIVATE_H
+#define DAEMON_PRIVATE_H 1
 
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <net/if.h>
-#include <stdbool.h>
-#include <stdint.h>
+extern bool detach;
+extern char *pidfile;
 
-#include "openvswitch/types.h"
+char *make_pidfile_name(const char *name);
 
-bool route_table_get_ifindex(ovs_be32 ip, int *ifindex);
-bool route_table_get_name(ovs_be32 ip, char name[IFNAMSIZ]);
-uint64_t route_table_get_change_seq(void);
-void route_table_register(void);
-void route_table_unregister(void);
-void route_table_run(void);
-void route_table_wait(void);
-
-#endif /* route-table.h */
+#endif /* daemon-private.h */

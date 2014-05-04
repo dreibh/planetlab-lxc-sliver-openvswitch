@@ -53,23 +53,26 @@ static struct ovs_rwlock rwlock = OVS_RWLOCK_INITIALIZER;
 static struct hmap all_bonds__ = HMAP_INITIALIZER(&all_bonds__);
 static struct hmap *const all_bonds OVS_GUARDED_BY(rwlock) = &all_bonds__;
 
-/* Bit-mask for hashing a flow down to a bucket.
- * There are (BOND_MASK + 1) buckets. */
+/* Bit-mask for hashing a flow down to a bucket. */
 #define BOND_MASK 0xff
+#define BOND_BUCKETS (BOND_MASK + 1)
 #define RECIRC_RULE_PRIORITY 20   /* Priority level for internal rules */
 
 /* A hash bucket for mapping a flow to a slave.
- * "struct bond" has an array of (BOND_MASK + 1) of these. */
+ * "struct bond" has an array of BOND_BUCKETS of these. */
 struct bond_entry {
     struct bond_slave *slave;   /* Assigned slave, NULL if unassigned. */
-    uint64_t tx_bytes;          /* Count of bytes recently transmitted. */
+    uint64_t tx_bytes           /* Count of bytes recently transmitted. */
+        OVS_GUARDED_BY(rwlock);
     struct list list_node;      /* In bond_slave's 'entries' list. */
 
-    /* Recirculation. */
-    struct rule *pr_rule;       /* Post recirculation rule for this entry.*/
-    uint64_t pr_tx_bytes;       /* Record the rule tx_bytes to figure out
-                                   the delta to update the tx_bytes entry
-                                   above.*/
+    /* Recirculation.
+     *
+     * 'pr_rule' is the post-recirculation rule for this entry.
+     * 'pr_tx_bytes' is the most recently seen statistics for 'pr_rule', which
+     * is used to determine delta (applied to 'tx_bytes' above.) */
+    struct rule *pr_rule;
+    uint64_t pr_tx_bytes OVS_GUARDED_BY(rwlock);
 };
 
 /* A bond slave, that is, one of the links comprising a bond. */
@@ -122,7 +125,7 @@ struct bond {
     uint32_t basis;             /* Basis for flow hash function. */
 
     /* SLB specific bonding info. */
-    struct bond_entry *hash;     /* An array of (BOND_MASK + 1) elements. */
+    struct bond_entry *hash;     /* An array of BOND_BUCKETS elements. */
     int rebalance_interval;      /* Interval between rebalances, in ms. */
     long long int next_rebalance; /* Next rebalancing time. */
     bool send_learning_packets;
@@ -148,7 +151,7 @@ struct bond_pr_rule_op {
     struct match match;
     ofp_port_t out_ofport;
     enum bond_op op;
-    struct rule *pr_rule;
+    struct rule **pr_rule;
 };
 
 static void bond_entry_reset(struct bond *) OVS_REQ_WRLOCK(rwlock);
@@ -159,7 +162,7 @@ static void bond_enable_slave(struct bond_slave *, bool enable)
 static void bond_link_status_update(struct bond_slave *)
     OVS_REQ_WRLOCK(rwlock);
 static void bond_choose_active_slave(struct bond *)
-    OVS_REQ_WRLOCK(rwlock);;
+    OVS_REQ_WRLOCK(rwlock);
 static unsigned int bond_hash_src(const uint8_t mac[ETH_ADDR_LEN],
                                   uint16_t vlan, uint32_t basis);
 static unsigned int bond_hash_tcp(const struct flow *, uint16_t vlan,
@@ -289,7 +292,7 @@ bond_unref(struct bond *bond)
 
 static void
 add_pr_rule(struct bond *bond, const struct match *match,
-            ofp_port_t out_ofport, struct rule *rule)
+            ofp_port_t out_ofport, struct rule **rule)
 {
     uint32_t hash = match_hash(match, 0);
     struct bond_pr_rule_op *pr_op;
@@ -326,28 +329,23 @@ update_recirc_rules(struct bond *bond)
         pr_op->op = DEL;
     }
 
-    if ((bond->hash == NULL) || (!bond->recirc_id)) {
-        return;
-    }
+    if (bond->hash && bond->recirc_id) {
+        for (i = 0; i < BOND_BUCKETS; i++) {
+            struct bond_slave *slave = bond->hash[i].slave;
 
-    for (i = 0; i < BOND_MASK + 1; i++) {
-        struct bond_slave *slave = bond->hash[i].slave;
+            if (slave) {
+                match_init_catchall(&match);
+                match_set_recirc_id(&match, bond->recirc_id);
+                match_set_dp_hash_masked(&match, i, BOND_MASK);
 
-        if (slave) {
-            match_init_catchall(&match);
-            match_set_recirc_id(&match, bond->recirc_id);
-            /* recirc_id -> metadata to speed up look ups. */
-            match_set_metadata(&match, htonll(bond->recirc_id));
-            match_set_dp_hash_masked(&match, i, BOND_MASK);
-
-            add_pr_rule(bond, &match, slave->ofp_port,
-                            bond->hash[i].pr_rule);
+                add_pr_rule(bond, &match, slave->ofp_port,
+                            &bond->hash[i].pr_rule);
+            }
         }
     }
 
     HMAP_FOR_EACH_SAFE(pr_op, next_op, hmap_node, &bond->pr_rule_ops) {
         int error;
-        struct rule *rule;
         switch (pr_op->op) {
         case ADD:
             ofpbuf_clear(&ofpacts);
@@ -355,16 +353,13 @@ update_recirc_rules(struct bond *bond)
             error = ofproto_dpif_add_internal_flow(bond->ofproto,
                                                    &pr_op->match,
                                                    RECIRC_RULE_PRIORITY,
-                                                   &ofpacts, &rule);
+                                                   &ofpacts, pr_op->pr_rule);
             if (error) {
                 char *err_s = match_to_string(&pr_op->match,
                                               RECIRC_RULE_PRIORITY);
 
                 VLOG_ERR("failed to add post recirculation flow %s", err_s);
                 free(err_s);
-                pr_op->pr_rule = NULL;
-            } else {
-                pr_op->pr_rule = rule;
             }
             break;
 
@@ -381,7 +376,7 @@ update_recirc_rules(struct bond *bond)
             }
 
             hmap_remove(&bond->pr_rule_ops, &pr_op->hmap_node);
-            pr_op->pr_rule = NULL;
+            *pr_op->pr_rule = NULL;
             free(pr_op);
             break;
         }
@@ -854,7 +849,7 @@ bond_choose_output_slave(struct bond *bond, const struct flow *flow,
 /* Recirculation. */
 static void
 bond_entry_account(struct bond_entry *entry, uint64_t rule_tx_bytes)
-    OVS_REQ_RDLOCK(rwlock)
+    OVS_REQ_WRLOCK(rwlock)
 {
     if (entry->slave) {
         uint64_t delta;
@@ -866,12 +861,12 @@ bond_entry_account(struct bond_entry *entry, uint64_t rule_tx_bytes)
 }
 
 /* Maintain bond stats using post recirculation rule byte counters.*/
-void
+static void
 bond_recirculation_account(struct bond *bond)
 {
     int i;
 
-    ovs_rwlock_rdlock(&rwlock);
+    ovs_rwlock_wrlock(&rwlock);
     for (i=0; i<=BOND_MASK; i++) {
         struct bond_entry *entry = &bond->hash[i];
         struct rule *rule = entry->pr_rule;
@@ -893,7 +888,7 @@ bool
 bond_may_recirc(const struct bond *bond, uint32_t *recirc_id,
                 uint32_t *hash_bias)
 {
-    if (bond->balance == BM_TCP) {
+    if (bond->balance == BM_TCP && recirc_id) {
         if (recirc_id) {
             *recirc_id = bond->recirc_id;
         }
@@ -958,6 +953,7 @@ bond_slave_from_bal_node(struct list *bal) OVS_REQ_RDLOCK(rwlock)
 
 static void
 log_bals(struct bond *bond, const struct list *bals)
+    OVS_REQ_RDLOCK(rwlock)
 {
     if (VLOG_IS_DBG_ENABLED()) {
         struct ds ds = DS_EMPTY_INITIALIZER;
@@ -995,6 +991,7 @@ log_bals(struct bond *bond, const struct list *bals)
 /* Shifts 'hash' from its current slave to 'to'. */
 static void
 bond_shift_load(struct bond_entry *hash, struct bond_slave *to)
+    OVS_REQ_WRLOCK(rwlock)
 {
     struct bond_slave *from = hash->slave;
     struct bond *bond = from->bond;
@@ -1026,6 +1023,7 @@ bond_shift_load(struct bond_entry *hash, struct bond_slave *to)
  * shift away small hashes or large hashes. */
 static struct bond_entry *
 choose_entry_to_migrate(const struct bond_slave *from, uint64_t to_tx_bytes)
+    OVS_REQ_WRLOCK(rwlock)
 {
     struct bond_entry *e;
 
@@ -1089,21 +1087,28 @@ reinsert_bal(struct list *bals, struct bond_slave *slave)
  * The caller should have called bond_account() for each active flow, or in case
  * of recirculation is used, have called bond_recirculation_account(bond),
  * to ensure that flow data is consistently accounted at this point.
- *
- * Return whether rebalancing took place.*/
-bool
+ */
+void
 bond_rebalance(struct bond *bond)
 {
     struct bond_slave *slave;
     struct bond_entry *e;
     struct list bals;
     bool rebalanced = false;
+    bool use_recirc;
 
     ovs_rwlock_wrlock(&rwlock);
     if (!bond_is_balanced(bond) || time_msec() < bond->next_rebalance) {
         goto done;
     }
     bond->next_rebalance = time_msec() + bond->rebalance_interval;
+
+    use_recirc = ofproto_dpif_get_enable_recirc(bond->ofproto) &&
+                 bond_may_recirc(bond, NULL, NULL);
+
+    if (use_recirc) {
+        bond_recirculation_account(bond);
+    }
 
     /* Add each bond_entry to its slave's 'entries' list.
      * Compute each slave's tx_bytes as the sum of its entries' tx_bytes. */
@@ -1160,7 +1165,7 @@ bond_rebalance(struct bond *bond)
             /* Re-sort 'bals'. */
             reinsert_bal(&bals, from);
             reinsert_bal(&bals, to);
-	    rebalanced = true;
+            rebalanced = true;
         } else {
             /* Can't usefully migrate anything away from 'from'.
              * Don't reconsider it. */
@@ -1173,14 +1178,14 @@ bond_rebalance(struct bond *bond)
      * take 20 rebalancing runs to decay to 0 and get deleted entirely. */
     for (e = &bond->hash[0]; e <= &bond->hash[BOND_MASK]; e++) {
         e->tx_bytes /= 2;
-        if (!e->tx_bytes) {
-            e->slave = NULL;
-        }
+    }
+
+    if (use_recirc && rebalanced) {
+        bond_update_post_recirc_rules(bond,true);
     }
 
 done:
     ovs_rwlock_unlock(&rwlock);
-    return rebalanced;
 }
 
 /* Bonding unixctl user interface functions. */
@@ -1321,13 +1326,17 @@ bond_print_details(struct ds *ds, const struct bond *bond)
         /* Hashes. */
         for (be = bond->hash; be <= &bond->hash[BOND_MASK]; be++) {
             int hash = be - bond->hash;
+            uint64_t be_tx_k;
 
             if (be->slave != slave) {
                 continue;
             }
 
-            ds_put_format(ds, "\thash %d: %"PRIu64" kB load\n",
-                          hash, be->tx_bytes / 1024);
+            be_tx_k = be->tx_bytes / 1024;
+            if (be_tx_k) {
+                ds_put_format(ds, "\thash %d: %"PRIu64" kB load\n",
+                          hash, be_tx_k);
+            }
 
             /* XXX How can we list the MACs assigned to hashes of SLB bonds? */
         }
@@ -1570,7 +1579,7 @@ static void
 bond_entry_reset(struct bond *bond)
 {
     if (bond->balance != BM_AB) {
-        size_t hash_len = (BOND_MASK + 1) * sizeof *bond->hash;
+        size_t hash_len = BOND_BUCKETS * sizeof *bond->hash;
 
         if (!bond->hash) {
             bond->hash = xmalloc(hash_len);

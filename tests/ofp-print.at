@@ -2375,7 +2375,7 @@ AT_CHECK([ovs-ofctl ofp-print "\
 05 1e 00 18 00 00 00 0a \
 00 00 00 02 02 00 00 00 ff ff ff ff ff ff ff ff \
 "], [0], [dnl
-OFPT_ROLE_STATUS (OF 0x05) (xid=0xa): role=master reason=experimenter_data_changed
+OFPT_ROLE_STATUS (OF1.4) (xid=0xa): role=master reason=experimenter_data_changed
 ])
 AT_CLEANUP
 
@@ -2385,7 +2385,7 @@ AT_CHECK([ovs-ofctl ofp-print "\
 05 1e 00 18 00 00 00 0a \
 00 00 00 02 01 00 00 00 ff ff ff ff ff ff ff ff \
 "], [0], [dnl
-OFPT_ROLE_STATUS (OF 0x05) (xid=0xa): role=master reason=configuration_changed
+OFPT_ROLE_STATUS (OF1.4) (xid=0xa): role=master reason=configuration_changed
 ])
 AT_CLEANUP
 
@@ -2395,7 +2395,7 @@ AT_CHECK([ovs-ofctl ofp-print "\
 05 1e 00 18 00 00 00 0a \
 00 00 00 02 01 00 00 00 00 00 00 00 00 00 00 10 \
 "], [0], [dnl
-OFPT_ROLE_STATUS (OF 0x05) (xid=0xa): role=master generation_id=16 reason=configuration_changed
+OFPT_ROLE_STATUS (OF1.4) (xid=0xa): role=master generation_id=16 reason=configuration_changed
 ])
 AT_CLEANUP
 
@@ -2805,5 +2805,130 @@ AT_CHECK([ovs-ofctl ofp-print "\
 NXST_FLOW_MONITOR reply (xid=0x4):
  event=DELETED reason=eviction table=1 idle_timeout=5 hard_timeout=16 cookie=0x123456789abcdef0 in_port=1
  event=ABBREV xid=0x186a0
+])
+AT_CLEANUP
+
+
+AT_SETUP([OFPT_BUNDLE_CONTROL - OPEN_REQUEST])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl ofp-print "\
+05 21 00 10 00 00 00 00 \
+00 00 00 01 00 00 00 01 \
+"], [0], [dnl
+OFPT_BUNDLE_CONTROL (OF1.4) (xid=0x0):
+ bundle_id=0x1 type=OPEN_REQUEST flags=atomic
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_BUNDLE_CONTROL - OPEN_REQUEST])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl ofp-print "\
+05 21 00 10 00 00 00 00 \
+00 00 00 01 00 00 00 02 \
+"], [0], [dnl
+OFPT_BUNDLE_CONTROL (OF1.4) (xid=0x0):
+ bundle_id=0x1 type=OPEN_REQUEST flags=ordered
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_BUNDLE_CONTROL - OPEN_REQUEST])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl ofp-print "\
+05 21 00 10 00 00 00 00 \
+00 00 00 01 00 00 00 03 \
+"], [0], [dnl
+OFPT_BUNDLE_CONTROL (OF1.4) (xid=0x0):
+ bundle_id=0x1 type=OPEN_REQUEST flags=atomic ordered
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_BUNDLE_CONTROL - OPEN_REPLY])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl ofp-print "\
+05 21 00 10 00 00 00 00 \
+00 00 00 01 00 01 00 01 \
+"], [0], [dnl
+OFPT_BUNDLE_CONTROL (OF1.4) (xid=0x0):
+ bundle_id=0x1 type=OPEN_REPLY flags=atomic
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_BUNDLE_CONTROL - CLOSE_REQUEST])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl ofp-print "\
+05 21 00 10 00 00 00 00 \
+00 00 00 01 00 02 00 01 \
+"], [0], [dnl
+OFPT_BUNDLE_CONTROL (OF1.4) (xid=0x0):
+ bundle_id=0x1 type=CLOSE_REQUEST flags=atomic
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_BUNDLE_CONTROL - CLOSE_REPLY])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl ofp-print "\
+05 21 00 10 00 00 00 00 \
+00 00 00 01 00 03 00 01 \
+"], [0], [dnl
+OFPT_BUNDLE_CONTROL (OF1.4) (xid=0x0):
+ bundle_id=0x1 type=CLOSE_REPLY flags=atomic
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_BUNDLE_CONTROL - COMMIT_REQUEST])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl ofp-print "\
+05 21 00 10 00 00 00 00 \
+00 00 00 01 00 04 00 01 \
+"], [0], [dnl
+OFPT_BUNDLE_CONTROL (OF1.4) (xid=0x0):
+ bundle_id=0x1 type=COMMIT_REQUEST flags=atomic
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_BUNDLE_CONTROL - COMMIT_REPLY])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl ofp-print "\
+05 21 00 10 00 00 00 00 \
+00 00 00 01 00 05 00 01 \
+"], [0], [dnl
+OFPT_BUNDLE_CONTROL (OF1.4) (xid=0x0):
+ bundle_id=0x1 type=COMMIT_REPLY flags=atomic
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_BUNDLE_CONTROL - DISCARD_REQUEST])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl ofp-print "\
+05 21 00 10 00 00 00 00 \
+00 00 00 01 00 06 00 01 \
+"], [0], [dnl
+OFPT_BUNDLE_CONTROL (OF1.4) (xid=0x0):
+ bundle_id=0x1 type=DISCARD_REQUEST flags=atomic
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_BUNDLE_CONTROL - DISCARD_REPLY])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl ofp-print "\
+05 21 00 10 00 00 00 00 \
+00 00 00 01 00 07 00 01 \
+"], [0], [dnl
+OFPT_BUNDLE_CONTROL (OF1.4) (xid=0x0):
+ bundle_id=0x1 type=DISCARD_REPLY flags=atomic
+])
+AT_CLEANUP
+
+AT_SETUP([OFPT_BUNDLE_ADD_MESSAGE - OFPT_HELLO])
+AT_KEYWORDS([ofp-print])
+AT_CHECK([ovs-ofctl ofp-print "\
+05 22 00 20 00 00 00 00 \
+00 00 00 01 00 01 00 01 02 00 00 08 00 00 00 00 \
+00 00 00 00 00 00 00 00 \
+"], [0], [dnl
+OFPT_BUNDLE_ADD_MESSAGE (OF1.4) (xid=0x0):
+ bundle_id=0x1 flags=atomic
+OFPT_HELLO (OF1.1) (xid=0x0):
+ version bitmap: 0x01, 0x02
 ])
 AT_CLEANUP

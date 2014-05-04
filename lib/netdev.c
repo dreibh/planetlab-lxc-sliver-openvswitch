@@ -24,7 +24,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "connectivity.h"
 #include "coverage.h"
 #include "dpif.h"
 #include "dynamic-string.h"
@@ -38,7 +37,6 @@
 #include "openflow/openflow.h"
 #include "packets.h"
 #include "poll-loop.h"
-#include "seq.h"
 #include "shash.h"
 #include "smap.h"
 #include "sset.h"
@@ -104,13 +102,25 @@ netdev_is_pmd(const struct netdev *netdev)
 }
 
 static void
-netdev_initialize(void)
+netdev_class_mutex_initialize(void)
     OVS_EXCLUDED(netdev_class_mutex, netdev_mutex)
 {
     static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
 
     if (ovsthread_once_start(&once)) {
         ovs_mutex_init_recursive(&netdev_class_mutex);
+        ovsthread_once_done(&once);
+    }
+}
+
+static void
+netdev_initialize(void)
+    OVS_EXCLUDED(netdev_class_mutex, netdev_mutex)
+{
+    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&once)) {
+        netdev_class_mutex_initialize();
 
         fatal_signal_add_hook(restore_all_flags, NULL, NULL, true);
         netdev_vport_patch_register();
@@ -143,6 +153,7 @@ netdev_run(void)
 {
     struct netdev_registered_class *rc;
 
+    netdev_initialize();
     ovs_mutex_lock(&netdev_class_mutex);
     HMAP_FOR_EACH (rc, hmap_node, &netdev_classes) {
         if (rc->class->run) {
@@ -194,6 +205,7 @@ netdev_register_provider(const struct netdev_class *new_class)
 {
     int error;
 
+    netdev_class_mutex_initialize();
     ovs_mutex_lock(&netdev_class_mutex);
     if (netdev_lookup_class(new_class->type)) {
         VLOG_WARN("attempted to register duplicate netdev provider: %s",
@@ -342,6 +354,7 @@ netdev_open(const char *name, const char *type, struct netdev **netdevp)
                 memset(netdev, 0, sizeof *netdev);
                 netdev->netdev_class = rc->class;
                 netdev->name = xstrdup(name);
+                netdev->change_seq = 1;
                 netdev->node = shash_add(&netdev_shash, name, netdev);
 
                 /* By default enable one rx queue per netdev. */
@@ -357,7 +370,7 @@ netdev_open(const char *name, const char *type, struct netdev **netdevp)
                     int old_ref_cnt;
 
                     atomic_add(&rc->ref_cnt, 1, &old_ref_cnt);
-                    seq_change(connectivity_seq_get());
+                    netdev_change_seq_changed(netdev);
                 } else {
                     free(netdev->name);
                     ovs_assert(list_is_empty(&netdev->saved_flags_list));
@@ -1602,6 +1615,41 @@ netdev_get_devices(const struct netdev_class *netdev_class,
     ovs_mutex_unlock(&netdev_mutex);
 }
 
+/* Extracts pointers to all 'netdev-vports' into an array 'vports'
+ * and returns it.  Stores the size of the array into '*size'.
+ *
+ * The caller is responsible for freeing 'vports' and must close
+ * each 'netdev-vport' in the list. */
+struct netdev **
+netdev_get_vports(size_t *size)
+    OVS_EXCLUDED(netdev_mutex)
+{
+    struct netdev **vports;
+    struct shash_node *node;
+    size_t n = 0;
+
+    if (!size) {
+        return NULL;
+    }
+
+    /* Explicitly allocates big enough chunk of memory. */
+    vports = xmalloc(shash_count(&netdev_shash) * sizeof *vports);
+    ovs_mutex_lock(&netdev_mutex);
+    SHASH_FOR_EACH (node, &netdev_shash) {
+        struct netdev *dev = node->data;
+
+        if (netdev_vport_is_vport_class(dev->netdev_class)) {
+            dev->ref_cnt++;
+            vports[n] = dev;
+            n++;
+        }
+    }
+    ovs_mutex_unlock(&netdev_mutex);
+    *size = n;
+
+    return vports;
+}
+
 const char *
 netdev_get_type_from_name(const char *name)
 {
@@ -1650,4 +1698,10 @@ restore_all_flags(void *aux OVS_UNUSED)
                                                &old_flags);
         }
     }
+}
+
+uint64_t
+netdev_get_change_seq(const struct netdev *netdev)
+{
+    return netdev->change_seq;
 }

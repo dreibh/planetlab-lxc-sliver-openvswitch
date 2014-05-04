@@ -27,13 +27,13 @@
  * POSIX platforms and some are applicable only on Windows. As such, the
  * function definitions unique to each platform are separated out with
  * ifdef macros. More descriptive comments on individual functions are provided
- * in daemon.c (for Linux) and daemon-windows.c (for Windows).
+ * in daemon-unix.c (for POSIX platforms) and daemon-windows.c (for Windows).
 
  * The DAEMON_OPTION_ENUMS, DAEMON_LONG_OPTIONS and DAEMON_OPTION_HANDLERS
  * macros are useful for parsing command-line options in individual utilities.
- * For e.g., the command-line option "--detach" is recognized on Linux
- * and results in calling the set_detach() function. The same option is not
- * recognized on Windows platform.
+ * For e.g., the command-line option "--monitor" is recognized on Linux
+ * and results in calling the daemon_set_monitor() function. The same option is
+ * not recognized on Windows platform.
  */
 
 #ifndef _WIN32
@@ -74,20 +74,41 @@
 
 void set_detach(void);
 void daemon_set_monitor(void);
-void set_pidfile(const char *name);
 void set_no_chdir(void);
 void ignore_existing_pidfile(void);
 pid_t read_pidfile(const char *name);
 #else
-#define DAEMON_OPTION_ENUMS                     \
-    OPT_SERVICE,                                \
+#define DAEMON_OPTION_ENUMS                    \
+    OPT_DETACH,                                \
+    OPT_NO_CHDIR,                              \
+    OPT_PIDFILE,                               \
+    OPT_PIPE_HANDLE,                           \
+    OPT_SERVICE,                               \
     OPT_SERVICE_MONITOR
 
-#define DAEMON_LONG_OPTIONS                                             \
-        {"service",            no_argument, NULL, OPT_SERVICE},         \
+#define DAEMON_LONG_OPTIONS                                               \
+        {"detach",             no_argument, NULL, OPT_DETACH},            \
+        {"no-chdir",           no_argument, NULL, OPT_NO_CHDIR},          \
+        {"pidfile",            optional_argument, NULL, OPT_PIDFILE},     \
+        {"pipe-handle",        required_argument, NULL, OPT_PIPE_HANDLE}, \
+        {"service",            no_argument, NULL, OPT_SERVICE},           \
         {"service-monitor",    no_argument, NULL, OPT_SERVICE_MONITOR}
 
 #define DAEMON_OPTION_HANDLERS                  \
+        case OPT_DETACH:                        \
+            break;                              \
+                                                \
+        case OPT_NO_CHDIR:                      \
+            break;                              \
+                                                \
+        case OPT_PIDFILE:                       \
+            set_pidfile(optarg);                \
+            break;                              \
+                                                \
+        case OPT_PIPE_HANDLE:                   \
+            set_pipe_handle(optarg);            \
+            break;                              \
+                                                \
         case OPT_SERVICE:                       \
             break;                              \
                                                 \
@@ -95,6 +116,7 @@ pid_t read_pidfile(const char *name);
             break;
 
 void control_handler(DWORD request);
+void set_pipe_handle(const char *pipe_handle);
 #endif /* _WIN32 */
 
 bool get_detach(void);
@@ -106,5 +128,7 @@ void daemon_usage(void);
 void service_start(int *argcp, char **argvp[]);
 void service_stop(void);
 bool should_service_stop(void);
+void set_pidfile(const char *name);
+void close_standard_fds(void);
 
 #endif /* daemon.h */

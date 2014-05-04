@@ -73,10 +73,8 @@ VLOG_DEFINE_THIS_MODULE(ofproto_dpif);
 COVERAGE_DEFINE(ofproto_dpif_expired);
 COVERAGE_DEFINE(packet_in_overflow);
 
-/* Number of implemented OpenFlow tables. */
-enum { N_TABLES = 255 };
-enum { TBL_INTERNAL = N_TABLES - 1 };    /* Used for internal hidden rules. */
-BUILD_ASSERT_DECL(N_TABLES >= 2 && N_TABLES <= 255);
+/* No bfd/cfm status change. */
+#define NO_STATUS_CHANGE -1
 
 struct flow_miss;
 
@@ -90,6 +88,9 @@ struct rule_dpif {
     struct ovs_mutex stats_mutex;
     struct dpif_flow_stats stats OVS_GUARDED;
 };
+
+/* RULE_CAST() depends on this. */
+BUILD_ASSERT_DECL(offsetof(struct rule_dpif, up) == 0);
 
 static void rule_get_stats(struct rule *, uint64_t *packets, uint64_t *bytes,
                            long long int *used);
@@ -314,6 +315,8 @@ struct ofproto_dpif {
 
     /* Work queues. */
     struct guarded_list pins;      /* Contains "struct ofputil_packet_in"s. */
+    struct seq *pins_seq;          /* For notifying 'pins' reception. */
+    uint64_t pins_seqno;
 };
 
 /* All existing ofproto_dpif instances, indexed by ->up.name. */
@@ -362,6 +365,18 @@ ofproto_dpif_flow_mod(struct ofproto_dpif *ofproto,
     ofproto_flow_mod(&ofproto->up, fm);
 }
 
+/* Resets the modified time for 'rule' or an equivalent rule. If 'rule' is not
+ * in the classifier, but an equivalent rule is, unref 'rule' and ref the new
+ * rule. Otherwise if 'rule' is no longer installed in the classifier,
+ * reinstall it.
+ *
+ * Returns the rule whose modified time has been reset. */
+struct rule_dpif *
+ofproto_dpif_refresh_rule(struct rule_dpif *rule)
+{
+    return rule_dpif_cast(ofproto_refresh_rule(&rule->up));
+}
+
 /* Appends 'pin' to the queue of "packet ins" to be sent to the controller.
  * Takes ownership of 'pin' and pin->packet. */
 void
@@ -373,6 +388,9 @@ ofproto_dpif_send_packet_in(struct ofproto_dpif *ofproto,
         free(CONST_CAST(void *, pin->up.packet));
         free(pin);
     }
+
+    /* Wakes up main thread for packet-in I/O. */
+    seq_change(ofproto->pins_seq);
 }
 
 /* The default "table-miss" behaviour for OpenFlow1.3+ is to drop the
@@ -930,9 +948,9 @@ open_dpif_backer(const char *type, struct dpif_backer **backerp)
     return error;
 }
 
-/* Tests whether 'backer''s datapath supports recirculation Only newer datapath
- * supports OVS_KEY_ATTR in OVS_ACTION_ATTR_USERSPACE actions.  We need to
- * disable some features on older datapaths that don't support this feature.
+/* Tests whether 'backer''s datapath supports recirculation.  Only newer
+ * datapaths support OVS_KEY_ATTR_RECIRC_ID in keys.  We need to disable some
+ * features on older datapaths that don't support this feature.
  *
  * Returns false if 'backer' definitely does not support recirculation, true if
  * it seems to support recirculation or if at least the error we get is
@@ -951,7 +969,7 @@ check_recirc(struct dpif_backer *backer)
     flow.dp_hash = 1;
 
     ofpbuf_use_stack(&key, &keybuf, sizeof keybuf);
-    odp_flow_key_from_flow(&key, &flow, 0);
+    odp_flow_key_from_flow(&key, &flow, NULL, 0);
 
     error = dpif_flow_put(backer->dpif, DPIF_FP_CREATE | DPIF_FP_MODIFY,
                           ofpbuf_data(&key), ofpbuf_size(&key), NULL, 0, NULL,
@@ -1084,7 +1102,7 @@ check_max_mpls_depth(struct dpif_backer *backer)
         flow_set_mpls_bos(&flow, n, 1);
 
         ofpbuf_use_stack(&key, &keybuf, sizeof keybuf);
-        odp_flow_key_from_flow(&key, &flow, 0);
+        odp_flow_key_from_flow(&key, &flow, NULL, 0);
 
         error = dpif_flow_put(backer->dpif, DPIF_FP_CREATE | DPIF_FP_MODIFY,
                               ofpbuf_data(&key), ofpbuf_size(&key), NULL, 0, NULL, 0, NULL);
@@ -1145,6 +1163,9 @@ construct(struct ofproto *ofproto_)
     sset_init(&ofproto->port_poll_set);
     ofproto->port_poll_errno = 0;
     ofproto->change_seq = 0;
+    ofproto->pins_seq = seq_create();
+    ofproto->pins_seqno = seq_read(ofproto->pins_seq);
+
 
     SHASH_FOR_EACH_SAFE (node, next, &init_ofp_ports) {
         struct iface_hint *iface_hint = node->data;
@@ -1318,6 +1339,8 @@ destruct(struct ofproto *ofproto_)
     ovs_mutex_destroy(&ofproto->stats_mutex);
     ovs_mutex_destroy(&ofproto->vsp_mutex);
 
+    seq_destroy(ofproto->pins_seq);
+
     close_dpif_backer(ofproto->backer);
 }
 
@@ -1326,7 +1349,6 @@ run(struct ofproto *ofproto_)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
     uint64_t new_seq, new_dump_seq;
-    const bool enable_recirc = ofproto_dpif_get_enable_recirc(ofproto);
 
     if (mbridge_need_revalidate(ofproto->mbridge)) {
         ofproto->backer->need_revalidate = REV_RECONFIGURE;
@@ -1334,6 +1356,12 @@ run(struct ofproto *ofproto_)
         mac_learning_flush(ofproto->ml);
         ovs_rwlock_unlock(&ofproto->ml->rwlock);
     }
+
+    /* Always updates the ofproto->pins_seqno to avoid frequent wakeup during
+     * flow restore.  Even though nothing is processed during flow restore,
+     * all queued 'pins' will be handled immediately when flow restore
+     * completes. */
+    ofproto->pins_seqno = seq_read(ofproto->pins_seq);
 
     /* Do not perform any periodic activity required by 'ofproto' while
      * waiting for flow restore to complete. */
@@ -1404,17 +1432,12 @@ run(struct ofproto *ofproto_)
 
         /* All outstanding data in existing flows has been accounted, so it's a
          * good time to do bond rebalancing. */
-        if (enable_recirc && ofproto->has_bonded_bundles) {
+        if (ofproto->has_bonded_bundles) {
             struct ofbundle *bundle;
 
             HMAP_FOR_EACH (bundle, hmap_node, &ofproto->bundles) {
-                struct bond *bond = bundle->bond;
-
-                if (bond && bond_may_recirc(bond, NULL, NULL)) {
-                    bond_recirculation_account(bond);
-                    if (bond_rebalance(bundle->bond)) {
-                        bond_update_post_recirc_rules(bond, true);
-                    }
+                if (bundle->bond) {
+                    bond_rebalance(bundle->bond);
                 }
             }
         }
@@ -1459,6 +1482,7 @@ wait(struct ofproto *ofproto_)
     }
 
     seq_wait(udpif_dump_seq(ofproto->backer->udpif), ofproto->dump_seq);
+    seq_wait(ofproto->pins_seq, ofproto->pins_seqno);
 }
 
 static void
@@ -1801,22 +1825,28 @@ out:
     return error;
 }
 
-static bool
+static int
 get_cfm_status(const struct ofport *ofport_,
                struct ofproto_cfm_status *status)
 {
     struct ofport_dpif *ofport = ofport_dpif_cast(ofport_);
+    int ret = 0;
 
     if (ofport->cfm) {
-        status->faults = cfm_get_fault(ofport->cfm);
-        status->flap_count = cfm_get_flap_count(ofport->cfm);
-        status->remote_opstate = cfm_get_opup(ofport->cfm);
-        status->health = cfm_get_health(ofport->cfm);
-        cfm_get_remote_mpids(ofport->cfm, &status->rmps, &status->n_rmps);
-        return true;
+        if (cfm_check_status_change(ofport->cfm)) {
+            status->faults = cfm_get_fault(ofport->cfm);
+            status->flap_count = cfm_get_flap_count(ofport->cfm);
+            status->remote_opstate = cfm_get_opup(ofport->cfm);
+            status->health = cfm_get_health(ofport->cfm);
+            cfm_get_remote_mpids(ofport->cfm, &status->rmps, &status->n_rmps);
+        } else {
+            ret = NO_STATUS_CHANGE;
+        }
     } else {
-        return false;
+        ret = ENOENT;
     }
+
+    return ret;
 }
 
 static int
@@ -1841,13 +1871,19 @@ static int
 get_bfd_status(struct ofport *ofport_, struct smap *smap)
 {
     struct ofport_dpif *ofport = ofport_dpif_cast(ofport_);
+    int ret = 0;
 
     if (ofport->bfd) {
-        bfd_get_status(ofport->bfd, smap);
-        return 0;
+        if (bfd_check_status_change(ofport->bfd)) {
+            bfd_get_status(ofport->bfd, smap);
+        } else {
+            ret = NO_STATUS_CHANGE;
+        }
     } else {
-        return ENOENT;
+        ret = ENOENT;
     }
+
+    return ret;
 }
 
 /* Spanning Tree. */
@@ -3130,24 +3166,6 @@ rule_dpif_credit_stats(struct rule_dpif *rule,
     ovs_mutex_unlock(&rule->stats_mutex);
 }
 
-bool
-rule_dpif_is_fail_open(const struct rule_dpif *rule)
-{
-    return is_fail_open_rule(&rule->up);
-}
-
-bool
-rule_dpif_is_table_miss(const struct rule_dpif *rule)
-{
-    return rule_is_table_miss(&rule->up);
-}
-
-bool
-rule_dpif_is_internal(const struct rule_dpif *rule)
-{
-    return rule_is_internal(&rule->up);
-}
-
 ovs_be64
 rule_dpif_get_flow_cookie(const struct rule_dpif *rule)
     OVS_REQUIRES(rule->up.mutex)
@@ -3165,22 +3183,55 @@ rule_dpif_reduce_timeouts(struct rule_dpif *rule, uint16_t idle_timeout,
 /* Returns 'rule''s actions.  The caller owns a reference on the returned
  * actions and must eventually release it (with rule_actions_unref()) to avoid
  * a memory leak. */
-struct rule_actions *
+const struct rule_actions *
 rule_dpif_get_actions(const struct rule_dpif *rule)
 {
     return rule_get_actions(&rule->up);
 }
 
-static uint8_t
-rule_dpif_lookup__ (struct ofproto_dpif *ofproto, const struct flow *flow,
-                    struct flow_wildcards *wc, struct rule_dpif **rule)
+/* Lookup 'flow' in table 0 of 'ofproto''s classifier.
+ * If 'wc' is non-null, sets the fields that were relevant as part of
+ * the lookup. Returns the table_id where a match or miss occurred.
+ *
+ * The return value will be zero unless there was a miss and
+ * OFPTC11_TABLE_MISS_CONTINUE is in effect for the sequence of tables
+ * where misses occur.
+ *
+ * The rule is returned in '*rule', which is valid at least until the next
+ * RCU quiescent period.  If the '*rule' needs to stay around longer,
+ * a non-zero 'take_ref' must be passed in to cause a reference to be taken
+ * on it before this returns. */
+uint8_t
+rule_dpif_lookup(struct ofproto_dpif *ofproto, struct flow *flow,
+                 struct flow_wildcards *wc, struct rule_dpif **rule,
+                 bool take_ref)
 {
     enum rule_dpif_lookup_verdict verdict;
     enum ofputil_port_config config = 0;
-    uint8_t table_id = TBL_INTERNAL;
+    uint8_t table_id;
+
+    if (ofproto_dpif_get_enable_recirc(ofproto)) {
+        /* Always exactly match recirc_id since datapath supports
+         * recirculation.  */
+        if (wc) {
+            wc->masks.recirc_id = UINT32_MAX;
+        }
+
+        /* Start looking up from internal table for post recirculation flows
+         * or packets. We can also simply send all, including normal flows
+         * or packets to the internal table. They will not match any post
+         * recirculation rules except the 'catch all' rule that resubmit
+         * them to table 0.
+         *
+         * As an optimization, we send normal flows and packets to table 0
+         * directly, saving one table lookup.  */
+        table_id = flow->recirc_id ? TBL_INTERNAL : 0;
+    } else {
+        table_id = 0;
+    }
 
     verdict = rule_dpif_lookup_from_table(ofproto, flow, wc, true,
-                                          &table_id, rule);
+                                          &table_id, rule, take_ref);
 
     switch (verdict) {
     case RULE_DPIF_LOOKUP_VERDICT_MATCH:
@@ -3209,30 +3260,17 @@ rule_dpif_lookup__ (struct ofproto_dpif *ofproto, const struct flow *flow,
     }
 
     choose_miss_rule(config, ofproto->miss_rule,
-                     ofproto->no_packet_in_rule, rule);
+                     ofproto->no_packet_in_rule, rule, take_ref);
     return table_id;
 }
 
-/* Lookup 'flow' in table 0 of 'ofproto''s classifier.
- * If 'wc' is non-null, sets the fields that were relevant as part of
- * the lookup. Returns the table_id where a match or miss occurred.
- *
- * The return value will be zero unless there was a miss and
- * O!-TC_TABLE_MISS_CONTINUE is in effect for the sequence of tables
- * where misses occur. */
-uint8_t
-rule_dpif_lookup(struct ofproto_dpif *ofproto, struct flow *flow,
-                 struct flow_wildcards *wc, struct rule_dpif **rule)
-{
-    /* Set metadata to the value of recirc_id to speed up internal
-     * rule lookup. */
-    flow->metadata = htonll(flow->recirc_id);
-    return rule_dpif_lookup__(ofproto, flow, wc, rule);
-}
-
+/* The returned rule is valid at least until the next RCU quiescent period.
+ * If the '*rule' needs to stay around longer, a non-zero 'take_ref' must be
+ * passed in to cause a reference to be taken on it before this returns. */
 static struct rule_dpif *
 rule_dpif_lookup_in_table(struct ofproto_dpif *ofproto, uint8_t table_id,
-                          const struct flow *flow, struct flow_wildcards *wc)
+                          const struct flow *flow, struct flow_wildcards *wc,
+                          bool take_ref)
 {
     struct classifier *cls = &ofproto->up.tables[table_id].cls;
     const struct cls_rule *cls_rule;
@@ -3266,7 +3304,9 @@ rule_dpif_lookup_in_table(struct ofproto_dpif *ofproto, uint8_t table_id,
     }
 
     rule = rule_dpif_cast(rule_from_cls_rule(cls_rule));
-    rule_dpif_ref(rule);
+    if (take_ref) {
+        rule_dpif_ref(rule);
+    }
     fat_rwlock_unlock(&cls->rwlock);
 
     return rule;
@@ -3293,6 +3333,7 @@ rule_dpif_lookup_in_table(struct ofproto_dpif *ofproto, uint8_t table_id,
  *    - RULE_OFPTC_TABLE_MISS_CONTROLLER if no rule was found and either:
  *      + 'honor_table_miss' is false
  *      + a table miss configuration specified that the packet should be
+ *        sent to the controller in this case.
  *
  *    - RULE_DPIF_LOOKUP_VERDICT_DROP if no rule was found, 'honor_table_miss'
  *      is true and a table miss configuration specified that the packet
@@ -3300,13 +3341,19 @@ rule_dpif_lookup_in_table(struct ofproto_dpif *ofproto, uint8_t table_id,
  *
  *    - RULE_DPIF_LOOKUP_VERDICT_DEFAULT if no rule was found,
  *      'honor_table_miss' is true and a table miss configuration has
- *      not been specified in this case. */
+ *      not been specified in this case.
+ *
+ * The rule is returned in '*rule', which is valid at least until the next
+ * RCU quiescent period.  If the '*rule' needs to stay around longer,
+ * a non-zero 'take_ref' must be passed in to cause a reference to be taken
+ * on it before this returns. */
 enum rule_dpif_lookup_verdict
 rule_dpif_lookup_from_table(struct ofproto_dpif *ofproto,
                             const struct flow *flow,
                             struct flow_wildcards *wc,
                             bool honor_table_miss,
-                            uint8_t *table_id, struct rule_dpif **rule)
+                            uint8_t *table_id, struct rule_dpif **rule,
+                            bool take_ref)
 {
     uint8_t next_id;
 
@@ -3315,7 +3362,8 @@ rule_dpif_lookup_from_table(struct ofproto_dpif *ofproto,
          next_id++, next_id += (next_id == TBL_INTERNAL))
     {
         *table_id = next_id;
-        *rule = rule_dpif_lookup_in_table(ofproto, *table_id, flow, wc);
+        *rule = rule_dpif_lookup_in_table(ofproto, *table_id, flow, wc,
+                                          take_ref);
         if (*rule) {
             return RULE_DPIF_LOOKUP_VERDICT_MATCH;
         } else if (!honor_table_miss) {
@@ -3342,28 +3390,20 @@ rule_dpif_lookup_from_table(struct ofproto_dpif *ofproto,
 
 /* Given a port configuration (specified as zero if there's no port), chooses
  * which of 'miss_rule' and 'no_packet_in_rule' should be used in case of a
- * flow table miss. */
+ * flow table miss.
+ *
+ * The rule is returned in '*rule', which is valid at least until the next
+ * RCU quiescent period.  If the '*rule' needs to stay around longer,
+ * a reference must be taken on it (rule_dpif_ref()).
+ */
 void
 choose_miss_rule(enum ofputil_port_config config, struct rule_dpif *miss_rule,
-                 struct rule_dpif *no_packet_in_rule, struct rule_dpif **rule)
+                 struct rule_dpif *no_packet_in_rule, struct rule_dpif **rule,
+                 bool take_ref)
 {
     *rule = config & OFPUTIL_PC_NO_PACKET_IN ? no_packet_in_rule : miss_rule;
-    rule_dpif_ref(*rule);
-}
-
-void
-rule_dpif_ref(struct rule_dpif *rule)
-{
-    if (rule) {
-        ofproto_rule_ref(&rule->up);
-    }
-}
-
-void
-rule_dpif_unref(struct rule_dpif *rule)
-{
-    if (rule) {
-        ofproto_rule_unref(&rule->up);
+    if (take_ref) {
+        rule_dpif_ref(*rule);
     }
 }
 
@@ -3789,7 +3829,7 @@ struct trace_ctx {
 static void
 trace_format_rule(struct ds *result, int level, const struct rule_dpif *rule)
 {
-    struct rule_actions *actions;
+    const struct rule_actions *actions;
     ovs_be64 cookie;
 
     ds_put_char_multiple(result, '\t', level);
@@ -4174,7 +4214,7 @@ ofproto_trace(struct ofproto_dpif *ofproto, struct flow *flow,
     if (ofpacts) {
         rule = NULL;
     } else {
-        rule_dpif_lookup(ofproto, flow, &trace.wc, &rule);
+        rule_dpif_lookup(ofproto, flow, &trace.wc, &rule, false);
 
         trace_format_rule(ds, 0, rule);
         if (rule == ofproto->miss_rule) {
@@ -4230,8 +4270,6 @@ ofproto_trace(struct ofproto_dpif *ofproto, struct flow *flow,
 
         xlate_out_uninit(&trace.xout);
     }
-
-    rule_dpif_unref(rule);
 }
 
 /* Store the current ofprotos in 'ofproto_shash'.  Returns a sorted list
@@ -4476,12 +4514,12 @@ ofproto_dpif_unixctl_init(void)
                              ofproto_unixctl_dpif_dump_flows, NULL);
 }
 
-
-/* Returns true if 'rule' is an internal rule, false otherwise. */
+/* Returns true if 'table' is the table used for internal rules,
+ * false otherwise. */
 bool
-rule_is_internal(const struct rule *rule)
+table_is_internal(uint8_t table_id)
 {
-    return rule->table_id == TBL_INTERNAL;
+    return table_id == TBL_INTERNAL;
 }
 
 /* Linux VLAN device support (e.g. "eth0.10" for VLAN 10.)
@@ -4796,9 +4834,8 @@ ofproto_dpif_add_internal_flow(struct ofproto_dpif *ofproto,
     }
 
     rule = rule_dpif_lookup_in_table(ofproto, TBL_INTERNAL, &match->flow,
-                                     &match->wc);
+                                     &match->wc, false);
     if (rule) {
-        rule_dpif_unref(rule);
         *rulep = &rule->up;
     } else {
         OVS_NOT_REACHED();

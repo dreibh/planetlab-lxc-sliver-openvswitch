@@ -135,7 +135,6 @@ int lockdep_ovsl_is_held(void)
 }
 #endif
 
-static struct vport *new_vport(const struct vport_parms *);
 static int queue_gso_packets(struct datapath *dp, struct sk_buff *,
 			     const struct dp_upcall_info *);
 static int queue_userspace_packet(struct datapath *dp, struct sk_buff *,
@@ -188,6 +187,7 @@ static void destroy_dp_rcu(struct rcu_head *rcu)
 {
 	struct datapath *dp = container_of(rcu, struct datapath, rcu);
 
+	ovs_flow_tbl_destroy(&dp->table);
 	free_percpu(dp->stats_percpu);
 	release_net(ovs_dp_get_net(dp));
 	kfree(dp->ports);
@@ -240,46 +240,40 @@ void ovs_dp_detach_port(struct vport *p)
 	ovs_vport_del(p);
 }
 
-/* Must be called with rcu_read_lock. */
-void ovs_dp_process_received_packet(struct vport *p, struct sk_buff *skb)
+void ovs_dp_process_packet_with_key(struct sk_buff *skb,
+				    struct sw_flow_key *pkt_key,
+				    bool recirc)
 {
+	const struct vport *p = OVS_CB(skb)->input_vport;
 	struct datapath *dp = p->dp;
 	struct sw_flow *flow;
 	struct dp_stats_percpu *stats;
-	struct sw_flow_key key;
 	u64 *stats_counter;
 	u32 n_mask_hit;
-	int error;
 
 	stats = this_cpu_ptr(dp->stats_percpu);
 
-	/* Extract flow from 'skb' into 'key'. */
-	error = ovs_flow_extract(skb, p->port_no, &key);
-	if (unlikely(error)) {
-		kfree_skb(skb);
-		return;
-	}
-
 	/* Look up flow. */
-	flow = ovs_flow_tbl_lookup_stats(&dp->table, &key, &n_mask_hit);
+	flow = ovs_flow_tbl_lookup_stats(&dp->table, pkt_key, skb_get_hash(skb),
+					 &n_mask_hit);
 	if (unlikely(!flow)) {
 		struct dp_upcall_info upcall;
 
 		upcall.cmd = OVS_PACKET_CMD_MISS;
-		upcall.key = &key;
+		upcall.key = pkt_key;
 		upcall.userdata = NULL;
-		upcall.portid = p->upcall_portid;
+		upcall.portid = ovs_vport_find_upcall_portid(p, skb);
 		ovs_dp_upcall(dp, skb, &upcall);
 		consume_skb(skb);
 		stats_counter = &stats->n_missed;
 		goto out;
 	}
 
+	OVS_CB(skb)->pkt_key = pkt_key;
 	OVS_CB(skb)->flow = flow;
-	OVS_CB(skb)->pkt_key = &key;
 
-	ovs_flow_stats_update(OVS_CB(skb)->flow, key.tp.flags, skb);
-	ovs_execute_actions(dp, skb);
+	ovs_flow_stats_update(OVS_CB(skb)->flow, pkt_key->tp.flags, skb);
+	ovs_execute_actions(dp, skb, recirc);
 	stats_counter = &stats->n_hit;
 
 out:
@@ -288,6 +282,24 @@ out:
 	(*stats_counter)++;
 	stats->n_mask_hit += n_mask_hit;
 	u64_stats_update_end(&stats->sync);
+}
+
+/* Must be called with rcu_read_lock. */
+void ovs_dp_process_received_packet(struct vport *p, struct sk_buff *skb)
+{
+	int error;
+	struct sw_flow_key key;
+
+	OVS_CB(skb)->input_vport = p;
+
+	/* Extract flow from 'skb' into 'key'. */
+	error = ovs_flow_extract(skb, p->port_no, &key);
+	if (unlikely(error)) {
+		kfree_skb(skb);
+		return;
+	}
+
+	ovs_dp_process_packet_with_key(skb, &key, false);
 }
 
 int ovs_dp_upcall(struct datapath *dp, struct sk_buff *skb,
@@ -485,7 +497,9 @@ static int queue_userspace_packet(struct datapath *dp, struct sk_buff *skb,
 	}
 	nla->nla_len = nla_attr_size(skb->len);
 
-	skb_zerocopy(user_skb, skb, skb->len, hlen);
+	err = skb_zerocopy(user_skb, skb, skb->len, hlen);
+	if (err)
+		goto out;
 
 	/* Pad OVS_PACKET_ATTR_PACKET if linear copy was performed */
 	if (!(dp->user_features & OVS_DP_F_UNALIGNED)) {
@@ -499,6 +513,8 @@ static int queue_userspace_packet(struct datapath *dp, struct sk_buff *skb,
 
 	err = genlmsg_unicast(ovs_dp_get_net(dp), user_skb, upcall_info->portid);
 out:
+	if (err)
+		skb_tx_error(skb);
 	kfree_skb(nskb);
 	return err;
 }
@@ -512,6 +528,7 @@ static int ovs_packet_cmd_execute(struct sk_buff *skb, struct genl_info *info)
 	struct sw_flow *flow;
 	struct datapath *dp;
 	struct ethhdr *eth;
+	struct vport *input_vport;
 	int len;
 	int err;
 
@@ -575,8 +592,17 @@ static int ovs_packet_cmd_execute(struct sk_buff *skb, struct genl_info *info)
 	if (!dp)
 		goto err_unlock;
 
+	input_vport = ovs_vport_rcu(dp, flow->key.phy.in_port);
+	if (!input_vport)
+		input_vport = ovs_vport_rcu(dp, OVSP_LOCAL);
+
+	if (!input_vport)
+		goto err_unlock;
+
+	OVS_CB(packet)->input_vport = input_vport;
+
 	local_bh_disable();
-	err = ovs_execute_actions(dp, packet);
+	err = ovs_execute_actions(dp, packet, false);
 	local_bh_enable();
 	rcu_read_unlock();
 
@@ -1381,7 +1407,7 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
 	parms.options = NULL;
 	parms.dp = dp;
 	parms.port_no = OVSP_LOCAL;
-	parms.upcall_portid = nla_get_u32(a[OVS_DP_ATTR_UPCALL_PID]);
+	parms.upcall_portids = a[OVS_DP_ATTR_UPCALL_PID];
 
 	ovs_dp_change(dp, a);
 
@@ -1424,7 +1450,7 @@ err_destroy_ports_array:
 err_destroy_percpu:
 	free_percpu(dp->stats_percpu);
 err_destroy_table:
-	ovs_flow_tbl_destroy(&dp->table, false);
+	ovs_flow_tbl_destroy(&dp->table);
 err_free_dp:
 	release_net(ovs_dp_get_net(dp));
 	kfree(dp);
@@ -1456,8 +1482,6 @@ static void __dp_destroy(struct datapath *dp)
 	ovs_dp_detach_port(ovs_vport_ovsl(dp, OVSP_LOCAL));
 
 	/* RCU destroy the flow table */
-	ovs_flow_tbl_destroy(&dp->table, true);
-
 	call_rcu(&dp->rcu, destroy_dp_rcu);
 }
 
@@ -1638,13 +1662,15 @@ static int ovs_vport_cmd_fill_info(struct vport *vport, struct sk_buff *skb,
 
 	if (nla_put_u32(skb, OVS_VPORT_ATTR_PORT_NO, vport->port_no) ||
 	    nla_put_u32(skb, OVS_VPORT_ATTR_TYPE, vport->ops->type) ||
-	    nla_put_string(skb, OVS_VPORT_ATTR_NAME, vport->ops->get_name(vport)) ||
-	    nla_put_u32(skb, OVS_VPORT_ATTR_UPCALL_PID, vport->upcall_portid))
+	    nla_put_string(skb, OVS_VPORT_ATTR_NAME, vport->ops->get_name(vport)))
 		goto nla_put_failure;
 
 	ovs_vport_get_stats(vport, &vport_stats);
 	if (nla_put(skb, OVS_VPORT_ATTR_STATS, sizeof(struct ovs_vport_stats),
 		    &vport_stats))
+		goto nla_put_failure;
+
+	if (ovs_vport_get_upcall_portids(vport, skb))
 		goto nla_put_failure;
 
 	err = ovs_vport_get_options(vport, skb);
@@ -1768,7 +1794,7 @@ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
 	parms.options = a[OVS_VPORT_ATTR_OPTIONS];
 	parms.dp = dp;
 	parms.port_no = port_no;
-	parms.upcall_portid = nla_get_u32(a[OVS_VPORT_ATTR_UPCALL_PID]);
+	parms.upcall_portids = a[OVS_VPORT_ATTR_UPCALL_PID];
 
 	vport = new_vport(&parms);
 	err = PTR_ERR(vport);
@@ -1825,8 +1851,13 @@ static int ovs_vport_cmd_set(struct sk_buff *skb, struct genl_info *info)
 	if (a[OVS_VPORT_ATTR_STATS])
 		ovs_vport_set_stats(vport, nla_data(a[OVS_VPORT_ATTR_STATS]));
 
-	if (a[OVS_VPORT_ATTR_UPCALL_PID])
-		vport->upcall_portid = nla_get_u32(a[OVS_VPORT_ATTR_UPCALL_PID]);
+
+	if (a[OVS_VPORT_ATTR_UPCALL_PID]) {
+		err = ovs_vport_set_upcall_portids(vport,
+						   a[OVS_VPORT_ATTR_UPCALL_PID]);
+		if (err)
+			goto exit_unlock_free;
+	}
 
 	err = ovs_vport_cmd_fill_info(vport, reply, info->snd_portid,
 				      info->snd_seq, 0, OVS_VPORT_CMD_NEW);

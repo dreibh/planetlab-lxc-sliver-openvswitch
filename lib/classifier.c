@@ -30,29 +30,129 @@
 
 VLOG_DEFINE_THIS_MODULE(classifier);
 
+struct trie_node;
 struct trie_ctx;
-static struct cls_subtable *find_subtable(const struct classifier *,
+
+/* Ports trie depends on both ports sharing the same ovs_be32. */
+#define TP_PORTS_OFS32 (offsetof(struct flow, tp_src) / 4)
+BUILD_ASSERT_DECL(TP_PORTS_OFS32 == offsetof(struct flow, tp_dst) / 4);
+
+/* Prefix trie for a 'field' */
+struct cls_trie {
+    const struct mf_field *field; /* Trie field, or NULL. */
+    struct trie_node *root;       /* NULL if none. */
+};
+
+struct cls_subtable_entry {
+    struct cls_subtable *subtable;
+    tag_type tag;
+    unsigned int max_priority;
+};
+
+struct cls_subtable_cache {
+    struct cls_subtable_entry *subtables;
+    size_t alloc_size;     /* Number of allocated elements. */
+    size_t size;           /* One past last valid array element. */
+};
+
+enum {
+    CLS_MAX_INDICES = 3   /* Maximum number of lookup indices per subtable. */
+};
+
+struct cls_classifier {
+    int n_rules;                /* Total number of rules. */
+    uint8_t n_flow_segments;
+    uint8_t flow_segments[CLS_MAX_INDICES]; /* Flow segment boundaries to use
+                                             * for staged lookup. */
+    struct hmap subtables;      /* Contains "struct cls_subtable"s.  */
+    struct cls_subtable_cache subtables_priority;
+    struct hmap partitions;     /* Contains "struct cls_partition"s. */
+    struct cls_trie tries[CLS_MAX_TRIES]; /* Prefix tries. */
+    unsigned int n_tries;
+};
+
+/* A set of rules that all have the same fields wildcarded. */
+struct cls_subtable {
+    struct hmap_node hmap_node; /* Within struct cls_classifier 'subtables'
+                                 * hmap. */
+    struct hmap rules;          /* Contains "struct cls_rule"s. */
+    int n_rules;                /* Number of rules, including duplicates. */
+    unsigned int max_priority;  /* Max priority of any rule in the subtable. */
+    unsigned int max_count;     /* Count of max_priority rules. */
+    tag_type tag;               /* Tag generated from mask for partitioning. */
+    uint8_t n_indices;           /* How many indices to use. */
+    uint8_t index_ofs[CLS_MAX_INDICES]; /* u32 flow segment boundaries. */
+    struct hindex indices[CLS_MAX_INDICES]; /* Staged lookup indices. */
+    unsigned int trie_plen[CLS_MAX_TRIES];  /* Trie prefix length in 'mask'. */
+    int ports_mask_len;
+    struct trie_node *ports_trie; /* NULL if none. */
+    struct minimask mask;       /* Wildcards for fields. */
+    /* 'mask' must be the last field. */
+};
+
+/* Associates a metadata value (that is, a value of the OpenFlow 1.1+ metadata
+ * field) with tags for the "cls_subtable"s that contain rules that match that
+ * metadata value.  */
+struct cls_partition {
+    struct hmap_node hmap_node; /* In struct cls_classifier's 'partitions'
+                                 * hmap. */
+    ovs_be64 metadata;          /* metadata value for this partition. */
+    tag_type tags;              /* OR of each flow's cls_subtable tag. */
+    struct tag_tracker tracker; /* Tracks the bits in 'tags'. */
+};
+
+/* Internal representation of a rule in a "struct cls_subtable". */
+struct cls_match {
+    struct cls_rule *cls_rule;
+    struct hindex_node index_nodes[CLS_MAX_INDICES]; /* Within subtable's
+                                                      * 'indices'. */
+    struct hmap_node hmap_node; /* Within struct cls_subtable 'rules'. */
+    unsigned int priority;      /* Larger numbers are higher priorities. */
+    struct cls_partition *partition;
+    struct list list;           /* List of identical, lower-priority rules. */
+    struct miniflow flow;       /* Matching rule. Mask is in the subtable. */
+    /* 'flow' must be the last field. */
+};
+
+static struct cls_match *
+cls_match_alloc(struct cls_rule *rule)
+{
+    int count = count_1bits(rule->match.flow.map);
+
+    struct cls_match *cls_match
+        = xmalloc(sizeof *cls_match - sizeof cls_match->flow.inline_values
+                  + MINIFLOW_VALUES_SIZE(count));
+
+    cls_match->cls_rule = rule;
+    miniflow_clone_inline(&cls_match->flow, &rule->match.flow, count);
+    cls_match->priority = rule->priority;
+    rule->cls_match = cls_match;
+
+    return cls_match;
+}
+
+static struct cls_subtable *find_subtable(const struct cls_classifier *,
                                           const struct minimask *);
-static struct cls_subtable *insert_subtable(struct classifier *,
+static struct cls_subtable *insert_subtable(struct cls_classifier *,
                                             const struct minimask *);
 
-static void destroy_subtable(struct classifier *, struct cls_subtable *);
+static void destroy_subtable(struct cls_classifier *, struct cls_subtable *);
 
-static void update_subtables_after_insertion(struct classifier *,
+static void update_subtables_after_insertion(struct cls_classifier *,
                                              struct cls_subtable *,
                                              unsigned int new_priority);
-static void update_subtables_after_removal(struct classifier *,
+static void update_subtables_after_removal(struct cls_classifier *,
                                            struct cls_subtable *,
                                            unsigned int del_priority);
 
-static struct cls_rule *find_match_wc(const struct cls_subtable *,
-                                      const struct flow *, struct trie_ctx *,
-                                      unsigned int n_tries,
-                                      struct flow_wildcards *);
-static struct cls_rule *find_equal(struct cls_subtable *,
-                                   const struct miniflow *, uint32_t hash);
-static struct cls_rule *insert_rule(struct classifier *,
-                                    struct cls_subtable *, struct cls_rule *);
+static struct cls_match *find_match_wc(const struct cls_subtable *,
+                                       const struct flow *, struct trie_ctx *,
+                                       unsigned int n_tries,
+                                       struct flow_wildcards *);
+static struct cls_match *find_equal(struct cls_subtable *,
+                                    const struct miniflow *, uint32_t hash);
+static struct cls_match *insert_rule(struct cls_classifier *,
+                                     struct cls_subtable *, struct cls_rule *);
 
 /* Iterates RULE over HEAD and all of the cls_rules on HEAD->list. */
 #define FOR_EACH_RULE_IN_LIST(RULE, HEAD)                               \
@@ -62,23 +162,289 @@ static struct cls_rule *insert_rule(struct classifier *,
          (RULE) != NULL && ((NEXT) = next_rule_in_list(RULE), true);    \
          (RULE) = (NEXT))
 
-static struct cls_rule *next_rule_in_list__(struct cls_rule *);
-static struct cls_rule *next_rule_in_list(struct cls_rule *);
+static struct cls_match *next_rule_in_list__(struct cls_match *);
+static struct cls_match *next_rule_in_list(struct cls_match *);
 
 static unsigned int minimask_get_prefix_len(const struct minimask *,
                                             const struct mf_field *);
-static void trie_init(struct classifier *, int trie_idx,
+static void trie_init(struct cls_classifier *, int trie_idx,
                       const struct mf_field *);
 static unsigned int trie_lookup(const struct cls_trie *, const struct flow *,
                                 unsigned int *checkbits);
-
+static unsigned int trie_lookup_value(const struct trie_node *,
+                                      const ovs_be32 value[],
+                                      unsigned int *checkbits);
 static void trie_destroy(struct trie_node *);
 static void trie_insert(struct cls_trie *, const struct cls_rule *, int mlen);
+static void trie_insert_prefix(struct trie_node **, const ovs_be32 *prefix,
+                               int mlen);
 static void trie_remove(struct cls_trie *, const struct cls_rule *, int mlen);
+static void trie_remove_prefix(struct trie_node **, const ovs_be32 *prefix,
+                               int mlen);
 static void mask_set_prefix_bits(struct flow_wildcards *, uint8_t be32ofs,
                                  unsigned int nbits);
 static bool mask_prefix_bits_set(const struct flow_wildcards *,
                                  uint8_t be32ofs, unsigned int nbits);
+
+static void
+cls_subtable_cache_init(struct cls_subtable_cache *array)
+{
+    memset(array, 0, sizeof *array);
+}
+
+static void
+cls_subtable_cache_destroy(struct cls_subtable_cache *array)
+{
+    free(array->subtables);
+    memset(array, 0, sizeof *array);
+}
+
+/* Array insertion. */
+static void
+cls_subtable_cache_push_back(struct cls_subtable_cache *array,
+                             struct cls_subtable_entry a)
+{
+    if (array->size == array->alloc_size) {
+        array->subtables = x2nrealloc(array->subtables, &array->alloc_size,
+                                      sizeof a);
+    }
+
+    array->subtables[array->size++] = a;
+}
+
+/* Only for rearranging entries in the same cache. */
+static inline void
+cls_subtable_cache_splice(struct cls_subtable_entry *to,
+                          struct cls_subtable_entry *start,
+                          struct cls_subtable_entry *end)
+{
+    if (to > end) {
+        /* Same as splicing entries to (start) from [end, to). */
+        struct cls_subtable_entry *temp = to;
+        to = start; start = end; end = temp;
+    }
+    if (to < start) {
+        while (start != end) {
+            struct cls_subtable_entry temp = *start;
+
+            memmove(to + 1, to, (start - to) * sizeof *to);
+            *to = temp;
+            start++;
+        }
+    } /* Else nothing to be done. */
+}
+
+/* Array removal. */
+static inline void
+cls_subtable_cache_remove(struct cls_subtable_cache *array,
+                          struct cls_subtable_entry *elem)
+{
+    ssize_t size = (&array->subtables[array->size]
+                    - (elem + 1)) * sizeof *elem;
+    if (size > 0) {
+        memmove(elem, elem + 1, size);
+    }
+    array->size--;
+}
+
+#define CLS_SUBTABLE_CACHE_FOR_EACH(SUBTABLE, ITER, ARRAY)      \
+    for (ITER = (ARRAY)->subtables;                             \
+         ITER < &(ARRAY)->subtables[(ARRAY)->size]              \
+             && OVS_LIKELY(SUBTABLE = ITER->subtable);          \
+         ++ITER)
+#define CLS_SUBTABLE_CACHE_FOR_EACH_CONTINUE(SUBTABLE, ITER, ARRAY) \
+    for (++ITER;                                                    \
+         ITER < &(ARRAY)->subtables[(ARRAY)->size]                  \
+             && OVS_LIKELY(SUBTABLE = ITER->subtable);              \
+         ++ITER)
+#define CLS_SUBTABLE_CACHE_FOR_EACH_REVERSE(SUBTABLE, ITER, ARRAY)  \
+    for (ITER = &(ARRAY)->subtables[(ARRAY)->size];                 \
+         ITER > (ARRAY)->subtables                                  \
+             && OVS_LIKELY(SUBTABLE = (--ITER)->subtable);)
+
+
+/* flow/miniflow/minimask/minimatch utilities.
+ * These are only used by the classifier, so place them here to allow
+ * for better optimization. */
+
+static inline uint64_t
+miniflow_get_map_in_range(const struct miniflow *miniflow,
+                          uint8_t start, uint8_t end, unsigned int *offset)
+{
+    uint64_t map = miniflow->map;
+    *offset = 0;
+
+    if (start > 0) {
+        uint64_t msk = (UINT64_C(1) << start) - 1; /* 'start' LSBs set */
+        *offset = count_1bits(map & msk);
+        map &= ~msk;
+    }
+    if (end < FLOW_U32S) {
+        uint64_t msk = (UINT64_C(1) << end) - 1; /* 'end' LSBs set */
+        map &= msk;
+    }
+    return map;
+}
+
+/* Returns a hash value for the bits of 'flow' where there are 1-bits in
+ * 'mask', given 'basis'.
+ *
+ * The hash values returned by this function are the same as those returned by
+ * miniflow_hash_in_minimask(), only the form of the arguments differ. */
+static inline uint32_t
+flow_hash_in_minimask(const struct flow *flow, const struct minimask *mask,
+                      uint32_t basis)
+{
+    const uint32_t *mask_values = miniflow_get_u32_values(&mask->masks);
+    const uint32_t *flow_u32 = (const uint32_t *)flow;
+    const uint32_t *p = mask_values;
+    uint32_t hash;
+    uint64_t map;
+
+    hash = basis;
+    for (map = mask->masks.map; map; map = zero_rightmost_1bit(map)) {
+        hash = mhash_add(hash, flow_u32[raw_ctz(map)] & *p++);
+    }
+
+    return mhash_finish(hash, (p - mask_values) * 4);
+}
+
+/* Returns a hash value for the bits of 'flow' where there are 1-bits in
+ * 'mask', given 'basis'.
+ *
+ * The hash values returned by this function are the same as those returned by
+ * flow_hash_in_minimask(), only the form of the arguments differ. */
+static inline uint32_t
+miniflow_hash_in_minimask(const struct miniflow *flow,
+                          const struct minimask *mask, uint32_t basis)
+{
+    const uint32_t *mask_values = miniflow_get_u32_values(&mask->masks);
+    const uint32_t *p = mask_values;
+    uint32_t hash = basis;
+    uint32_t flow_u32;
+
+    MINIFLOW_FOR_EACH_IN_MAP(flow_u32, flow, mask->masks.map) {
+        hash = mhash_add(hash, flow_u32 & *p++);
+    }
+
+    return mhash_finish(hash, (p - mask_values) * 4);
+}
+
+/* Returns a hash value for the bits of range [start, end) in 'flow',
+ * where there are 1-bits in 'mask', given 'hash'.
+ *
+ * The hash values returned by this function are the same as those returned by
+ * minimatch_hash_range(), only the form of the arguments differ. */
+static inline uint32_t
+flow_hash_in_minimask_range(const struct flow *flow,
+                            const struct minimask *mask,
+                            uint8_t start, uint8_t end, uint32_t *basis)
+{
+    const uint32_t *mask_values = miniflow_get_u32_values(&mask->masks);
+    const uint32_t *flow_u32 = (const uint32_t *)flow;
+    unsigned int offset;
+    uint64_t map = miniflow_get_map_in_range(&mask->masks, start, end,
+                                             &offset);
+    const uint32_t *p = mask_values + offset;
+    uint32_t hash = *basis;
+
+    for (; map; map = zero_rightmost_1bit(map)) {
+        hash = mhash_add(hash, flow_u32[raw_ctz(map)] & *p++);
+    }
+
+    *basis = hash; /* Allow continuation from the unfinished value. */
+    return mhash_finish(hash, (p - mask_values) * 4);
+}
+
+/* Fold minimask 'mask''s wildcard mask into 'wc's wildcard mask. */
+static inline void
+flow_wildcards_fold_minimask(struct flow_wildcards *wc,
+                             const struct minimask *mask)
+{
+    flow_union_with_miniflow(&wc->masks, &mask->masks);
+}
+
+/* Fold minimask 'mask''s wildcard mask into 'wc's wildcard mask
+ * in range [start, end). */
+static inline void
+flow_wildcards_fold_minimask_range(struct flow_wildcards *wc,
+                                   const struct minimask *mask,
+                                   uint8_t start, uint8_t end)
+{
+    uint32_t *dst_u32 = (uint32_t *)&wc->masks;
+    unsigned int offset;
+    uint64_t map = miniflow_get_map_in_range(&mask->masks, start, end,
+                                             &offset);
+    const uint32_t *p = miniflow_get_u32_values(&mask->masks) + offset;
+
+    for (; map; map = zero_rightmost_1bit(map)) {
+        dst_u32[raw_ctz(map)] |= *p++;
+    }
+}
+
+/* Returns a hash value for 'flow', given 'basis'. */
+static inline uint32_t
+miniflow_hash(const struct miniflow *flow, uint32_t basis)
+{
+    const uint32_t *values = miniflow_get_u32_values(flow);
+    const uint32_t *p = values;
+    uint32_t hash = basis;
+    uint64_t hash_map = 0;
+    uint64_t map;
+
+    for (map = flow->map; map; map = zero_rightmost_1bit(map)) {
+        if (*p) {
+            hash = mhash_add(hash, *p);
+            hash_map |= rightmost_1bit(map);
+        }
+        p++;
+    }
+    hash = mhash_add(hash, hash_map);
+    hash = mhash_add(hash, hash_map >> 32);
+
+    return mhash_finish(hash, p - values);
+}
+
+/* Returns a hash value for 'mask', given 'basis'. */
+static inline uint32_t
+minimask_hash(const struct minimask *mask, uint32_t basis)
+{
+    return miniflow_hash(&mask->masks, basis);
+}
+
+/* Returns a hash value for 'match', given 'basis'. */
+static inline uint32_t
+minimatch_hash(const struct minimatch *match, uint32_t basis)
+{
+    return miniflow_hash(&match->flow, minimask_hash(&match->mask, basis));
+}
+
+/* Returns a hash value for the bits of range [start, end) in 'minimatch',
+ * given 'basis'.
+ *
+ * The hash values returned by this function are the same as those returned by
+ * flow_hash_in_minimask_range(), only the form of the arguments differ. */
+static inline uint32_t
+minimatch_hash_range(const struct minimatch *match, uint8_t start, uint8_t end,
+                     uint32_t *basis)
+{
+    unsigned int offset;
+    const uint32_t *p, *q;
+    uint32_t hash = *basis;
+    int n, i;
+
+    n = count_1bits(miniflow_get_map_in_range(&match->mask.masks, start, end,
+                                              &offset));
+    q = miniflow_get_u32_values(&match->mask.masks) + offset;
+    p = miniflow_get_u32_values(&match->flow) + offset;
+
+    for (i = 0; i < n; i++) {
+        hash = mhash_add(hash, p[i] & q[i]);
+    }
+    *basis = hash; /* Allow continuation from the unfinished value. */
+    return mhash_finish(hash, (offset + n) * 4);
+}
+
 
 /* cls_rule. */
 
@@ -96,6 +462,7 @@ cls_rule_init(struct cls_rule *rule,
 {
     minimatch_init(&rule->match, match);
     rule->priority = priority;
+    rule->cls_match = NULL;
 }
 
 /* Same as cls_rule_init() for initialization from a "struct minimatch". */
@@ -106,6 +473,7 @@ cls_rule_init_from_minimatch(struct cls_rule *rule,
 {
     minimatch_clone(&rule->match, match);
     rule->priority = priority;
+    rule->cls_match = NULL;
 }
 
 /* Initializes 'dst' as a copy of 'src'.
@@ -116,6 +484,7 @@ cls_rule_clone(struct cls_rule *dst, const struct cls_rule *src)
 {
     minimatch_clone(&dst->match, &src->match);
     dst->priority = src->priority;
+    dst->cls_match = NULL;
 }
 
 /* Initializes 'dst' with the data in 'src', destroying 'src'.
@@ -126,6 +495,7 @@ cls_rule_move(struct cls_rule *dst, struct cls_rule *src)
 {
     minimatch_move(&dst->match, &src->match);
     dst->priority = src->priority;
+    dst->cls_match = NULL;
 }
 
 /* Frees memory referenced by 'rule'.  Doesn't free 'rule' itself (it's
@@ -135,6 +505,7 @@ cls_rule_move(struct cls_rule *dst, struct cls_rule *src)
 void
 cls_rule_destroy(struct cls_rule *rule)
 {
+    ovs_assert(!rule->cls_match);
     minimatch_destroy(&rule->match);
 }
 
@@ -170,13 +541,18 @@ cls_rule_is_catchall(const struct cls_rule *rule)
 /* Initializes 'cls' as a classifier that initially contains no classification
  * rules. */
 void
-classifier_init(struct classifier *cls, const uint8_t *flow_segments)
+classifier_init(struct classifier *cls_, const uint8_t *flow_segments)
 {
+    struct cls_classifier *cls = xmalloc(sizeof *cls);
+
+    fat_rwlock_init(&cls_->rwlock);
+
+    cls_->cls = cls;
+
     cls->n_rules = 0;
     hmap_init(&cls->subtables);
-    list_init(&cls->subtables_priority);
+    cls_subtable_cache_init(&cls->subtables_priority);
     hmap_init(&cls->partitions);
-    fat_rwlock_init(&cls->rwlock);
     cls->n_flow_segments = 0;
     if (flow_segments) {
         while (cls->n_flow_segments < CLS_MAX_INDICES
@@ -190,12 +566,18 @@ classifier_init(struct classifier *cls, const uint8_t *flow_segments)
 /* Destroys 'cls'.  Rules within 'cls', if any, are not freed; this is the
  * caller's responsibility. */
 void
-classifier_destroy(struct classifier *cls)
+classifier_destroy(struct classifier *cls_)
 {
-    if (cls) {
+    if (cls_) {
+        struct cls_classifier *cls = cls_->cls;
         struct cls_subtable *partition, *next_partition;
         struct cls_subtable *subtable, *next_subtable;
         int i;
+
+        fat_rwlock_destroy(&cls_->rwlock);
+        if (!cls) {
+            return;
+        }
 
         for (i = 0; i < cls->n_tries; i++) {
             trie_destroy(cls->tries[i].root);
@@ -213,7 +595,9 @@ classifier_destroy(struct classifier *cls)
             free(partition);
         }
         hmap_destroy(&cls->partitions);
-        fat_rwlock_destroy(&cls->rwlock);
+
+        cls_subtable_cache_destroy(&cls->subtables_priority);
+        free(cls);
     }
 }
 
@@ -222,10 +606,11 @@ BUILD_ASSERT_DECL(MFF_N_IDS <= 64);
 
 /* Set the fields for which prefix lookup should be performed. */
 void
-classifier_set_prefix_fields(struct classifier *cls,
+classifier_set_prefix_fields(struct classifier *cls_,
                              const enum mf_field_id *trie_fields,
                              unsigned int n_fields)
 {
+    struct cls_classifier *cls = cls_->cls;
     uint64_t fields = 0;
     int i, trie;
 
@@ -260,11 +645,12 @@ classifier_set_prefix_fields(struct classifier *cls,
 }
 
 static void
-trie_init(struct classifier *cls, int trie_idx,
+trie_init(struct cls_classifier *cls, int trie_idx,
           const struct mf_field *field)
 {
     struct cls_trie *trie = &cls->tries[trie_idx];
     struct cls_subtable *subtable;
+    struct cls_subtable_entry *iter;
 
     if (trie_idx < cls->n_tries) {
         trie_destroy(trie->root);
@@ -273,7 +659,7 @@ trie_init(struct classifier *cls, int trie_idx,
     trie->field = field;
 
     /* Add existing rules to the trie. */
-    LIST_FOR_EACH (subtable, list_node, &cls->subtables_priority) {
+    CLS_SUBTABLE_CACHE_FOR_EACH (subtable, iter, &cls->subtables_priority) {
         unsigned int plen;
 
         plen = field ? minimask_get_prefix_len(&subtable->mask, field) : 0;
@@ -281,13 +667,13 @@ trie_init(struct classifier *cls, int trie_idx,
         subtable->trie_plen[trie_idx] = plen;
 
         if (plen) {
-            struct cls_rule *head;
+            struct cls_match *head;
 
             HMAP_FOR_EACH (head, hmap_node, &subtable->rules) {
-                struct cls_rule *rule;
+                struct cls_match *match;
 
-                FOR_EACH_RULE_IN_LIST (rule, head) {
-                    trie_insert(trie, rule, plen);
+                FOR_EACH_RULE_IN_LIST (match, head) {
+                    trie_insert(trie, match->cls_rule, plen);
                 }
             }
         }
@@ -298,14 +684,14 @@ trie_init(struct classifier *cls, int trie_idx,
 bool
 classifier_is_empty(const struct classifier *cls)
 {
-    return cls->n_rules == 0;
+    return cls->cls->n_rules == 0;
 }
 
 /* Returns the number of rules in 'cls'. */
 int
 classifier_count(const struct classifier *cls)
 {
-    return cls->n_rules;
+    return cls->cls->n_rules;
 }
 
 static uint32_t
@@ -316,7 +702,8 @@ hash_metadata(ovs_be64 metadata_)
 }
 
 static struct cls_partition *
-find_partition(const struct classifier *cls, ovs_be64 metadata, uint32_t hash)
+find_partition(const struct cls_classifier *cls, ovs_be64 metadata,
+               uint32_t hash)
 {
     struct cls_partition *partition;
 
@@ -330,7 +717,7 @@ find_partition(const struct classifier *cls, ovs_be64 metadata, uint32_t hash)
 }
 
 static struct cls_partition *
-create_partition(struct classifier *cls, struct cls_subtable *subtable,
+create_partition(struct cls_classifier *cls, struct cls_subtable *subtable,
                  ovs_be64 metadata)
 {
     uint32_t hash = hash_metadata(metadata);
@@ -344,6 +731,13 @@ create_partition(struct classifier *cls, struct cls_subtable *subtable,
     }
     tag_tracker_add(&partition->tracker, &partition->tags, subtable->tag);
     return partition;
+}
+
+static inline ovs_be32 minimatch_get_ports(const struct minimatch *match)
+{
+    /* Could optimize to use the same map if needed for fast path. */
+    return MINIFLOW_GET_BE32(&match->flow, tp_src)
+        & MINIFLOW_GET_BE32(&match->mask.masks, tp_src);
 }
 
 /* Inserts 'rule' into 'cls'.  Until 'rule' is removed from 'cls', the caller
@@ -360,9 +754,10 @@ create_partition(struct classifier *cls, struct cls_subtable *subtable,
  * rule, even rules that cannot have any effect because the new rule matches a
  * superset of their flows and has higher priority. */
 struct cls_rule *
-classifier_replace(struct classifier *cls, struct cls_rule *rule)
+classifier_replace(struct classifier *cls_, struct cls_rule *rule)
 {
-    struct cls_rule *old_rule;
+    struct cls_classifier *cls = cls_->cls;
+    struct cls_match *old_rule;
     struct cls_subtable *subtable;
 
     subtable = find_subtable(cls, &rule->match.mask);
@@ -374,11 +769,11 @@ classifier_replace(struct classifier *cls, struct cls_rule *rule)
     if (!old_rule) {
         int i;
 
+        rule->cls_match->partition = NULL;
         if (minimask_get_metadata_mask(&rule->match.mask) == OVS_BE64_MAX) {
             ovs_be64 metadata = miniflow_get_metadata(&rule->match.flow);
-            rule->partition = create_partition(cls, subtable, metadata);
-        } else {
-            rule->partition = NULL;
+            rule->cls_match->partition = create_partition(cls, subtable,
+                                                          metadata);
         }
 
         subtable->n_rules++;
@@ -389,10 +784,28 @@ classifier_replace(struct classifier *cls, struct cls_rule *rule)
                 trie_insert(&cls->tries[i], rule, subtable->trie_plen[i]);
             }
         }
+
+        /* Ports trie. */
+        if (subtable->ports_mask_len) {
+            /* We mask the value to be inserted to always have the wildcarded
+             * bits in known (zero) state, so we can include them in comparison
+             * and they will always match (== their original value does not
+             * matter). */
+            ovs_be32 masked_ports = minimatch_get_ports(&rule->match);
+
+            trie_insert_prefix(&subtable->ports_trie, &masked_ports,
+                               subtable->ports_mask_len);
+        }
+
+        return NULL;
     } else {
-        rule->partition = old_rule->partition;
+        struct cls_rule *old_cls_rule = old_rule->cls_rule;
+
+        rule->cls_match->partition = old_rule->partition;
+        old_cls_rule->cls_match = NULL;
+        free(old_rule);
+        return old_cls_rule;
     }
-    return old_rule;
 }
 
 /* Inserts 'rule' into 'cls'.  Until 'rule' is removed from 'cls', the caller
@@ -412,15 +825,26 @@ classifier_insert(struct classifier *cls, struct cls_rule *rule)
  * 'rule' with cls_rule_destroy(), freeing the memory block in which 'rule'
  * resides, etc., as necessary. */
 void
-classifier_remove(struct classifier *cls, struct cls_rule *rule)
+classifier_remove(struct classifier *cls_, struct cls_rule *rule)
 {
+    struct cls_classifier *cls = cls_->cls;
     struct cls_partition *partition;
-    struct cls_rule *head;
+    struct cls_match *cls_match = rule->cls_match;
+    struct cls_match *head;
     struct cls_subtable *subtable;
     int i;
 
-    subtable = find_subtable(cls, &rule->match.mask);
+    ovs_assert(cls_match);
 
+    subtable = find_subtable(cls, &rule->match.mask);
+    ovs_assert(subtable);
+
+    if (subtable->ports_mask_len) {
+        ovs_be32 masked_ports = minimatch_get_ports(&rule->match);
+
+        trie_remove_prefix(&subtable->ports_trie,
+                           &masked_ports, subtable->ports_mask_len);
+    }
     for (i = 0; i < cls->n_tries; i++) {
         if (subtable->trie_plen[i]) {
             trie_remove(&cls->tries[i], rule, subtable->trie_plen[i]);
@@ -429,23 +853,24 @@ classifier_remove(struct classifier *cls, struct cls_rule *rule)
 
     /* Remove rule node from indices. */
     for (i = 0; i < subtable->n_indices; i++) {
-        hindex_remove(&subtable->indices[i], &rule->index_nodes[i]);
+        hindex_remove(&subtable->indices[i], &cls_match->index_nodes[i]);
     }
 
-    head = find_equal(subtable, &rule->match.flow, rule->hmap_node.hash);
-    if (head != rule) {
-        list_remove(&rule->list);
-    } else if (list_is_empty(&rule->list)) {
-        hmap_remove(&subtable->rules, &rule->hmap_node);
+    head = find_equal(subtable, &rule->match.flow, cls_match->hmap_node.hash);
+    if (head != cls_match) {
+        list_remove(&cls_match->list);
+    } else if (list_is_empty(&cls_match->list)) {
+        hmap_remove(&subtable->rules, &cls_match->hmap_node);
     } else {
-        struct cls_rule *next = CONTAINER_OF(rule->list.next,
-                                             struct cls_rule, list);
+        struct cls_match *next = CONTAINER_OF(cls_match->list.next,
+                                              struct cls_match, list);
 
-        list_remove(&rule->list);
-        hmap_replace(&subtable->rules, &rule->hmap_node, &next->hmap_node);
+        list_remove(&cls_match->list);
+        hmap_replace(&subtable->rules, &cls_match->hmap_node,
+                     &next->hmap_node);
     }
 
-    partition = rule->partition;
+    partition = cls_match->partition;
     if (partition) {
         tag_tracker_subtract(&partition->tracker, &partition->tags,
                              subtable->tag);
@@ -458,10 +883,13 @@ classifier_remove(struct classifier *cls, struct cls_rule *rule)
     if (--subtable->n_rules == 0) {
         destroy_subtable(cls, subtable);
     } else {
-        update_subtables_after_removal(cls, subtable, rule->priority);
+        update_subtables_after_removal(cls, subtable, cls_match->priority);
     }
 
     cls->n_rules--;
+
+    rule->cls_match = NULL;
+    free(cls_match);
 }
 
 /* Prefix tree context.  Valid when 'lookup_done' is true.  Can skip all
@@ -484,6 +912,12 @@ trie_ctx_init(struct trie_ctx *ctx, const struct cls_trie *trie)
     ctx->lookup_done = false;
 }
 
+static inline void
+lookahead_subtable(const struct cls_subtable_entry *subtables)
+{
+    ovs_prefetch_range(subtables->subtable, sizeof *subtables->subtable);
+}
+
 /* Finds and returns the highest-priority rule in 'cls' that matches 'flow'.
  * Returns a null pointer if no rules in 'cls' match 'flow'.  If multiple rules
  * of equal priority match 'flow', returns one arbitrarily.
@@ -493,15 +927,21 @@ trie_ctx_init(struct trie_ctx *ctx, const struct cls_trie *trie)
  * earlier, 'wc' should have been initialized (e.g., by
  * flow_wildcards_init_catchall()). */
 struct cls_rule *
-classifier_lookup(const struct classifier *cls, const struct flow *flow,
+classifier_lookup(const struct classifier *cls_, const struct flow *flow,
                   struct flow_wildcards *wc)
 {
+    struct cls_classifier *cls = cls_->cls;
     const struct cls_partition *partition;
-    struct cls_subtable *subtable;
-    struct cls_rule *best;
     tag_type tags;
+    struct cls_match *best;
     struct trie_ctx trie_ctx[CLS_MAX_TRIES];
     int i;
+    struct cls_subtable_entry *subtables = cls->subtables_priority.subtables;
+    int n_subtables = cls->subtables_priority.size;
+    int64_t best_priority = -1;
+
+    /* Prefetch the subtables array. */
+    ovs_prefetch_range(subtables, n_subtables * sizeof *subtables);
 
     /* Determine 'tags' such that, if 'subtable->tag' doesn't intersect them,
      * then 'flow' cannot possibly match in 'subtable':
@@ -531,49 +971,120 @@ classifier_lookup(const struct classifier *cls, const struct flow *flow,
     for (i = 0; i < cls->n_tries; i++) {
         trie_ctx_init(&trie_ctx[i], &cls->tries[i]);
     }
-    best = NULL;
-    LIST_FOR_EACH (subtable, list_node, &cls->subtables_priority) {
-        struct cls_rule *rule;
 
-        if (!tag_intersects(tags, subtable->tag)) {
+    /* Prefetch the first subtables. */
+    if (n_subtables > 1) {
+      lookahead_subtable(subtables);
+      lookahead_subtable(subtables + 1);
+    }
+
+    best = NULL;
+    for (i = 0; OVS_LIKELY(i < n_subtables); i++) {
+        struct cls_match *rule;
+
+        if ((int64_t)subtables[i].max_priority <= best_priority) {
+            /* Subtables are in descending priority order,
+             * can not find anything better. */
+            break;
+        }
+
+        /* Prefetch a forthcoming subtable. */
+        if (i + 2 < n_subtables) {
+            lookahead_subtable(&subtables[i + 2]);
+        }
+
+        if (!tag_intersects(tags, subtables[i].tag)) {
             continue;
         }
 
-        rule = find_match_wc(subtable, flow, trie_ctx, cls->n_tries, wc);
-        if (rule) {
+        rule = find_match_wc(subtables[i].subtable, flow, trie_ctx,
+                             cls->n_tries, wc);
+        if (rule && (int64_t)rule->priority > best_priority) {
+            best_priority = (int64_t)rule->priority;
             best = rule;
-            LIST_FOR_EACH_CONTINUE (subtable, list_node,
-                                    &cls->subtables_priority) {
-                if (subtable->max_priority <= best->priority) {
-                    /* Subtables are in descending priority order,
-                     * can not find anything better. */
-                    return best;
-                }
-                if (!tag_intersects(tags, subtable->tag)) {
-                    continue;
-                }
-
-                rule = find_match_wc(subtable, flow, trie_ctx, cls->n_tries,
-                                     wc);
-                if (rule && rule->priority > best->priority) {
-                    best = rule;
-                }
-            }
-            break;
         }
     }
 
-    return best;
+    return best ? best->cls_rule : NULL;
+}
+
+/* Returns true if 'target' satisifies 'match', that is, if each bit for which
+ * 'match' specifies a particular value has the correct value in 'target'.
+ *
+ * 'flow' and 'mask' have the same mask! */
+static bool
+miniflow_and_mask_matches_miniflow(const struct miniflow *flow,
+                                   const struct minimask *mask,
+                                   const struct miniflow *target)
+{
+    const uint32_t *flowp = miniflow_get_u32_values(flow);
+    const uint32_t *maskp = miniflow_get_u32_values(&mask->masks);
+    uint32_t target_u32;
+
+    MINIFLOW_FOR_EACH_IN_MAP(target_u32, target, mask->masks.map) {
+        if ((*flowp++ ^ target_u32) & *maskp++) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static inline struct cls_match *
+find_match_miniflow(const struct cls_subtable *subtable,
+                    const struct miniflow *flow,
+                    uint32_t hash)
+{
+    struct cls_match *rule;
+
+    HMAP_FOR_EACH_WITH_HASH (rule, hmap_node, hash, &subtable->rules) {
+        if (miniflow_and_mask_matches_miniflow(&rule->flow, &subtable->mask,
+                                               flow)) {
+            return rule;
+        }
+    }
+
+    return NULL;
+}
+
+/* Finds and returns the highest-priority rule in 'cls' that matches
+ * 'miniflow'.  Returns a null pointer if no rules in 'cls' match 'flow'.
+ * If multiple rules of equal priority match 'flow', returns one arbitrarily.
+ *
+ * This function is optimized for the userspace datapath, which only ever has
+ * one priority value for it's flows!
+ */
+struct cls_rule *classifier_lookup_miniflow_first(const struct classifier *cls_,
+                                                  const struct miniflow *flow)
+{
+    struct cls_classifier *cls = cls_->cls;
+    struct cls_subtable *subtable;
+    struct cls_subtable_entry *iter;
+
+    CLS_SUBTABLE_CACHE_FOR_EACH (subtable, iter, &cls->subtables_priority) {
+        struct cls_match *rule;
+
+        rule = find_match_miniflow(subtable, flow,
+                                   miniflow_hash_in_minimask(flow,
+                                                             &subtable->mask,
+                                                             0));
+        if (rule) {
+            return rule->cls_rule;
+        }
+    }
+
+    return NULL;
 }
 
 /* Finds and returns a rule in 'cls' with exactly the same priority and
  * matching criteria as 'target'.  Returns a null pointer if 'cls' doesn't
  * contain an exact match. */
 struct cls_rule *
-classifier_find_rule_exactly(const struct classifier *cls,
+classifier_find_rule_exactly(const struct classifier *cls_,
                              const struct cls_rule *target)
 {
-    struct cls_rule *head, *rule;
+    struct cls_classifier *cls = cls_->cls;
+    struct cls_match *head, *rule;
     struct cls_subtable *subtable;
 
     subtable = find_subtable(cls, &target->match.mask);
@@ -591,7 +1102,7 @@ classifier_find_rule_exactly(const struct classifier *cls,
                                                 &target->match.mask, 0));
     FOR_EACH_RULE_IN_LIST (rule, head) {
         if (target->priority >= rule->priority) {
-            return target->priority == rule->priority ? rule : NULL;
+            return target->priority == rule->priority ? rule->cls_rule : NULL;
         }
     }
     return NULL;
@@ -619,24 +1130,26 @@ classifier_find_match_exactly(const struct classifier *cls,
  * considered to overlap if both rules have the same priority and a packet
  * could match both. */
 bool
-classifier_rule_overlaps(const struct classifier *cls,
+classifier_rule_overlaps(const struct classifier *cls_,
                          const struct cls_rule *target)
 {
+    struct cls_classifier *cls = cls_->cls;
     struct cls_subtable *subtable;
+    struct cls_subtable_entry *iter;
 
     /* Iterate subtables in the descending max priority order. */
-    LIST_FOR_EACH (subtable, list_node, &cls->subtables_priority) {
+    CLS_SUBTABLE_CACHE_FOR_EACH (subtable, iter, &cls->subtables_priority) {
         uint32_t storage[FLOW_U32S];
         struct minimask mask;
-        struct cls_rule *head;
+        struct cls_match *head;
 
-        if (target->priority > subtable->max_priority) {
+        if (target->priority > iter->max_priority) {
             break; /* Can skip this and the rest of the subtables. */
         }
 
         minimask_combine(&mask, &target->match.mask, &subtable->mask, storage);
         HMAP_FOR_EACH (head, hmap_node, &subtable->rules) {
-            struct cls_rule *rule;
+            struct cls_match *rule;
 
             FOR_EACH_RULE_IN_LIST (rule, head) {
                 if (rule->priority < target->priority) {
@@ -644,7 +1157,7 @@ classifier_rule_overlaps(const struct classifier *cls,
                 }
                 if (rule->priority == target->priority
                     && miniflow_equal_in_minimask(&target->match.flow,
-                                                  &rule->match.flow, &mask)) {
+                                                  &rule->flow, &mask)) {
                     return true;
                 }
             }
@@ -699,20 +1212,20 @@ cls_rule_is_loose_match(const struct cls_rule *rule,
 /* Iteration. */
 
 static bool
-rule_matches(const struct cls_rule *rule, const struct cls_rule *target)
+rule_matches(const struct cls_match *rule, const struct cls_rule *target)
 {
     return (!target
-            || miniflow_equal_in_minimask(&rule->match.flow,
+            || miniflow_equal_in_minimask(&rule->flow,
                                           &target->match.flow,
                                           &target->match.mask));
 }
 
-static struct cls_rule *
+static struct cls_match *
 search_subtable(const struct cls_subtable *subtable,
                 const struct cls_rule *target)
 {
     if (!target || !minimask_has_extra(&subtable->mask, &target->match.mask)) {
-        struct cls_rule *rule;
+        struct cls_match *rule;
 
         HMAP_FOR_EACH (rule, hmap_node, &subtable->rules) {
             if (rule_matches(rule, target)) {
@@ -735,7 +1248,7 @@ void
 cls_cursor_init(struct cls_cursor *cursor, const struct classifier *cls,
                 const struct cls_rule *target)
 {
-    cursor->cls = cls;
+    cursor->cls = cls->cls;
     cursor->target = target && !cls_rule_is_catchall(target) ? target : NULL;
 }
 
@@ -747,10 +1260,10 @@ cls_cursor_first(struct cls_cursor *cursor)
     struct cls_subtable *subtable;
 
     HMAP_FOR_EACH (subtable, hmap_node, &cursor->cls->subtables) {
-        struct cls_rule *rule = search_subtable(subtable, cursor->target);
+        struct cls_match *rule = search_subtable(subtable, cursor->target);
         if (rule) {
             cursor->subtable = subtable;
-            return rule;
+            return rule->cls_rule;
         }
     }
 
@@ -762,13 +1275,13 @@ cls_cursor_first(struct cls_cursor *cursor)
 struct cls_rule *
 cls_cursor_next(struct cls_cursor *cursor, const struct cls_rule *rule_)
 {
-    struct cls_rule *rule = CONST_CAST(struct cls_rule *, rule_);
+    struct cls_match *rule = CONST_CAST(struct cls_match *, rule_->cls_match);
     const struct cls_subtable *subtable;
-    struct cls_rule *next;
+    struct cls_match *next;
 
     next = next_rule_in_list__(rule);
     if (next->priority < rule->priority) {
-        return next;
+        return next->cls_rule;
     }
 
     /* 'next' is the head of the list, that is, the rule that is included in
@@ -777,7 +1290,7 @@ cls_cursor_next(struct cls_cursor *cursor, const struct cls_rule *rule_)
     rule = next;
     HMAP_FOR_EACH_CONTINUE (rule, hmap_node, &cursor->subtable->rules) {
         if (rule_matches(rule, cursor->target)) {
-            return rule;
+            return rule->cls_rule;
         }
     }
 
@@ -786,7 +1299,7 @@ cls_cursor_next(struct cls_cursor *cursor, const struct cls_rule *rule_)
         rule = search_subtable(subtable, cursor->target);
         if (rule) {
             cursor->subtable = subtable;
-            return rule;
+            return rule->cls_rule;
         }
     }
 
@@ -794,7 +1307,7 @@ cls_cursor_next(struct cls_cursor *cursor, const struct cls_rule *rule_)
 }
 
 static struct cls_subtable *
-find_subtable(const struct classifier *cls, const struct minimask *mask)
+find_subtable(const struct cls_classifier *cls, const struct minimask *mask)
 {
     struct cls_subtable *subtable;
 
@@ -808,17 +1321,20 @@ find_subtable(const struct classifier *cls, const struct minimask *mask)
 }
 
 static struct cls_subtable *
-insert_subtable(struct classifier *cls, const struct minimask *mask)
+insert_subtable(struct cls_classifier *cls, const struct minimask *mask)
 {
     uint32_t hash = minimask_hash(mask, 0);
     struct cls_subtable *subtable;
     int i, index = 0;
     struct flow_wildcards old, new;
     uint8_t prev;
+    struct cls_subtable_entry elem;
+    int count = count_1bits(mask->masks.map);
 
-    subtable = xzalloc(sizeof *subtable);
+    subtable = xzalloc(sizeof *subtable - sizeof mask->masks.inline_values
+                       + MINIFLOW_VALUES_SIZE(count));
     hmap_init(&subtable->rules);
-    minimask_clone(&subtable->mask, mask);
+    miniflow_clone_inline(&subtable->mask.masks, &mask->masks, count);
 
     /* Init indices for segmented lookup, if any. */
     flow_wildcards_init_catchall(&new);
@@ -848,8 +1364,6 @@ insert_subtable(struct classifier *cls, const struct minimask *mask)
     }
     subtable->n_indices = index;
 
-    hmap_insert(&cls->subtables, &subtable->hmap_node, hash);
-    list_push_back(&cls->subtables_priority, &subtable->list_node);
     subtable->tag = (minimask_get_metadata_mask(mask) == OVS_BE64_MAX
                      ? tag_create_deterministic(hash)
                      : TAG_ALL);
@@ -859,13 +1373,35 @@ insert_subtable(struct classifier *cls, const struct minimask *mask)
                                                          cls->tries[i].field);
     }
 
+    /* Ports trie. */
+    subtable->ports_trie = NULL;
+    subtable->ports_mask_len
+        = 32 - ctz32(ntohl(MINIFLOW_GET_BE32(&mask->masks, tp_src)));
+
+    hmap_insert(&cls->subtables, &subtable->hmap_node, hash);
+    elem.subtable = subtable;
+    elem.tag = subtable->tag;
+    elem.max_priority = subtable->max_priority;
+    cls_subtable_cache_push_back(&cls->subtables_priority, elem);
+
     return subtable;
 }
 
 static void
-destroy_subtable(struct classifier *cls, struct cls_subtable *subtable)
+destroy_subtable(struct cls_classifier *cls, struct cls_subtable *subtable)
 {
     int i;
+    struct cls_subtable *table = NULL;
+    struct cls_subtable_entry *iter;
+
+    CLS_SUBTABLE_CACHE_FOR_EACH (table, iter, &cls->subtables_priority) {
+        if (table == subtable) {
+            cls_subtable_cache_remove(&cls->subtables_priority, iter);
+            break;
+        }
+    }
+
+    trie_destroy(subtable->ports_trie);
 
     for (i = 0; i < subtable->n_indices; i++) {
         hindex_destroy(&subtable->indices[i]);
@@ -873,7 +1409,6 @@ destroy_subtable(struct classifier *cls, struct cls_subtable *subtable)
     minimask_destroy(&subtable->mask);
     hmap_remove(&cls->subtables, &subtable->hmap_node);
     hmap_destroy(&subtable->rules);
-    list_remove(&subtable->list_node);
     free(subtable);
 }
 
@@ -888,35 +1423,38 @@ destroy_subtable(struct classifier *cls, struct cls_subtable *subtable)
  * This function should only be called after adding a new rule, not after
  * replacing a rule by an identical one or modifying a rule in-place. */
 static void
-update_subtables_after_insertion(struct classifier *cls,
+update_subtables_after_insertion(struct cls_classifier *cls,
                                  struct cls_subtable *subtable,
                                  unsigned int new_priority)
 {
     if (new_priority == subtable->max_priority) {
         ++subtable->max_count;
     } else if (new_priority > subtable->max_priority) {
-        struct cls_subtable *iter;
+        struct cls_subtable *table;
+        struct cls_subtable_entry *iter, *subtable_iter = NULL;
 
         subtable->max_priority = new_priority;
         subtable->max_count = 1;
 
         /* Possibly move 'subtable' earlier in the priority list.  If we break
-         * out of the loop, then 'subtable' should be moved just after that
+         * out of the loop, then 'subtable_iter' should be moved just before
          * 'iter'.  If the loop terminates normally, then 'iter' will be the
-         * list head and we'll move subtable just after that (e.g. to the front
-         * of the list). */
-        iter = subtable;
-        LIST_FOR_EACH_REVERSE_CONTINUE (iter, list_node,
-                                        &cls->subtables_priority) {
-            if (iter->max_priority >= subtable->max_priority) {
+         * first list element and we'll move subtable just before that
+         * (e.g. to the front of the list). */
+        CLS_SUBTABLE_CACHE_FOR_EACH_REVERSE (table, iter, &cls->subtables_priority) {
+            if (table == subtable) {
+                subtable_iter = iter; /* Locate the subtable as we go. */
+                iter->max_priority = new_priority;
+            } else if (table->max_priority >= new_priority) {
+                ovs_assert(subtable_iter != NULL);
+                iter++;
                 break;
             }
         }
 
-        /* Move 'subtable' just after 'iter' (unless it's already there). */
-        if (iter->list_node.next != &subtable->list_node) {
-            list_splice(iter->list_node.next,
-                        &subtable->list_node, subtable->list_node.next);
+        /* Move 'subtable' just before 'iter' (unless it's already there). */
+        if (iter != subtable_iter) {
+            cls_subtable_cache_splice(iter, subtable_iter, subtable_iter + 1);
         }
     }
 }
@@ -932,14 +1470,14 @@ update_subtables_after_insertion(struct classifier *cls,
  * This function should only be called after removing a rule, not after
  * replacing a rule by an identical one or modifying a rule in-place. */
 static void
-update_subtables_after_removal(struct classifier *cls,
+update_subtables_after_removal(struct cls_classifier *cls,
                                struct cls_subtable *subtable,
                                unsigned int del_priority)
 {
-    struct cls_subtable *iter;
-
     if (del_priority == subtable->max_priority && --subtable->max_count == 0) {
-        struct cls_rule *head;
+        struct cls_match *head;
+        struct cls_subtable *table;
+        struct cls_subtable_entry *iter, *subtable_iter = NULL;
 
         subtable->max_priority = 0;
         HMAP_FOR_EACH (head, hmap_node, &subtable->rules) {
@@ -956,17 +1494,19 @@ update_subtables_after_removal(struct classifier *cls,
          * 'iter'.  If the loop terminates normally, then 'iter' will be the
          * list head and we'll move subtable just before that (e.g. to the back
          * of the list). */
-        iter = subtable;
-        LIST_FOR_EACH_CONTINUE (iter, list_node, &cls->subtables_priority) {
-            if (iter->max_priority <= subtable->max_priority) {
+        CLS_SUBTABLE_CACHE_FOR_EACH (table, iter, &cls->subtables_priority) {
+            if (table == subtable) {
+                subtable_iter = iter; /* Locate the subtable as we go. */
+                iter->max_priority = subtable->max_priority;
+            } else if (table->max_priority <= subtable->max_priority) {
+                ovs_assert(subtable_iter != NULL);
                 break;
             }
         }
 
         /* Move 'subtable' just before 'iter' (unless it's already there). */
-        if (iter->list_node.prev != &subtable->list_node) {
-            list_splice(&iter->list_node,
-                        &subtable->list_node, subtable->list_node.next);
+        if (iter != subtable_iter) {
+            cls_subtable_cache_splice(iter, subtable_iter, subtable_iter + 1);
         }
     }
 }
@@ -1037,14 +1577,40 @@ check_tries(struct trie_ctx trie_ctx[CLS_MAX_TRIES], unsigned int n_tries,
     return false;
 }
 
-static inline struct cls_rule *
+/* Returns true if 'target' satisifies 'flow'/'mask', that is, if each bit
+ * for which 'flow', for which 'mask' has a bit set, specifies a particular
+ * value has the correct value in 'target'.
+ *
+ * This function is equivalent to miniflow_equal_flow_in_minimask(flow,
+ * target, mask) but it is faster because of the invariant that
+ * flow->map and mask->masks.map are the same. */
+static inline bool
+miniflow_and_mask_matches_flow(const struct miniflow *flow,
+                               const struct minimask *mask,
+                               const struct flow *target)
+{
+    const uint32_t *flowp = miniflow_get_u32_values(flow);
+    const uint32_t *maskp = miniflow_get_u32_values(&mask->masks);
+    uint32_t target_u32;
+
+    FLOW_FOR_EACH_IN_MAP(target_u32, target, mask->masks.map) {
+        if ((*flowp++ ^ target_u32) & *maskp++) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static inline struct cls_match *
 find_match(const struct cls_subtable *subtable, const struct flow *flow,
            uint32_t hash)
 {
-    struct cls_rule *rule;
+    struct cls_match *rule;
 
     HMAP_FOR_EACH_WITH_HASH (rule, hmap_node, hash, &subtable->rules) {
-        if (minimatch_matches_flow(&rule->match, flow)) {
+        if (miniflow_and_mask_matches_flow(&rule->flow, &subtable->mask,
+                                           flow)) {
             return rule;
         }
     }
@@ -1052,17 +1618,17 @@ find_match(const struct cls_subtable *subtable, const struct flow *flow,
     return NULL;
 }
 
-static struct cls_rule *
+static struct cls_match *
 find_match_wc(const struct cls_subtable *subtable, const struct flow *flow,
               struct trie_ctx trie_ctx[CLS_MAX_TRIES], unsigned int n_tries,
               struct flow_wildcards *wc)
 {
     uint32_t basis = 0, hash;
-    struct cls_rule *rule = NULL;
+    struct cls_match *rule = NULL;
     int i;
     struct range ofs;
 
-    if (!wc) {
+    if (OVS_UNLIKELY(!wc)) {
         return find_match(subtable, flow,
                           flow_hash_in_minimask(flow, &subtable->mask, 0));
     }
@@ -1092,8 +1658,8 @@ find_match_wc(const struct cls_subtable *subtable, const struct flow *flow,
          * not match, then we know that we will never get a match, but we do
          * not yet know how many wildcards we need to fold into 'wc' so we
          * continue iterating through indices to find that out.  (We won't
-         * waste time calling minimatch_matches_flow() again because we've set
-         * 'rule' nonnull.)
+         * waste time calling miniflow_and_mask_matches_flow() again because
+         * we've set 'rule' nonnull.)
          *
          * This check shows a measurable benefit with non-trivial flow tables.
          *
@@ -1101,7 +1667,8 @@ find_match_wc(const struct cls_subtable *subtable, const struct flow *flow,
          * optimization. */
         if (!inode->s && !rule) {
             ASSIGN_CONTAINER(rule, inode - i, index_nodes);
-            if (minimatch_matches_flow(&rule->match, flow)) {
+            if (miniflow_and_mask_matches_flow(&rule->flow, &subtable->mask,
+                                               flow)) {
                 goto out;
             }
         }
@@ -1121,6 +1688,23 @@ find_match_wc(const struct cls_subtable *subtable, const struct flow *flow,
          * but it didn't match. */
         rule = NULL;
     }
+    if (!rule && subtable->ports_mask_len) {
+        /* Ports are always part of the final range, if any.
+         * No match was found for the ports.  Use the ports trie to figure out
+         * which ports bits to unwildcard. */
+        unsigned int mbits;
+        ovs_be32 value, mask;
+
+        mask = MINIFLOW_GET_BE32(&subtable->mask.masks, tp_src);
+        value = ((OVS_FORCE ovs_be32 *)flow)[TP_PORTS_OFS32] & mask;
+        trie_lookup_value(subtable->ports_trie, &value, &mbits);
+
+        ((OVS_FORCE ovs_be32 *)&wc->masks)[TP_PORTS_OFS32] |=
+            mask & htonl(~0 << (32 - mbits));
+
+        ofs.start = TP_PORTS_OFS32;
+        goto range_out;
+    }
  out:
     /* Must unwildcard all the fields, as they were looked at. */
     flow_wildcards_fold_minimask(wc, &subtable->mask);
@@ -1134,26 +1718,27 @@ find_match_wc(const struct cls_subtable *subtable, const struct flow *flow,
     return NULL;
 }
 
-static struct cls_rule *
+static struct cls_match *
 find_equal(struct cls_subtable *subtable, const struct miniflow *flow,
            uint32_t hash)
 {
-    struct cls_rule *head;
+    struct cls_match *head;
 
     HMAP_FOR_EACH_WITH_HASH (head, hmap_node, hash, &subtable->rules) {
-        if (miniflow_equal(&head->match.flow, flow)) {
+        if (miniflow_equal(&head->flow, flow)) {
             return head;
         }
     }
     return NULL;
 }
 
-static struct cls_rule *
-insert_rule(struct classifier *cls, struct cls_subtable *subtable,
+static struct cls_match *
+insert_rule(struct cls_classifier *cls, struct cls_subtable *subtable,
             struct cls_rule *new)
 {
-    struct cls_rule *head;
-    struct cls_rule *old = NULL;
+    struct cls_match *cls_match = cls_match_alloc(new);
+    struct cls_match *head;
+    struct cls_match *old = NULL;
     int i;
     uint32_t basis = 0, hash;
     uint8_t prev_be32ofs = 0;
@@ -1162,48 +1747,48 @@ insert_rule(struct classifier *cls, struct cls_subtable *subtable,
     for (i = 0; i < subtable->n_indices; i++) {
         hash = minimatch_hash_range(&new->match, prev_be32ofs,
                                     subtable->index_ofs[i], &basis);
-        hindex_insert(&subtable->indices[i], &new->index_nodes[i], hash);
+        hindex_insert(&subtable->indices[i], &cls_match->index_nodes[i], hash);
         prev_be32ofs = subtable->index_ofs[i];
     }
     hash = minimatch_hash_range(&new->match, prev_be32ofs, FLOW_U32S, &basis);
     head = find_equal(subtable, &new->match.flow, hash);
     if (!head) {
-        hmap_insert(&subtable->rules, &new->hmap_node, hash);
-        list_init(&new->list);
+        hmap_insert(&subtable->rules, &cls_match->hmap_node, hash);
+        list_init(&cls_match->list);
         goto out;
     } else {
         /* Scan the list for the insertion point that will keep the list in
          * order of decreasing priority. */
-        struct cls_rule *rule;
+        struct cls_match *rule;
 
-        new->hmap_node.hash = hash; /* Otherwise done by hmap_insert. */
+        cls_match->hmap_node.hash = hash; /* Otherwise done by hmap_insert. */
 
         FOR_EACH_RULE_IN_LIST (rule, head) {
-            if (new->priority >= rule->priority) {
+            if (cls_match->priority >= rule->priority) {
                 if (rule == head) {
                     /* 'new' is the new highest-priority flow in the list. */
                     hmap_replace(&subtable->rules,
-                                 &rule->hmap_node, &new->hmap_node);
+                                 &rule->hmap_node, &cls_match->hmap_node);
                 }
 
-                if (new->priority == rule->priority) {
-                    list_replace(&new->list, &rule->list);
+                if (cls_match->priority == rule->priority) {
+                    list_replace(&cls_match->list, &rule->list);
                     old = rule;
                     goto out;
                 } else {
-                    list_insert(&rule->list, &new->list);
+                    list_insert(&rule->list, &cls_match->list);
                     goto out;
                 }
             }
         }
 
         /* Insert 'new' at the end of the list. */
-        list_push_back(&head->list, &new->list);
+        list_push_back(&head->list, &cls_match->list);
     }
 
  out:
     if (!old) {
-        update_subtables_after_insertion(cls, subtable, new->priority);
+        update_subtables_after_insertion(cls, subtable, cls_match->priority);
     } else {
         /* Remove old node from indices. */
         for (i = 0; i < subtable->n_indices; i++) {
@@ -1213,17 +1798,17 @@ insert_rule(struct classifier *cls, struct cls_subtable *subtable,
     return old;
 }
 
-static struct cls_rule *
-next_rule_in_list__(struct cls_rule *rule)
+static struct cls_match *
+next_rule_in_list__(struct cls_match *rule)
 {
-    struct cls_rule *next = OBJECT_CONTAINING(rule->list.next, next, list);
+    struct cls_match *next = OBJECT_CONTAINING(rule->list.next, next, list);
     return next;
 }
 
-static struct cls_rule *
-next_rule_in_list(struct cls_rule *rule)
+static struct cls_match *
+next_rule_in_list(struct cls_match *rule)
 {
-    struct cls_rule *next = next_rule_in_list__(rule);
+    struct cls_match *next = next_rule_in_list__(rule);
     return next->priority < rule->priority ? next : NULL;
 }
 
@@ -1503,7 +2088,7 @@ minimask_get_prefix_len(const struct minimask *minimask,
 static const ovs_be32 *
 minimatch_get_prefix(const struct minimatch *match, const struct mf_field *mf)
 {
-    return (OVS_FORCE const ovs_be32 *)match->flow.values +
+    return miniflow_get_be32_values(&match->flow) +
         count_1bits(match->flow.map & ((UINT64_C(1) << mf->flow_be32ofs) - 1));
 }
 
@@ -1513,14 +2098,18 @@ minimatch_get_prefix(const struct minimatch *match, const struct mf_field *mf)
 static void
 trie_insert(struct cls_trie *trie, const struct cls_rule *rule, int mlen)
 {
-    const ovs_be32 *prefix = minimatch_get_prefix(&rule->match, trie->field);
+    trie_insert_prefix(&trie->root,
+                       minimatch_get_prefix(&rule->match, trie->field), mlen);
+}
+
+static void
+trie_insert_prefix(struct trie_node **edge, const ovs_be32 *prefix, int mlen)
+{
     struct trie_node *node;
-    struct trie_node **edge;
     int ofs = 0;
 
     /* Walk the tree. */
-    for (edge = &trie->root;
-         (node = *edge) != NULL;
+    for (; (node = *edge) != NULL;
          edge = trie_next_edge(node, prefix, ofs)) {
         unsigned int eqbits = trie_prefix_equal_bits(node, prefix, ofs, mlen);
         ofs += eqbits;
@@ -1561,16 +2150,25 @@ trie_insert(struct cls_trie *trie, const struct cls_rule *rule, int mlen)
 static void
 trie_remove(struct cls_trie *trie, const struct cls_rule *rule, int mlen)
 {
-    const ovs_be32 *prefix = minimatch_get_prefix(&rule->match, trie->field);
+    trie_remove_prefix(&trie->root,
+                       minimatch_get_prefix(&rule->match, trie->field), mlen);
+}
+
+/* 'mlen' must be the (non-zero) CIDR prefix length of the 'trie->field' mask
+ * in 'rule'. */
+static void
+trie_remove_prefix(struct trie_node **root, const ovs_be32 *prefix, int mlen)
+{
     struct trie_node *node;
     struct trie_node **edges[sizeof(union mf_value) * 8];
     int depth = 0, ofs = 0;
 
     /* Walk the tree. */
-    for (edges[depth] = &trie->root;
+    for (edges[0] = root;
          (node = *edges[depth]) != NULL;
          edges[++depth] = trie_next_edge(node, prefix, ofs)) {
         unsigned int eqbits = trie_prefix_equal_bits(node, prefix, ofs, mlen);
+
         if (eqbits < node->nbits) {
             /* Mismatch, nothing to be removed.  This should never happen, as
              * only rules in the classifier are ever removed. */

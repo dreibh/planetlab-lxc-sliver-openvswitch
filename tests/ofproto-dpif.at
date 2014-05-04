@@ -178,7 +178,7 @@ ovs-appctl time/warp 100
 ovs-appctl lacp/show > lacp.txt
 ovs-appctl bond/show > bond.txt
 (
-for i in `seq 10 100` ;
+for i in `seq 0 255` ;
     do
     pkt="in_port(7),eth(src=50:54:00:00:00:05,dst=50:54:00:00:01:00),eth_type(0x0800),ipv4(src=10.0.0.2,dst=10.0.0.1,proto=6,tos=0,ttl=64,frag=no),tcp(src=8,dst=$i),tcp_flags(0x010)"
     AT_CHECK([ovs-appctl netdev-dummy/receive p7 $pkt])
@@ -1500,7 +1500,7 @@ for i in 1 ; do
     ovs-appctl netdev-dummy/receive p1 '50 54 00 00 00 07 20 22 22 22 22 22 08 00 45 00 00 24 00 00 00 00 00 84 00 00 C0 A8 00 01 C0 A8 00 02 04 58 08 af 00 00 00 00 d9 d7 91 57 01 00 00 34 cf 28 ec 4e 00 01 40 00 00 0a ff ff b7 53 24 19 00 05 00 08 7f 00 00 01 00 05 00 08 c0 a8 02 07 00 0c 00 06 00 05 00 00 80 00 00 04 c0 00 00 04'
 done
 
-OVS_WAIT_UNTIL([test `wc -l < ofctl_monitor.log` -ge 9])
+OVS_WAIT_UNTIL([test `wc -l < ofctl_monitor.log` -ge 18])
 OVS_WAIT_UNTIL([ovs-appctl -t ovs-ofctl exit])
 AT_CHECK([cat ofctl_monitor.log], [0], [dnl
 NXT_PACKET_IN (xid=0x0): cookie=0x1 total_len=98 in_port=1 (via action) data_len=98 (unbuffered)
@@ -3686,21 +3686,21 @@ AT_CHECK([ovs-appctl netdev-dummy/receive p2 'in_port(2),eth(src=50:54:00:00:00:
 AT_CHECK([ovs-appctl netdev-dummy/receive p3 'in_port(3),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x0800),ipv4(src=10.0.0.2,dst=10.0.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0)'])
 
 AT_CHECK([ovs-appctl dpif/dump-flows br0 | sort | STRIP_USED], [0], [dnl
-skb_priority(0),in_port(1),eth_type(0x0800),ipv4(src=192.168.0.1/0.0.0.0,dst=192.168.0.2/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff), packets:0, bytes:0, used:never, actions:drop
-skb_priority(0),in_port(2),eth_type(0x0800),ipv4(src=192.168.0.2/0.0.0.0,dst=192.168.0.1/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff), packets:0, bytes:0, used:never, actions:drop
+skb_priority(0),recirc_id(0),in_port(1),eth_type(0x0800),ipv4(src=192.168.0.1/0.0.0.0,dst=192.168.0.2/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff), packets:0, bytes:0, used:never, actions:drop
+skb_priority(0),recirc_id(0),in_port(2),eth_type(0x0800),ipv4(src=192.168.0.2/0.0.0.0,dst=192.168.0.1/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff), packets:0, bytes:0, used:never, actions:drop
 ])
 
 AT_CHECK([ovs-appctl dpif/dump-flows br1 | sort | STRIP_USED], [0], [dnl
-skb_priority(0),in_port(3),eth_type(0x0800),ipv4(src=10.0.0.2/0.0.0.0,dst=10.0.0.1/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff), packets:0, bytes:0, used:never, actions:drop
+skb_priority(0),recirc_id(0),in_port(3),eth_type(0x0800),ipv4(src=10.0.0.2/0.0.0.0,dst=10.0.0.1/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff), packets:0, bytes:0, used:never, actions:drop
 ])
 
 AT_CHECK([ovs-appctl dpif/dump-flows -m br0 | sort | STRIP_USED], [0], [dnl
-skb_priority(0),skb_mark(0/0),in_port(p1),eth(src=50:54:00:00:00:05/00:00:00:00:00:00,dst=50:54:00:00:00:07/00:00:00:00:00:00),eth_type(0x0800),ipv4(src=192.168.0.1/0.0.0.0,dst=192.168.0.2/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff),icmp(type=8/0,code=0/0), packets:0, bytes:0, used:never, actions:drop
-skb_priority(0),skb_mark(0/0),in_port(p2),eth(src=50:54:00:00:00:07/00:00:00:00:00:00,dst=50:54:00:00:00:05/00:00:00:00:00:00),eth_type(0x0800),ipv4(src=192.168.0.2/0.0.0.0,dst=192.168.0.1/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff),icmp(type=0/0,code=0/0), packets:0, bytes:0, used:never, actions:drop
+skb_priority(0),skb_mark(0/0),recirc_id(0),in_port(p1),eth(src=50:54:00:00:00:05/00:00:00:00:00:00,dst=50:54:00:00:00:07/00:00:00:00:00:00),eth_type(0x0800),ipv4(src=192.168.0.1/0.0.0.0,dst=192.168.0.2/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff),icmp(type=8/0,code=0/0), packets:0, bytes:0, used:never, actions:drop
+skb_priority(0),skb_mark(0/0),recirc_id(0),in_port(p2),eth(src=50:54:00:00:00:07/00:00:00:00:00:00,dst=50:54:00:00:00:05/00:00:00:00:00:00),eth_type(0x0800),ipv4(src=192.168.0.2/0.0.0.0,dst=192.168.0.1/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff),icmp(type=0/0,code=0/0), packets:0, bytes:0, used:never, actions:drop
 ])
 
 AT_CHECK([ovs-appctl dpif/dump-flows -m br1 | sort | STRIP_USED], [0], [dnl
-skb_priority(0),skb_mark(0/0),in_port(p3),eth(src=50:54:00:00:00:09/00:00:00:00:00:00,dst=50:54:00:00:00:0a/00:00:00:00:00:00),eth_type(0x0800),ipv4(src=10.0.0.2/0.0.0.0,dst=10.0.0.1/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff),icmp(type=8/0,code=0/0), packets:0, bytes:0, used:never, actions:drop
+skb_priority(0),skb_mark(0/0),recirc_id(0),in_port(p3),eth(src=50:54:00:00:00:09/00:00:00:00:00:00,dst=50:54:00:00:00:0a/00:00:00:00:00:00),eth_type(0x0800),ipv4(src=10.0.0.2/0.0.0.0,dst=10.0.0.1/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff),icmp(type=8/0,code=0/0), packets:0, bytes:0, used:never, actions:drop
 ])
 
 OVS_VSWITCHD_STOP
@@ -3833,10 +3833,10 @@ skb_priority(0),skb_mark(0/0),in_port(101),eth(src=50:54:00:00:00:07/00:00:00:00
 ])
 
 AT_CHECK([cat ovs-vswitchd.log | grep -e 'in_port(100).*packets:9' | FILTER_FLOW_DUMP], [0], [dnl
-skb_priority(0),skb_mark(0/0),in_port(100),eth(src=50:54:00:00:00:05/00:00:00:00:00:00,dst=50:54:00:00:00:07/00:00:00:00:00:00),eth_type(0x0800),ipv4(src=192.168.0.1/0.0.0.0,dst=192.168.0.2/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff),icmp(type=8/0,code=0/0), packets:9, bytes:540, used:0.0s
+skb_priority(0),skb_mark(0/0),recirc_id(0),in_port(100),eth(src=50:54:00:00:00:05/00:00:00:00:00:00,dst=50:54:00:00:00:07/00:00:00:00:00:00),eth_type(0x0800),ipv4(src=192.168.0.1/0.0.0.0,dst=192.168.0.2/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff),icmp(type=8/0,code=0/0), packets:9, bytes:540, used:0.0s, actions:101,3,2
 ])
 AT_CHECK([cat ovs-vswitchd.log | grep -e 'in_port(101).*packets:4' | FILTER_FLOW_DUMP], [0], [dnl
-skb_priority(0),skb_mark(0/0),in_port(101),eth(src=50:54:00:00:00:07/00:00:00:00:00:00,dst=50:54:00:00:00:05/00:00:00:00:00:00),eth_type(0x0800),ipv4(src=192.168.0.2/0.0.0.0,dst=192.168.0.1/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff),icmp(type=8/0,code=0/0), packets:4, bytes:240, used:0.0s
+skb_priority(0),skb_mark(0/0),recirc_id(0),in_port(101),eth(src=50:54:00:00:00:07/00:00:00:00:00:00,dst=50:54:00:00:00:05/00:00:00:00:00:00),eth_type(0x0800),ipv4(src=192.168.0.2/0.0.0.0,dst=192.168.0.1/0.0.0.0,proto=1/0,tos=0/0,ttl=64/0,frag=no/0xff),icmp(type=8/0,code=0/0), packets:4, bytes:240, used:0.0s, actions:100,2,3
 ])
 
 AT_CHECK([ovs-ofctl dump-ports br0 pbr0], [0], [dnl
@@ -4378,10 +4378,10 @@ skb_priority(0),skb_mark(0),in_port(1),eth(src=50:54:00:00:00:09,dst=50:54:00:00
 skb_priority(0),skb_mark(0),in_port(1),eth(src=50:54:00:00:00:0b,dst=50:54:00:00:00:0c),eth_type(0x0800),ipv4(src=10.0.0.4,dst=10.0.0.3,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), actions:drop
 ])
 AT_CHECK([cat ovs-vswitchd.log | grep '00:09.*packets:3' | FILTER_FLOW_DUMP], [0], [dnl
-skb_priority(0),skb_mark(0),in_port(1),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x0800),ipv4(src=10.0.0.2,dst=10.0.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:3, bytes:180, used:0.0s
+skb_priority(0),skb_mark(0),recirc_id(0),dp_hash(0),in_port(1),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x0800),ipv4(src=10.0.0.2,dst=10.0.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:3, bytes:180, used:0.0s, actions:2
 ])
 AT_CHECK([cat ovs-vswitchd.log | grep '00:0b.*packets:3' | FILTER_FLOW_DUMP], [0], [dnl
-skb_priority(0),skb_mark(0),in_port(1),eth(src=50:54:00:00:00:0b,dst=50:54:00:00:00:0c),eth_type(0x0800),ipv4(src=10.0.0.4,dst=10.0.0.3,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:3, bytes:180, used:0.0s
+skb_priority(0),skb_mark(0),recirc_id(0),dp_hash(0),in_port(1),eth(src=50:54:00:00:00:0b,dst=50:54:00:00:00:0c),eth_type(0x0800),ipv4(src=10.0.0.4,dst=10.0.0.3,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0), packets:3, bytes:180, used:0.0s, actions:drop
 ])
 OVS_VSWITCHD_STOP
 AT_CLEANUP
@@ -4492,54 +4492,42 @@ OVS_VSWITCHD_START([add-port br0 p0 -- set interface p0 type=gre options:remote_
 # enable bfd on p0.
 AT_CHECK([ovs-vsctl set interface p0 bfd:enable=true])
 # check log.
-AT_CHECK([sed -n "s/^.*|ofproto_dpif_monitor(monitor)|INFO|\(.* created\)$/\1/p" ovs-vswitchd.log], [0], [dnl
-monitor thread created
-])
+OVS_WAIT_UNTIL([grep "monitor thread created" ovs-vswitchd.log])
 # disable bfd on p0.
 AT_CHECK([ovs-vsctl set interface p0 bfd:enable=false])
 # check log.
-AT_CHECK([sed -n "s/^.*|ofproto_dpif_monitor(monitor)|INFO|\(.* terminated\)$/\1/p" ovs-vswitchd.log], [0], [dnl
-monitor thread terminated
-])
+OVS_WAIT_UNTIL([grep "monitor thread terminated" ovs-vswitchd.log])
 AT_CHECK([cat ovs-vswitchd.log | sed -e '/^.*ofproto_dpif_monitor.*$/d' > ovs-vswitchd.log])
 
 # enable cfm on p0.
 AT_CHECK([ovs-vsctl set interface p0 cfm_mpid=10])
 # check log.
-AT_CHECK([sed -n "s/^.*|ofproto_dpif_monitor(monitor)|INFO|\(.* created\)$/\1/p" ovs-vswitchd.log], [0], [dnl
-monitor thread created
-])
+OVS_WAIT_UNTIL([grep "monitor thread created" ovs-vswitchd.log])
 # disable cfm on p0.
 AT_CHECK([ovs-vsctl remove interface p0 cfm_mpid 10])
 # check log.
-AT_CHECK([sed -n "s/^.*|ofproto_dpif_monitor(monitor)|INFO|\(.* terminated\)$/\1/p" ovs-vswitchd.log], [0], [dnl
-monitor thread terminated
-])
+OVS_WAIT_UNTIL([grep "monitor thread terminated" ovs-vswitchd.log])
 AT_CHECK([cat ovs-vswitchd.log | sed -e '/^.*ofproto_dpif_monitor.*$/d' > ovs-vswitchd.log])
 
 # enable both bfd and cfm on p0.
 AT_CHECK([ovs-vsctl set interface p0 bfd:enable=true cfm_mpid=10])
 # check log.
-AT_CHECK([sed -n "s/^.*|ofproto_dpif_monitor(monitor)|INFO|\(.* created\)$/\1/p" ovs-vswitchd.log], [0], [dnl
-monitor thread created
-])
+OVS_WAIT_UNTIL([grep "monitor thread created" ovs-vswitchd.log])
 # disable bfd on p0.
 AT_CHECK([ovs-vsctl set interface p0 bfd:enable=false])
 # check log, there should not be the log of thread terminated.
-AT_CHECK([sed -n "s/^.*|ofproto_dpif_monitor(monitor)|INFO|\(.* terminated\)$/\1/p" ovs-vswitchd.log], [0], [dnl
+AT_CHECK([sed -n "s/^.*|ofproto_dpif_monitor(monitor[[0-9]]*)|INFO|\(.* terminated\)$/\1/p" ovs-vswitchd.log], [0], [dnl
 ])
 # reenable bfd on p0.
 AT_CHECK([ovs-vsctl set interface p0 bfd:enable=true])
 # check log, should still be on log of thread created.
-AT_CHECK([sed -n "s/^.*|ofproto_dpif_monitor(monitor)|INFO|\(.* created\)$/\1/p" ovs-vswitchd.log], [0], [dnl
+AT_CHECK([sed -n "s/^.*|ofproto_dpif_monitor(monitor[[0-9]]*)|INFO|\(.* created\)$/\1/p" ovs-vswitchd.log], [0], [dnl
 monitor thread created
 ])
 # disable bfd and cfm together.
 AT_CHECK([ovs-vsctl set interface p0 bfd:enable=false -- remove interface p0 cfm_mpid 10])
 # check log.
-AT_CHECK([sed -n "s/^.*|ofproto_dpif_monitor(monitor)|INFO|\(.* terminated\)$/\1/p" ovs-vswitchd.log], [0], [dnl
-monitor thread terminated
-])
+OVS_WAIT_UNTIL([grep "monitor thread terminated" ovs-vswitchd.log])
 
 OVS_VSWITCHD_STOP
 AT_CLEANUP

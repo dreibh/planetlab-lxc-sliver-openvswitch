@@ -151,6 +151,19 @@ is_pow2(uintmax_t x)
 #define CACHE_LINE_SIZE 64
 BUILD_ASSERT_DECL(IS_POW2(CACHE_LINE_SIZE));
 
+#define CACHE_LINE_SIZE 64      /* Correct for most CPUs. */
+
+static inline void
+ovs_prefetch_range(const void *start, size_t size)
+{
+    const char *addr = (const char *)start;
+    size_t ofs;
+
+    for (ofs = 0; ofs < size; ofs += CACHE_LINE_SIZE) {
+        OVS_PREFETCH(addr + ofs);
+    }
+}
+
 #ifndef MIN
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
 #endif
@@ -290,24 +303,7 @@ void ovs_hex_dump(FILE *, const void *, size_t, uintptr_t offset, bool ascii);
 bool str_to_int(const char *, int base, int *);
 bool str_to_long(const char *, int base, long *);
 bool str_to_llong(const char *, int base, long long *);
-
-static inline bool
-str_to_uint(const char *s, int base, unsigned int *u)
-{
-    return str_to_int(s, base, (int *) u);
-}
-
-static inline bool
-str_to_ulong(const char *s, int base, unsigned long *ul)
-{
-    return str_to_long(s, base, (long *) ul);
-}
-
-static inline bool
-str_to_ullong(const char *s, int base, unsigned long long *ull)
-{
-    return str_to_llong(s, base, (long long *) ull);
-}
+bool str_to_uint(const char *, int base, unsigned int *);
 
 bool ovs_scan(const char *s, const char *format, ...) SCANF_FORMAT(2, 3);
 
@@ -503,6 +499,7 @@ uint64_t bitwise_get(const void *src, unsigned int src_len,
                      unsigned int src_ofs, unsigned int n_bits);
 
 void xsleep(unsigned int seconds);
+
 #ifdef _WIN32
 
 char *ovs_format_message(int error);

@@ -170,13 +170,15 @@ void ofputil_format_version_bitmap_names(struct ds *msg, uint32_t bitmap);
 uint32_t ofputil_protocols_to_version_bitmap(enum ofputil_protocol);
 enum ofputil_protocol ofputil_protocols_from_version_bitmap(uint32_t bitmap);
 
-/* Bitmap of OpenFlow versions that Open vSwitch supports. */
-#define OFPUTIL_SUPPORTED_VERSIONS \
-    ((1u << OFP10_VERSION) | (1u << OFP12_VERSION) | (1u << OFP13_VERSION))
-
-/* Bitmap of OpenFlow versions to enable by default (a subset of
- * OFPUTIL_SUPPORTED_VERSIONS). */
-#define OFPUTIL_DEFAULT_VERSIONS (1u << OFP10_VERSION)
+/* Bitmaps of OpenFlow versions that Open vSwitch supports, and that it enables
+ * by default.  When Open vSwitch has experimental or incomplete support for
+ * newer versions of OpenFlow, those versions should not be supported by
+ * default and thus should be omitted from the latter bitmap. */
+#define OFPUTIL_SUPPORTED_VERSIONS ((1u << OFP10_VERSION) | \
+                                    (1u << OFP11_VERSION) | \
+                                    (1u << OFP12_VERSION) | \
+                                    (1u << OFP13_VERSION))
+#define OFPUTIL_DEFAULT_VERSIONS OFPUTIL_SUPPORTED_VERSIONS
 
 enum ofputil_protocol ofputil_protocols_from_string(const char *s);
 
@@ -298,8 +300,8 @@ struct ofputil_flow_mod {
     ofp_port_t out_port;
     uint32_t out_group;
     enum ofputil_flow_mod_flags flags;
-    struct ofpact *ofpacts;     /* Series of "struct ofpact"s. */
-    size_t ofpacts_len;         /* Length of ofpacts, in bytes. */
+    struct ofpact *ofpacts;  /* Series of "struct ofpact"s. */
+    size_t ofpacts_len;      /* Length of ofpacts, in bytes. */
 };
 
 enum ofperr ofputil_decode_flow_mod(struct ofputil_flow_mod *,
@@ -341,7 +343,7 @@ struct ofputil_flow_stats {
     int hard_age;               /* Seconds since last change, -1 if unknown. */
     uint64_t packet_count;      /* Packet count, UINT64_MAX if unknown. */
     uint64_t byte_count;        /* Byte count, UINT64_MAX if unknown. */
-    struct ofpact *ofpacts;
+    const struct ofpact *ofpacts;
     size_t ofpacts_len;
     enum ofputil_flow_mod_flags flags;
 };
@@ -854,7 +856,7 @@ struct ofputil_flow_update {
     uint16_t priority;
     ovs_be64 cookie;
     struct match *match;
-    struct ofpact *ofpacts;
+    const struct ofpact *ofpacts;
     size_t ofpacts_len;
 
     /* Used only for NXFME_ABBREV. */
@@ -1135,4 +1137,27 @@ void ofputil_append_group_desc_reply(const struct ofputil_group_desc *,
                                      struct list *replies);
 struct ofpbuf *ofputil_encode_group_desc_request(enum ofp_version);
 
+struct ofputil_bundle_ctrl_msg {
+    uint32_t    bundle_id;
+    uint16_t    type;
+    uint16_t    flags;
+};
+
+struct ofputil_bundle_add_msg {
+    uint32_t            bundle_id;
+    uint16_t            flags;
+    const struct ofp_header   *msg;
+};
+
+enum ofperr ofputil_decode_bundle_ctrl(const struct ofp_header *,
+                                       struct ofputil_bundle_ctrl_msg *);
+
+struct ofpbuf *ofputil_encode_bundle_ctrl_reply(const struct ofp_header *,
+                                                struct ofputil_bundle_ctrl_msg *);
+
+struct ofpbuf *ofputil_encode_bundle_add(enum ofp_version ofp_version,
+                                         struct ofputil_bundle_add_msg *msg);
+
+enum ofperr ofputil_decode_bundle_add(const struct ofp_header *,
+                                      struct ofputil_bundle_add_msg *);
 #endif /* ofp-util.h */

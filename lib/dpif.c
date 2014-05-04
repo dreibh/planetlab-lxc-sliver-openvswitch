@@ -1135,6 +1135,7 @@ dpif_execute_helper_cb(void *aux_, struct ofpbuf *packet,
     case OVS_ACTION_ATTR_SAMPLE:
     case OVS_ACTION_ATTR_UNSPEC:
     case OVS_ACTION_ATTR_RECIRC:
+    case OVS_ACTION_ATTR_HASH:
     case __OVS_ACTION_ATTR_MAX:
         OVS_NOT_REACHED();
     }

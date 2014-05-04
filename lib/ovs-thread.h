@@ -27,19 +27,20 @@
 /* Mutex. */
 struct OVS_LOCKABLE ovs_mutex {
     pthread_mutex_t lock;
-    const char *where;
+    const char *where;          /* NULL if and only if uninitialized. */
 };
 
 /* "struct ovs_mutex" initializer. */
 #ifdef PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP
-#define OVS_MUTEX_INITIALIZER { PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP, NULL }
+#define OVS_MUTEX_INITIALIZER { PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP, \
+                                "<unlocked>" }
 #else
-#define OVS_MUTEX_INITIALIZER { PTHREAD_MUTEX_INITIALIZER, NULL }
+#define OVS_MUTEX_INITIALIZER { PTHREAD_MUTEX_INITIALIZER, "<unlocked>" }
 #endif
 
 #ifdef PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP
 #define OVS_ADAPTIVE_MUTEX_INITIALIZER                  \
-    { PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP, NULL }
+    { PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP, "<unlocked>" }
 #else
 #define OVS_ADAPTIVE_MUTEX_INITIALIZER OVS_MUTEX_INITIALIZER
 #endif
@@ -91,15 +92,15 @@ void xpthread_mutexattr_gettype(pthread_mutexattr_t *, int *typep);
  *       than exposing them only to porters. */
 struct OVS_LOCKABLE ovs_rwlock {
     pthread_rwlock_t lock;
-    const char *where;
+    const char *where;          /* NULL if and only if uninitialized. */
 };
 
 /* Initializer. */
 #ifdef PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP
 #define OVS_RWLOCK_INITIALIZER \
-        { PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP, NULL }
+        { PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP, "<unlocked>" }
 #else
-#define OVS_RWLOCK_INITIALIZER { PTHREAD_RWLOCK_INITIALIZER, NULL }
+#define OVS_RWLOCK_INITIALIZER { PTHREAD_RWLOCK_INITIALIZER, "<unlocked>" }
 #endif
 
 /* ovs_rwlock functions analogous to pthread_rwlock_*() functions.
@@ -156,7 +157,7 @@ void xpthread_key_create(pthread_key_t *, void (*destructor)(void *));
 void xpthread_key_delete(pthread_key_t);
 void xpthread_setspecific(pthread_key_t, const void *);
 
-void xpthread_create(pthread_t *, pthread_attr_t *, void *(*)(void *), void *);
+pthread_t ovs_thread_create(const char *name, void *(*)(void *), void *);
 void xpthread_join(pthread_t, void **);
 
 /* Per-thread data.

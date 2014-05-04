@@ -109,6 +109,7 @@ enum ovs_datapath_attr {
 
 #define OVS_DP_ATTR_MAX (__OVS_DP_ATTR_MAX - 1)
 
+/* All 64-bit integers within Netlink messages are 4-byte aligned only. */
 struct ovs_dp_stats {
 	__u64 n_hit;             /* Number of flow table matches. */
 	__u64 n_missed;          /* Number of flow table misses. */
@@ -137,6 +138,9 @@ struct ovs_vport_stats {
 
 /* Allow last Netlink attribute to be unaligned */
 #define OVS_DP_F_UNALIGNED	(1 << 0)
+
+/* Allow datapath to associate multiple Netlink PIDs to each vport */
+#define OVS_DP_F_VPORT_PIDS	(1 << 1)
 
 /* Fixed logical ports. */
 #define OVSP_LOCAL      ((__u32)0)
@@ -167,7 +171,9 @@ enum ovs_packet_cmd {
  * @OVS_PACKET_ATTR_KEY: Present for all notifications.  Contains the flow key
  * extracted from the packet as nested %OVS_KEY_ATTR_* attributes.  This allows
  * userspace to adapt its flow setup strategy by comparing its notion of the
- * flow key against the kernel's.
+ * flow key against the kernel's.  When used with %OVS_PACKET_CMD_EXECUTE, only
+ * metadata key fields (e.g. priority, skb mark) are honored.  All the packet
+ * header fields are parsed from the packet instead.
  * @OVS_PACKET_ATTR_ACTIONS: Contains actions for the packet.  Used
  * for %OVS_PACKET_CMD_EXECUTE.  It has nested %OVS_ACTION_ATTR_* attributes.
  * @OVS_PACKET_ATTR_USERDATA: Present for an %OVS_PACKET_CMD_ACTION
@@ -225,9 +231,10 @@ enum ovs_vport_type {
  * this is the name of the network device.  Maximum length %IFNAMSIZ-1 bytes
  * plus a null terminator.
  * @OVS_VPORT_ATTR_OPTIONS: Vport-specific configuration information.
- * @OVS_VPORT_ATTR_UPCALL_PID: The Netlink socket in userspace that
- * OVS_PACKET_CMD_MISS upcalls will be directed to for packets received on
- * this port.  A value of zero indicates that upcalls should not be sent.
+ * @OVS_VPORT_ATTR_UPCALL_PID: The array of Netlink socket pids in userspace
+ * among which OVS_PACKET_CMD_MISS upcalls will be distributed for packets
+ * received on this port.  If this is a single-element array of value 0,
+ * upcalls should not be sent.
  * @OVS_VPORT_ATTR_STATS: A &struct ovs_vport_stats giving statistics for
  * packets sent or received through the vport.
  *
@@ -251,7 +258,8 @@ enum ovs_vport_attr {
 	OVS_VPORT_ATTR_TYPE,	/* u32 OVS_VPORT_TYPE_* constant. */
 	OVS_VPORT_ATTR_NAME,	/* string name, up to IFNAMSIZ bytes long */
 	OVS_VPORT_ATTR_OPTIONS, /* nested attributes, varies by vport type */
-	OVS_VPORT_ATTR_UPCALL_PID, /* u32 Netlink PID to receive upcalls */
+	OVS_VPORT_ATTR_UPCALL_PID, /* array of u32 Netlink socket PIDs for */
+				/* receiving upcalls */
 	OVS_VPORT_ATTR_STATS,	/* struct ovs_vport_stats */
 	__OVS_VPORT_ATTR_MAX
 };
@@ -307,7 +315,8 @@ enum ovs_key_attr {
 	OVS_KEY_ATTR_TUNNEL,	/* Nested set of ovs_tunnel attributes */
 	OVS_KEY_ATTR_SCTP,      /* struct ovs_key_sctp */
 	OVS_KEY_ATTR_TCP_FLAGS,	/* be16 TCP flags. */
-	OVS_KEY_ATTR_DP_HASH,	/* u32 hash value */
+	OVS_KEY_ATTR_DP_HASH,	/* u32 hash value. Value 0 indicates the hash
+				   is not computed by the datapath. */
 	OVS_KEY_ATTR_RECIRC_ID, /* u32 recirc id */
 #ifdef __KERNEL__
 	/* Only used within kernel data path. */
@@ -537,26 +546,22 @@ struct ovs_action_push_vlan {
 
 /* Data path hash algorithm for computing Datapath hash.
  *
- * The Algorithm type only specifies the fields in a flow
+ * The algorithm type only specifies the fields in a flow
  * will be used as part of the hash. Each datapath is free
  * to use its own hash algorithm. The hash value will be
  * opaque to the user space daemon.
  */
-enum ovs_recirc_hash_alg {
-	OVS_RECIRC_HASH_ALG_NONE,
-	OVS_RECIRC_HASH_ALG_L4,
+enum ovs_hash_alg {
+	OVS_HASH_ALG_L4,
 };
 /*
- * struct ovs_action_recirc - %OVS_ACTION_ATTR_RECIRC action argument.
- * @recirc_id: The Recirculation label, Zero is invalid.
+ * struct ovs_action_hash - %OVS_ACTION_ATTR_HASH action argument.
  * @hash_alg: Algorithm used to compute hash prior to recirculation.
- * @hash_bias: bias used for computing hash.  used to compute hash prior to
- *             recirculation.
+ * @hash_basis: basis used for computing hash.
  */
-struct ovs_action_recirc {
-	uint32_t  hash_alg;	/* One of ovs_dp_hash_alg. */
-	uint32_t  hash_bias;
-	uint32_t  recirc_id;	/* Recirculation label. */
+struct ovs_action_hash {
+	uint32_t  hash_alg;	/* One of ovs_hash_alg. */
+	uint32_t  hash_basis;
 };
 
 /**
@@ -599,7 +604,8 @@ enum ovs_action_attr {
 	OVS_ACTION_ATTR_SAMPLE,       /* Nested OVS_SAMPLE_ATTR_*. */
 	OVS_ACTION_ATTR_PUSH_MPLS,    /* struct ovs_action_push_mpls. */
 	OVS_ACTION_ATTR_POP_MPLS,     /* __be16 ethertype. */
-	OVS_ACTION_ATTR_RECIRC,	      /* struct ovs_action_recirc. */
+	OVS_ACTION_ATTR_RECIRC,	      /* u32 recirc_id. */
+	OVS_ACTION_ATTR_HASH,	      /* struct ovs_action_hash. */
 	__OVS_ACTION_ATTR_MAX
 };
 

@@ -133,6 +133,15 @@ struct cfm {
     struct ovs_refcount ref_cnt;
 
     uint64_t flap_count;       /* Count the flaps since boot. */
+
+    /* True when the variables returned by cfm_get_*() are changed
+     * since last check. */
+    bool status_changed;
+
+    /* When 'cfm->demand' is set, at least one ccm is required to be received
+     * every 100 * cfm_interval.  If ccm is not received within this interval,
+     * even if data packets are received, the cfm fault will be set. */
+    struct timer demand_rx_ccm_t;
 };
 
 /* Remote MPs represent foreign network entities that are configured to have
@@ -343,6 +352,7 @@ cfm_create(const struct netdev *netdev) OVS_EXCLUDED(mutex)
     cfm_generate_maid(cfm);
     hmap_insert(all_cfms, &cfm->hmap_node, hash_string(cfm->name, 0));
     ovs_mutex_unlock(&mutex);
+
     return cfm;
 }
 
@@ -383,6 +393,14 @@ cfm_ref(const struct cfm *cfm_)
         ovs_refcount_ref(&cfm->ref_cnt);
     }
     return cfm;
+}
+
+/* Records the status change and changes the global connectivity seq. */
+static void
+cfm_status_changed(struct cfm *cfm) OVS_REQUIRES(mutex)
+{
+    seq_change(connectivity_seq_get());
+    cfm->status_changed = true;
 }
 
 /* Should be run periodically to update fault statistics messages. */
@@ -446,7 +464,8 @@ cfm_run(struct cfm *cfm) OVS_EXCLUDED(mutex)
         if (cfm->demand) {
             uint64_t rx_packets = cfm_rx_packets(cfm);
             demand_override = hmap_count(&cfm->remote_mps) == 1
-                && rx_packets > cfm->rx_packets;
+                && rx_packets > cfm->rx_packets
+                && !timer_expired(&cfm->demand_rx_ccm_t);
             cfm->rx_packets = rx_packets;
         }
 
@@ -510,7 +529,7 @@ cfm_run(struct cfm *cfm) OVS_EXCLUDED(mutex)
             || (old_rmps_array_len != cfm->rmps_array_len || old_rmps_deleted)
             || old_cfm_fault != cfm->fault
             || old_flap_count != cfm->flap_count) {
-            seq_change(connectivity_seq_get());
+            cfm_status_changed(cfm);
         }
 
         cfm->booted = true;
@@ -823,6 +842,10 @@ cfm_process_heartbeat(struct cfm *cfm, const struct ofpbuf *p)
             rmp->mpid = ccm_mpid;
             if (!cfm_fault) {
                 rmp->num_health_ccm++;
+                if (cfm->demand) {
+                    timer_set_duration(&cfm->demand_rx_ccm_t,
+                                       100 * cfm->ccm_interval_ms);
+                }
             }
             rmp->recv = true;
             cfm->recv_fault |= cfm_fault;
@@ -834,6 +857,20 @@ cfm_process_heartbeat(struct cfm *cfm, const struct ofpbuf *p)
 
 out:
     ovs_mutex_unlock(&mutex);
+}
+
+/* Returns and resets the 'cfm->status_changed'. */
+bool
+cfm_check_status_change(struct cfm *cfm) OVS_EXCLUDED(mutex)
+{
+    bool ret;
+
+    ovs_mutex_lock(&mutex);
+    ret = cfm->status_changed;
+    cfm->status_changed = false;
+    ovs_mutex_unlock(&mutex);
+
+    return ret;
 }
 
 static int
@@ -1029,13 +1066,14 @@ cfm_unixctl_set_fault(struct unixctl_conn *conn, int argc, const char *argv[],
             goto out;
         }
         cfm->fault_override = fault_override;
+        cfm_status_changed(cfm);
     } else {
         HMAP_FOR_EACH (cfm, hmap_node, all_cfms) {
             cfm->fault_override = fault_override;
+            cfm_status_changed(cfm);
         }
     }
 
-    seq_change(connectivity_seq_get());
     unixctl_command_reply(conn, "OK");
 
 out:

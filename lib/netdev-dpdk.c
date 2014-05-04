@@ -28,7 +28,6 @@
 #include <unistd.h>
 #include <stdio.h>
 
-#include "connectivity.h"
 #include "dpif-netdev.h"
 #include "list.h"
 #include "netdev-dpdk.h"
@@ -41,7 +40,6 @@
 #include "ovs-rcu.h"
 #include "packets.h"
 #include "shash.h"
-#include "seq.h"
 #include "sset.h"
 #include "unaligned.h"
 #include "timeval.h"
@@ -134,8 +132,6 @@ static struct list dpdk_list OVS_GUARDED_BY(dpdk_mutex)
 
 static struct list dpdk_mp_list OVS_GUARDED_BY(dpdk_mutex)
     = LIST_INITIALIZER(&dpdk_mp_list);
-
-static pthread_t watchdog_thread;
 
 struct dpdk_mp {
     struct rte_mempool *mp;
@@ -318,7 +314,7 @@ check_link_status(struct netdev_dpdk *dev)
     rte_eth_link_get_nowait(dev->port_id, &link);
 
     if (dev->link.link_status != link.link_status) {
-        seq_change(connectivity_seq_get());
+        netdev_change_seq_changed(&dev->up);
 
         dev->link_reset_cnt++;
         dev->link = link;
@@ -718,6 +714,7 @@ netdev_dpdk_set_etheraddr(struct netdev *netdev,
     ovs_mutex_lock(&dev->mutex);
     if (!eth_addr_equals(dev->hwaddr, mac)) {
         memcpy(dev->hwaddr, mac, ETH_ADDR_LEN);
+        netdev_change_seq_changed(netdev);
     }
     ovs_mutex_unlock(&dev->mutex);
 
@@ -790,6 +787,7 @@ netdev_dpdk_set_mtu(const struct netdev *netdev, int mtu)
     }
 
     dpdk_mp_put(old_mp);
+    netdev_change_seq_changed(netdev);
 out:
     ovs_mutex_unlock(&dev->mutex);
     ovs_mutex_unlock(&dpdk_mutex);
@@ -1105,7 +1103,7 @@ dpdk_class_init(void)
                              "[netdev] up|down", 1, 2,
                              netdev_dpdk_set_admin_state, NULL);
 
-    xpthread_create(&watchdog_thread, NULL, dpdk_watchdog, NULL);
+    ovs_thread_create("dpdk_watchdog", dpdk_watchdog, NULL);
     return 0;
 }
 

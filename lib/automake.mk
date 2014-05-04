@@ -45,7 +45,9 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/crc32c.h \
 	lib/csum.c \
 	lib/csum.h \
+	lib/daemon.c \
 	lib/daemon.h \
+	lib/daemon-private.h \
 	lib/dhcp.h \
 	lib/dummy.c \
 	lib/dummy.h \
@@ -255,7 +257,7 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/stream-fd-windows.c
 else
 lib_libopenvswitch_la_SOURCES += \
-	lib/daemon.c \
+	lib/daemon-unix.c \
 	lib/latch-unix.c \
 	lib/signals.c \
 	lib/signals.h \

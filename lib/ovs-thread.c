@@ -52,12 +52,17 @@ static bool multithreaded;
         OVS_NO_THREAD_SAFETY_ANALYSIS \
     { \
         struct ovs_##TYPE *l = CONST_CAST(struct ovs_##TYPE *, l_); \
-        int error = pthread_##TYPE##_##FUN(&l->lock); \
+        int error; \
+ \
+        /* Verify that 'l' was initialized. */ \
+        ovs_assert(l->where); \
+ \
+        error = pthread_##TYPE##_##FUN(&l->lock); \
         if (OVS_UNLIKELY(error)) { \
             ovs_abort(error, "pthread_%s_%s failed", #TYPE, #FUN); \
         } \
         l->where = where; \
-    }
+ }
 LOCK_FUNCTION(mutex, lock);
 LOCK_FUNCTION(rwlock, rdlock);
 LOCK_FUNCTION(rwlock, wrlock);
@@ -69,7 +74,12 @@ LOCK_FUNCTION(rwlock, wrlock);
         OVS_NO_THREAD_SAFETY_ANALYSIS \
     { \
         struct ovs_##TYPE *l = CONST_CAST(struct ovs_##TYPE *, l_); \
-        int error = pthread_##TYPE##_##FUN(&l->lock); \
+        int error; \
+ \
+        /* Verify that 'l' was initialized. */ \
+        ovs_assert(l->where); \
+ \
+        error = pthread_##TYPE##_##FUN(&l->lock); \
         if (OVS_UNLIKELY(error) && error != EBUSY) { \
             ovs_abort(error, "pthread_%s_%s failed", #TYPE, #FUN); \
         } \
@@ -82,23 +92,27 @@ TRY_LOCK_FUNCTION(mutex, trylock);
 TRY_LOCK_FUNCTION(rwlock, tryrdlock);
 TRY_LOCK_FUNCTION(rwlock, trywrlock);
 
-#define UNLOCK_FUNCTION(TYPE, FUN) \
+#define UNLOCK_FUNCTION(TYPE, FUN, WHERE) \
     void \
     ovs_##TYPE##_##FUN(const struct ovs_##TYPE *l_) \
         OVS_NO_THREAD_SAFETY_ANALYSIS \
     { \
         struct ovs_##TYPE *l = CONST_CAST(struct ovs_##TYPE *, l_); \
         int error; \
-        l->where = NULL; \
+ \
+        /* Verify that 'l' was initialized. */ \
+        ovs_assert(l->where); \
+ \
+        l->where = WHERE; \
         error = pthread_##TYPE##_##FUN(&l->lock); \
         if (OVS_UNLIKELY(error)) { \
             ovs_abort(error, "pthread_%s_%sfailed", #TYPE, #FUN); \
         } \
     }
-UNLOCK_FUNCTION(mutex, unlock);
-UNLOCK_FUNCTION(mutex, destroy);
-UNLOCK_FUNCTION(rwlock, unlock);
-UNLOCK_FUNCTION(rwlock, destroy);
+UNLOCK_FUNCTION(mutex, unlock, "<unlocked>");
+UNLOCK_FUNCTION(mutex, destroy, NULL);
+UNLOCK_FUNCTION(rwlock, unlock, "<unlocked>");
+UNLOCK_FUNCTION(rwlock, destroy, NULL);
 
 #define XPTHREAD_FUNC1(FUNCTION, PARAM1)                \
     void                                                \
@@ -164,7 +178,7 @@ ovs_mutex_init__(const struct ovs_mutex *l_, int type)
     pthread_mutexattr_t attr;
     int error;
 
-    l->where = NULL;
+    l->where = "<unlocked>";
     xpthread_mutexattr_init(&attr);
     xpthread_mutexattr_settype(&attr, type);
     error = pthread_mutex_init(&l->lock, &attr);
@@ -206,7 +220,7 @@ ovs_rwlock_init(const struct ovs_rwlock *l_)
     pthread_rwlockattr_t attr;
     int error;
 
-    l->where = NULL;
+    l->where = "<unlocked>";
 
     xpthread_rwlockattr_init(&attr);
 #ifdef PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP
@@ -240,7 +254,10 @@ xpthread_barrier_wait(pthread_barrier_t *barrier)
 {
     int error;
 
+    ovsrcu_quiesce_start();
     error = pthread_barrier_wait(barrier);
+    ovsrcu_quiesce_end();
+
     if (error && OVS_UNLIKELY(error != PTHREAD_BARRIER_SERIAL_THREAD)) {
         ovs_abort(error, "pthread_barrier_wait failed");
     }
@@ -253,6 +270,7 @@ DEFINE_EXTERN_PER_THREAD_DATA(ovsthread_id, 0);
 struct ovsthread_aux {
     void *(*start)(void *);
     void *arg;
+    char name[16];
 };
 
 static void *
@@ -270,13 +288,18 @@ ovsthread_wrapper(void *aux_)
     aux = *auxp;
     free(auxp);
 
+    /* The order of the following calls is important, because
+     * ovsrcu_quiesce_end() saves a copy of the thread name. */
+    set_subprogram_name("%s%u", aux.name, id);
     ovsrcu_quiesce_end();
+
     return aux.start(aux.arg);
 }
 
-void
-xpthread_create(pthread_t *threadp, pthread_attr_t *attr,
-                void *(*start)(void *), void *arg)
+/* Starts a thread that calls 'start(arg)'.  Sets the thread's name to 'name'
+ * (suffixed by its ovsthread_id()).  Returns the new thread's pthread_t. */
+pthread_t
+ovs_thread_create(const char *name, void *(*start)(void *), void *arg)
 {
     struct ovsthread_aux *aux;
     pthread_t thread;
@@ -289,12 +312,13 @@ xpthread_create(pthread_t *threadp, pthread_attr_t *attr,
     aux = xmalloc(sizeof *aux);
     aux->start = start;
     aux->arg = arg;
+    ovs_strlcpy(aux->name, name, sizeof aux->name);
 
-    error = pthread_create(threadp ? threadp : &thread, attr,
-                           ovsthread_wrapper, aux);
+    error = pthread_create(&thread, NULL, ovsthread_wrapper, aux);
     if (error) {
         ovs_abort(error, "pthread_create failed");
     }
+    return thread;
 }
 
 bool
