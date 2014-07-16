@@ -1,8 +1,8 @@
 %define name sliver-openvswitch
 # to check for any change:
 # grep AC_INIT configure.ac 
-%define version 2.1.90
-%define taglevel 2
+%define version 2.2.90
+%define taglevel 1
 
 %define debug_package %{nil}
 
